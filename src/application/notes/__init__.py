@@ -1,0 +1,1 @@
+"""Note generation and formatting."""

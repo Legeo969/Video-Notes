@@ -1,0 +1,4 @@
+# requirements/build.txt — PyInstaller 打包工具链
+# 用于生成可分发的 .exe 文件
+# pip install -r requirements/dev.txt -r requirements/build.txt
+pyinstaller>=6.21,<7.0

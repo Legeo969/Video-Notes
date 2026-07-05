@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+.python313/
+cookies.txt
+bilibili_cookies.txt
+yt-dlp.conf
+
+# Packaged app/runtime artifacts
+_internal/
+*.exe
+*.patched.exe
+*.bak
+
+# Project output
+output/
+!output/.gitkeep
+.jobs/
+.note_index/
+*.db
+*.db-wal
+*.db-shm
+pytest_output.txt
+
+# Diagnostics
+issue_bundle_*.zip
+diagnostics_*.zip
+
+# Test/runtime logs
+logs/
+*.log
+
+# Temp
+*.tmp
+tmp/
+temp/
+.temp_*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tool-specific directories (AI coding assistants, etc.)
+.agent/
+.agents/
+.codegraph/
+.codex/
+.comet/
+.opencode/
+.pytest_cache/
+.worktrees/
+.workbuddy/
+docs/superpowers/
+openspec/
+
+# Local tool config
+config/opencode.jsonc
+config/cookies.txt
+config/bilibili_cookies.txt
+config/yt-dlp.conf
+.slim/deepwork/
+# Desktop (Tauri + Svelte)
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/.svelte-kit/

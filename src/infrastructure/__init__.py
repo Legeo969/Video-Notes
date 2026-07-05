@@ -1,0 +1,1 @@
+"""Infrastructure layer — self-contained external-dependency modules."""

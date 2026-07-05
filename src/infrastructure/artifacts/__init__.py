@@ -1,0 +1,1 @@
+"""Artifacts — 笔记输出制品（Obsidian 归档、文件策略等）"""

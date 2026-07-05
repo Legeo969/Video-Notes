@@ -1,0 +1,3 @@
+# requirements/ocr-gpu.txt — PaddleOCR GPU 运行环境（CUDA 12.6）
+-r ocr.txt
+paddlepaddle-gpu==3.3.0

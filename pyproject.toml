@@ -1,0 +1,141 @@
+[build-system]
+requires = ["setuptools>=68,<81", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-notes-ai"
+version = "1.2.0"
+description = "AI 视频笔记生成工具 — 将视频转录为结构化 Markdown 笔记"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# ── 核心依赖（CLI / API 模式必须）────────────────────────────────────────
+dependencies = [
+    "faster-whisper==1.2.1",
+    "ctranslate2>=3.0.0,<5.0.0",
+    "yt-dlp>=2026.6.0",
+    "curl_cffi>=0.14,<0.15",
+    "openai==2.37.0",
+    "httpx==0.28.1",
+    "python-dotenv==1.2.2",
+]
+
+[project.optional-dependencies]
+
+# ── 视觉增强（帧提取质量过滤，场景检测）────────────────────────────────
+vision = [
+    "numpy>=1.24,<2.4",
+    "opencv-contrib-python>=4.10,<5.0",
+    "scenedetect>=0.6.6,<0.7.0",
+    "imagehash>=4.3,<5.0",
+    "scipy>=1.18,<2.0",
+    "PyWavelets>=1.9,<2.0",
+]
+
+# ── OCR（可选，重量级，需 Python 3.8-3.13）──────────────────────────────
+# GPU 用户请使用 ocr-gpu extra 或运行 scripts/setup_ocr_gpu_windows.ps1
+# 避免 pip 自动安装 CPU 版 paddlepaddle 覆盖已有的 GPU 版。
+ocr = [
+    "numpy>=1.24,<2.4",
+    "paddleocr>=3.0.0",
+    "paddlex[ocr]>=3.0.0",
+    "pandas>=2.0,<3.0",
+    "setuptools>=68,<81",
+]
+
+ocr-gpu = [
+    "numpy>=1.24,<2.4",
+    "paddleocr>=3.0.0",
+    "paddlex[ocr]>=3.0.0",
+    "pandas>=2.0,<3.0",
+    "setuptools>=68,<81",
+    "paddlepaddle-gpu==3.3.0",
+]
+
+# ── CUDA GPU 加速（Windows；需配套 CUDA 12.x 驱动）─────────────────────
+cuda = [
+    "nvidia-cublas-cu12>=12.0.0",
+    "nvidia-cuda-nvrtc-cu12>=12.0.0",
+    "nvidia-cuda-runtime-cu12>=12.0.0",
+    "nvidia-cudnn-cu12>=9.0.0",
+]
+
+# ── 打包（仅开发机，不进入用户安装）────────────────────────────────────
+build = [
+    "pyinstaller>=6.21,<7.0",
+]
+
+# ── 开发工具──────────────────────────────────────────────────────────────
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "pyright>=1.1",
+    "pre-commit>=3.0",
+]
+
+# ── 完整安装（all extras，本地开发用）───────────────────────────────────
+# 注意：OCR 用户需单独安装 Paddle 核心（CPU 或 GPU），请使用 ocr / ocr-gpu extra
+all = [
+    "numpy>=1.24,<2.4",
+    "opencv-contrib-python>=4.10,<5.0",
+    "scenedetect>=0.6.6,<0.7.0",
+    "imagehash>=4.3,<5.0",
+    "scipy>=1.18,<2.0",
+    "PyWavelets>=1.9,<2.0",
+    "paddleocr>=3.0.0",
+    "nvidia-cublas-cu12>=12.0.0",
+    "nvidia-cuda-nvrtc-cu12>=12.0.0",
+    "nvidia-cuda-runtime-cu12>=12.0.0",
+    "nvidia-cudnn-cu12>=9.0.0",
+]
+
+# ── 脚本入口点──────────────────────────────────────────────────────────
+[project.scripts]
+video-notes-ai = "main:main"
+
+# ── Setuptools 包发现──────────────────────────────────────────────────
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+# ── 包数据（模板等非 Python 资源）───────────────────────────────────
+[tool.setuptools.package-data]
+"src" = ["**/*.yaml", "**/*.yml", "**/*.qss"]
+
+# ── Ruff lint 配置────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "UP007",  # X | Y union syntax — keep py310 compat
+]
+
+# ── Pyright 类型检查──────────────────────────────────────────────────
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingModuleSource = "none"
+
+# ── pytest 配置──────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "core: 确定性核心测试，应始终通过",
+    "legacy: 旧架构兼容行为，可能被新架构取代",
+    "external: 需要外部二进制、模型、网络或可选包",
+    "slow: 长时间运行测试",
+    "gpu: 需要 CUDA/GPU",
+    "ocr: 需要 OCR 可选依赖",
+]
