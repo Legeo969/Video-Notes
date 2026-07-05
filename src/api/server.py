@@ -156,6 +156,7 @@ def run_server(
     """
     global _SHUTDOWN_REQUESTED
     _SHUTDOWN_REQUESTED = False
+    sys.stdout = sys.stderr
 
     output_dir = _resolve_runtime_output_dir(output_dir)
 

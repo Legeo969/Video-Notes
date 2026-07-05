@@ -23,6 +23,7 @@ from .version import PROTOCOL_VERSION
 
 _MAX_FRAME_SIZE = 8 * 1024 * 1024  # 8 MiB
 _STDOUT_LOCK = threading.Lock()
+_PROTOCOL_STDOUT = sys.stdout.buffer
 
 
 def read_frame() -> dict | None:
@@ -75,8 +76,8 @@ def read_frame() -> dict | None:
 def _write_raw(data: bytes) -> None:
     """线程安全地写入 stdout。"""
     with _STDOUT_LOCK:
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+        _PROTOCOL_STDOUT.write(data)
+        _PROTOCOL_STDOUT.flush()
 
 
 def write_frame(message: dict) -> None:

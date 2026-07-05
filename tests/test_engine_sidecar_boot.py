@@ -109,3 +109,81 @@ main()
 
     stderr = proc.stderr.read().decode("utf-8", errors="replace")
     assert "Traceback" not in stderr
+
+
+def test_stdio_sidecar_redirects_plain_stdout_away_from_protocol() -> None:
+    """A stray print() from a handler must not corrupt framed stdout."""
+    bootstrap = """
+from src.api import server
+from src.api.protocol import Dispatcher
+from src.api.handlers.system import create_system_handlers
+
+d = Dispatcher()
+d.register_all(create_system_handlers(shutdown_hook=server._shutdown))
+
+def noisy(params):
+    print("plain stdout noise from worker")
+    return True
+
+d.register("debug.noisy", noisy)
+server.run_server(dispatcher=d)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", bootstrap],
+        cwd=_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    try:
+        _write_frame(
+            proc.stdin,
+            {
+                "jsonrpc": "2.0",
+                "protocol_version": 1,
+                "id": 1,
+                "method": "debug.noisy",
+                "params": {},
+            },
+        )
+        response, _ = _read_response(proc.stdout, 1)
+        assert response["result"] is True
+
+        _write_frame(
+            proc.stdin,
+            {
+                "jsonrpc": "2.0",
+                "protocol_version": 1,
+                "id": 2,
+                "method": "system.ping",
+                "params": {},
+            },
+        )
+        ping, _ = _read_response(proc.stdout, 2)
+        assert ping["result"] == "pong"
+
+        _write_frame(
+            proc.stdin,
+            {
+                "jsonrpc": "2.0",
+                "protocol_version": 1,
+                "id": 3,
+                "method": "system.shutdown",
+                "params": {},
+            },
+        )
+        shutdown, _ = _read_response(proc.stdout, 3)
+        assert shutdown["result"] is True
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    stderr = proc.stderr.read().decode("utf-8", errors="replace")
+    assert "plain stdout noise from worker" in stderr
+    assert "Traceback" not in stderr
