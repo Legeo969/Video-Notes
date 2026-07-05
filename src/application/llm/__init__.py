@@ -4,18 +4,31 @@ from src.application.llm.registry import ProviderRegistry
 from src.infrastructure.providers.mimo import MimoProvider
 from src.infrastructure.providers.dashscope import DashScopeProvider
 from src.infrastructure.providers.openai_compat import OpenAICompatProvider
+from src.infrastructure.providers.http_api_types import (
+    GoogleGeminiProvider,
+    AnthropicMessagesProvider,
+    OpenAIResponsesProvider,
+)
 
 # 注册内置 provider
 _registry = ProviderRegistry()
 _registry.register("mimo", MimoProvider)
 _registry.register("dashscope", DashScopeProvider)
 _registry.register("openai_compat", OpenAICompatProvider)
+_registry.register("google_gemini", GoogleGeminiProvider)
+_registry.register("anthropic_messages", AnthropicMessagesProvider)
+_registry.register("openai_responses", OpenAIResponsesProvider)
 
 # GUI 显示名 → 注册表名称
 _DISPLAY_NAME_MAP = {
     "mimo": "mimo",
     "bailian": "dashscope",
     "自定义": "openai_compat",
+    "google": "google_gemini",
+    "gemini": "google_gemini",
+    "anthropic": "anthropic_messages",
+    "claude": "anthropic_messages",
+    "responses": "openai_responses",
 }
 
 

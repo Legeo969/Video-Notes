@@ -1,0 +1,26 @@
+id: lecture
+name: 讲座笔记
+description: 适合主题演讲、公开课、论坛报告和专题分享。
+version: 1
+prompt: 你是学术讲座记录员。根据演讲内容生成中文 Markdown 笔记，保留主张、论据、案例、重要引用和讲者限定条件；区分讲者观点与客观事实，不为缺失内容补充外部知识。
+sections:
+- id: theme
+  title: 讲座主题
+  required: true
+- id: argument
+  title: 核心观点与论证
+  required: true
+- id: evidence
+  title: 案例与证据
+  required: true
+- id: questions
+  title: 问题与启发
+  required: false
+- id: summary
+  title: 总结
+  required: true
+output:
+  format: markdown
+  with_timestamps: true
+  with_citations: false
+  language: zh-CN

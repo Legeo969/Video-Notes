@@ -28,12 +28,8 @@ logger = logging.getLogger(__name__)
 
 # ── 内置模板目录 ──────────────────────────────────────────────
 # 文件: src/application/notes/template_loader.py
-# 模板: src/core/notes/templates/
-# Path(__file__).resolve().parents[2] = src/
-
-_BUILTIN_TEMPLATES_DIR = (
-    Path(__file__).resolve().parents[2] / "core" / "notes" / "templates"
-)
+# 模板与加载器同属 application/notes，便于作为 package data 发布。
+_BUILTIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 # YAML 必需字段
 _REQUIRED_FIELDS = {"id", "name", "description", "version", "prompt"}
@@ -154,7 +150,7 @@ class TemplateRegistry:
         """加载所有内置 YAML 模板。
 
         Args:
-            templates_dir: 模板目录路径（默认 src/core/notes/templates/）。
+            templates_dir: 模板目录路径（默认 src/application/notes/templates/）。
 
         Returns:
             成功加载的模板数量。

@@ -3,7 +3,7 @@
 使用方法：将本目录放在项目根目录 plugins/ 下，自动加载。
 """
 
-from src.core.plugin import BasePlugin
+from src.application.plugin.base import BasePlugin
 
 
 class ExamplePlugin(BasePlugin):

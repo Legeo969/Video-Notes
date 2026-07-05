@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from src.domain.job_state import JobState, JobRecord
@@ -30,13 +31,34 @@ class ProcessingMetadata:
         title: Optional[str] = None,
         job_dir: Optional[str] = None,
         job_id: Optional[str] = None,
+        request_snapshot: dict | None = None,
+        parent_run_id: int | None = None,
+        attempt: int = 1,
     ) -> int:
         with self._gateway.connection() as conn:
-            return JobRepository(conn).start_run(input_path, title, job_dir, job_id)
+            return JobRepository(conn).start_run(
+                input_path,
+                title,
+                job_dir,
+                job_id,
+                request_snapshot=request_snapshot,
+                parent_run_id=parent_run_id,
+                attempt=attempt,
+            )
 
     def update_stage(self, run_id: int, stage: JobState) -> None:
         with self._gateway.connection() as conn:
             JobRepository(conn).update_stage(run_id, stage)
+
+    def update_progress(
+        self,
+        run_id: int,
+        stage: JobState,
+        progress: float,
+        message: str = "",
+    ) -> None:
+        with self._gateway.connection() as conn:
+            JobRepository(conn).update_progress(run_id, stage, progress, message)
 
     def complete_run(
         self,
@@ -57,6 +79,10 @@ class ProcessingMetadata:
     def fail_run(self, run_id: int, error_message: str) -> None:
         with self._gateway.connection() as conn:
             JobRepository(conn).fail_run(run_id, error_message)
+
+    def mark_interrupted_runs(self, reason: str) -> int:
+        with self._gateway.connection() as conn:
+            return JobRepository(conn).mark_interrupted_runs(reason)
 
     def request_stop(self, run_id: int, action: str) -> None:
         with self._gateway.connection() as conn:
@@ -163,6 +189,10 @@ class ProcessingMetadata:
 
     @staticmethod
     def _dict_to_record(data: dict) -> JobRecord:
+        try:
+            request_snapshot = json.loads(data.get("request_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            request_snapshot = {}
         return JobRecord(
             id=data["id"],
             job_id=data.get("job_id", ""),
@@ -180,6 +210,14 @@ class ProcessingMetadata:
             frames_count=data.get("frames_count", 0),
             blocks_count=data.get("blocks_count", 0),
             note_id=data.get("note_id"),
+            progress=float(data.get("progress") or 0.0),
+            progress_message=data.get("progress_message"),
+            request_snapshot=request_snapshot,
+            attempt=int(data.get("attempt") or 1),
+            parent_run_id=data.get("parent_run_id"),
+            last_active_stage=data.get("last_active_stage"),
+            heartbeat_at=data.get("heartbeat_at"),
+            interrupted_at=data.get("interrupted_at"),
         )
 
 

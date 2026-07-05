@@ -65,7 +65,7 @@ def _migrate_processing_runs(conn: sqlite3.Connection) -> None:
     """幂等 migration：给 processing_runs 表添加 v2 任务队列列。
 
     新增列：stage, stage_started_at, job_dir, job_id, elapsed_sec,
-           frames_count, blocks_count, note_id
+           frames_count, blocks_count, note_id，以及产品级任务恢复字段。
     """
     existing_cols = {
         row[1]
@@ -81,6 +81,14 @@ def _migrate_processing_runs(conn: sqlite3.Connection) -> None:
         "blocks_count":       "INTEGER DEFAULT 0",
         "note_id":            "INTEGER",
         "is_hidden":          "INTEGER NOT NULL DEFAULT 0",
+        "progress":           "REAL NOT NULL DEFAULT 0",
+        "progress_message":   "TEXT",
+        "request_json":       "TEXT NOT NULL DEFAULT '{}'",
+        "attempt":            "INTEGER NOT NULL DEFAULT 1",
+        "parent_run_id":      "INTEGER",
+        "last_active_stage":  "TEXT",
+        "heartbeat_at":       "TEXT",
+        "interrupted_at":     "TEXT",
     }
     for col, definition in additions.items():
         if col not in existing_cols:
@@ -129,6 +137,14 @@ def _migrate_processing_runs(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_processing_runs_hidden "
         "ON processing_runs(is_hidden, started_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_processing_runs_parent "
+        "ON processing_runs(parent_run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_processing_runs_heartbeat "
+        "ON processing_runs(status, heartbeat_at)"
     )
 
 
@@ -371,6 +387,27 @@ def initialize_database(db_path: str) -> None:
             """
         )
         conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER,
+                job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_events_run_id "
+            "ON job_events(run_id, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_events_job_id "
+            "ON job_events(job_id, id)"
+        )
+        conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
             ("v12_job_lifecycle",),
         )
@@ -378,7 +415,11 @@ def initialize_database(db_path: str) -> None:
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
             ("v13_lifecycle_output",),
         )
-        conn.execute("PRAGMA user_version = 13")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+            ("v14_task_runtime",),
+        )
+        conn.execute("PRAGMA user_version = 14")
 
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":

@@ -40,6 +40,7 @@ class JobState(str, Enum):
     INDEXING = "indexing"               # 知识库写入
     COMPLETED = "completed"
     FAILED = "failed"
+    INTERRUPTED = "interrupted"
     PAUSING = "pausing"
     CANCELLING = "cancelling"
     PAUSED = "paused"
@@ -48,7 +49,13 @@ class JobState(str, Enum):
     @property
     def is_terminal(self) -> bool:
         """是否终端状态（不会再流转）。"""
-        return self in (JobState.COMPLETED, JobState.FAILED, JobState.PAUSED, JobState.CANCELLED)
+        return self in (
+            JobState.COMPLETED,
+            JobState.FAILED,
+            JobState.INTERRUPTED,
+            JobState.PAUSED,
+            JobState.CANCELLED,
+        )
 
     @property
     def is_running(self) -> bool:
@@ -57,6 +64,7 @@ class JobState(str, Enum):
             JobState.PENDING,
             JobState.COMPLETED,
             JobState.FAILED,
+            JobState.INTERRUPTED,
             JobState.PAUSED,
             JobState.CANCELLED,
         )
@@ -74,6 +82,7 @@ class JobState(str, Enum):
             JobState.INDEXING: "写入知识库",
             JobState.COMPLETED: "已完成",
             JobState.FAILED: "失败",
+            JobState.INTERRUPTED: "异常中断",
             JobState.PAUSING: "正在暂停",
             JobState.CANCELLING: "正在取消",
             JobState.PAUSED: "已暂停",
@@ -273,6 +282,14 @@ class JobRecord:
     frames_count: int = 0                # 抽帧数
     blocks_count: int = 0                # 知识块数
     note_id: int | None = None           # notes 表主键
+    progress: float = 0.0                # 总体进度（0-100）
+    progress_message: str | None = None  # 最近进度说明
+    request_snapshot: dict = field(default_factory=dict)  # 无密钥请求快照
+    attempt: int = 1                     # 第几次执行尝试
+    parent_run_id: int | None = None      # 从头重试来源
+    last_active_stage: str | None = None  # 终端/停止前最后活动阶段
+    heartbeat_at: str | None = None       # 最近 worker 心跳/进度时间
+    interrupted_at: str | None = None     # 引擎重启恢复时标记时间
 
     @property
     def state(self) -> JobState:
@@ -288,7 +305,7 @@ class JobRecord:
 
     @property
     def is_failed(self) -> bool:
-        return self.status == "failed"
+        return self.status in ("failed", "interrupted")
 
     @property
     def is_paused(self) -> bool:
@@ -312,6 +329,6 @@ class JobRecord:
         cancelled → 工作区已清理，只能新建任务从头重跑
         pending → 尚未执行，从头开始
         """
-        if self.status in ("failed", "paused", "running", "pending"):
+        if self.status in ("failed", "interrupted", "paused", "running", "pending"):
             return True
         return False

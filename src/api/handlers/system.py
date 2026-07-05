@@ -29,9 +29,14 @@ def create_system_handlers(
         import platform
 
         cuda = False
+        cuda_device_count = 0
+        cuda_compute_types: list[str] = []
         try:
             import ctranslate2
-            cuda = ctranslate2.get_cuda_device_count() > 0
+            cuda_device_count = ctranslate2.get_cuda_device_count()
+            cuda = cuda_device_count > 0
+            if cuda:
+                cuda_compute_types = sorted(ctranslate2.get_supported_compute_types("cuda"))
         except Exception:
             pass
 
@@ -52,6 +57,8 @@ def create_system_handlers(
             "protocol_version": PROTOCOL_VERSION,
             "python_version": platform.python_version(),
             "cuda_available": cuda,
+            "cuda_device_count": cuda_device_count,
+            "cuda_compute_types": cuda_compute_types,
             "ffmpeg_available": ffmpeg,
         }
 

@@ -1,315 +1,194 @@
-"""process.* RPC 处理器
+"""Versioned ``process.*`` RPC handlers.
 
-封装 PipelineOrchestrator + JobQueue 对外提供任务生命周期管理。
-处理器不实现管线逻辑，只做参数校验和委托调用。
+Handlers validate API input and delegate all worker ownership to
+:class:`TaskSupervisor`. They never create background threads directly.
 """
 
 from __future__ import annotations
 
-import os
-import logging
 from typing import Any
 
-from src.domain.types import PipelineRequest
-from src.domain.job_state import JobState
+from src.api.event_journal import EventJournal
+from src.api.protocol.errors import InvalidParams, JobNotFound
+from src.application.services.job_queue import JobQueue, get_default_db_path
 from src.application.services.orchestrator import PipelineOrchestrator
-from src.application.services.job_queue import (
-    JobQueue,
-    get_default_db_path,
-    TaskCancelledError,
+from src.application.services.task_supervisor import TaskSupervisor
+from src.config.settings import (
+    get_settings_path,
+    load_settings,
+    resolve_provider_binding_from_settings,
 )
-from src.api.protocol.errors import JobNotFound, InternalError, InvalidParams
+from src.domain.types import PipelineRequest
 
-logger = logging.getLogger(__name__)
+
+def _run_id(params: dict[str, Any]) -> int:
+    value = params.get("job_id", params.get("id"))
+    if value is None:
+        raise InvalidParams("job_id is required")
+    try:
+        return int(value)
+    except (ValueError, TypeError) as exc:
+        raise InvalidParams("job_id must be an integer") from exc
 
 
 def _job_record_to_dict(record) -> dict[str, Any]:
-    """将 JobRecord 转为可序列化的 dict（不暴露内部 dataclass）。"""
-    import dataclasses
-    raw = dataclasses.asdict(record)
     return {
-        "id": raw["id"],
-        "job_id": raw["job_id"],
-        "title": raw.get("title"),
-        "input": raw["input"],
-        "status": raw["status"],
-        "stage": raw["stage"],
-        "progress": 0.0,  # 可由 event_journal 补充
-        "created_at": raw.get("started_at"),
-        "completed_at": raw.get("completed_at"),
-        "elapsed_sec": raw.get("elapsed_sec", 0.0),
-        "error_message": raw.get("error_message"),
-        "output_path": raw.get("output_path"),
-        "transcript_path": raw.get("transcript_path"),
-        "frames_count": raw.get("frames_count", 0),
-        "note_id": raw.get("note_id"),
+        "id": record.id,
+        "job_id": record.job_id,
+        "title": record.title,
+        "input": record.input,
+        "status": record.status,
+        "stage": record.stage,
+        "last_active_stage": record.last_active_stage,
+        "progress": float(record.progress or 0.0),
+        "progress_message": record.progress_message,
+        "created_at": record.started_at,
+        "completed_at": record.completed_at,
+        "elapsed_sec": record.elapsed_sec,
+        "error_message": record.error_message,
+        "output_path": record.output_path,
+        "transcript_path": record.transcript_path,
+        "frames_count": record.frames_count,
+        "note_id": record.note_id,
+        "attempt": record.attempt,
+        "parent_run_id": record.parent_run_id,
+        "can_resume": record.can_resume,
+        "heartbeat_at": record.heartbeat_at,
+        "interrupted_at": record.interrupted_at,
     }
 
 
+def _build_request(params: dict[str, Any]) -> PipelineRequest:
+    input_src = str(params.get("input") or "").strip()
+    if not input_src:
+        raise InvalidParams("input is required")
+
+    settings = load_settings(get_settings_path())
+    llm = resolve_provider_binding_from_settings(settings, "llm")
+    vision = resolve_provider_binding_from_settings(settings, "vision")
+
+    def value(name: str, default=None):
+        supplied = params.get(name)
+        return supplied if supplied is not None else default
+
+    request = PipelineRequest(
+        input=input_src,
+        title=value("title"),
+        whisper_model=value("whisper_model", settings.get("whisper_model", "large-v3")),
+        language=value("language"),
+        output_dir=value("output_dir", settings.get("output_dir", "./output")),
+        model_dir=value("model_dir", settings.get("whisper_model_dir") or settings.get("model_dir")),
+        whisper_device=value("whisper_device", settings.get("whisper_device", "auto")),
+        whisper_compute_type=value("whisper_compute_type", settings.get("whisper_compute_type", "auto")),
+        beam_size=value("beam_size", 5),
+        vad_filter=value("vad_filter", False),
+        gpt_model=value("gpt_model", llm.get("model") or "mimo-v2.5"),
+        temperature=value("temperature", 0.3),
+        style=value("style"),
+        template=value("template"),
+        template_id=value("template_id"),
+        vision_enabled=value("vision_enabled", settings.get("vision_enabled", False)),
+        vision_provider=value("vision_provider", vision.get("type") or None),
+        vision_model=value("vision_model", vision.get("model") or None),
+        vision_api_key=value("vision_api_key", vision.get("api_key") or None),
+        vision_base_url=value("vision_base_url", vision.get("base_url") or None),
+        ocr_enabled=value("ocr_enabled", settings.get("ocr_enabled", False)),
+        subtitle_format=value("subtitle_format", settings.get("subtitle_format", "none")),
+        collection_id=value("collection_id"),
+        frame_interval=value("frame_interval", settings.get("frame_interval", 30)),
+        frame_mode=value("frame_mode", settings.get("frame_mode", "fixed")),
+        max_frames=value("max_frames", settings.get("max_frames", 30)),
+        smart_summary=value("smart_summary", False),
+        map_max_workers=value("map_max_workers", 6),
+        provider=value("provider", llm.get("type") or None),
+        api_key=value("api_key", llm.get("api_key") or None),
+        base_url=value("base_url", llm.get("base_url") or None),
+        vault_path=value("vault_path", settings.get("vault_path")),
+        bilibili_cookies=value("bilibili_cookies", settings.get("bilibili_cookies") or settings.get("bilibili_cookie_file")),
+        export_mode=value("export_mode", settings.get("export_mode", "clean")),
+        artifact_layout=value("artifact_layout", "versioned"),
+    )
+    object.__setattr__(request, "_llm_profile_name", str(llm.get("name") or ""))
+    object.__setattr__(request, "_vision_profile_name", str(vision.get("name") or ""))
+    return request
+
+
 def create_process_handlers(
-    orchestrator: PipelineOrchestrator,
-    job_queue: JobQueue,
+    orchestrator: PipelineOrchestrator | None,
+    job_queue: JobQueue | None,
+    journal: EventJournal | None = None,
+    supervisor: TaskSupervisor | None = None,
 ) -> dict[str, Any]:
-    """创建 process.* 方法处理器字典。"""
+    """Create the process API surface with one shared runtime owner."""
+    orchestrator = orchestrator or PipelineOrchestrator()
+    job_queue = job_queue or JobQueue(
+        db_path=get_default_db_path("./output"), output_dir="./output"
+    )
+    supervisor = supervisor or TaskSupervisor(orchestrator, job_queue)
 
-    # ── 内部辅助 ──
-
-    def _get_job_or_error(run_id: int):
+    def get_job(run_id: int):
         job = job_queue.get_job(run_id)
         if job is None:
             raise JobNotFound(run_id)
         return job
 
-    # ── 处理器 ──
-
     def handle_start(params: dict[str, Any]) -> dict[str, Any]:
-        """process.start — 启动新管线任务。"""
-        input_src = params.get("input", "").strip()
-        if not input_src:
-            raise InvalidParams("input is required")
-
-        # 入队
-        title = params.get("title")
-        run_id = job_queue.enqueue(input_path=input_src, title=title)
-
-        # 从 params 构建 PipelineRequest
-        request = PipelineRequest(
-            input=input_src,
-            title=title,
-            whisper_model=params.get("whisper_model", "large-v3"),
-            language=params.get("language"),
-            output_dir=params.get("output_dir", "./output"),
-            model_dir=params.get("model_dir"),
-            beam_size=params.get("beam_size", 5),
-            vad_filter=params.get("vad_filter", False),
-            gpt_model=params.get("gpt_model", "mimo-v2.5"),
-            temperature=params.get("temperature", 0.3),
-            style=params.get("style"),
-            template=params.get("template"),
-            template_id=params.get("template_id"),
-            vision_enabled=params.get("vision_enabled", False),
-            vision_provider=params.get("vision_provider"),
-            vision_model=params.get("vision_model"),
-            ocr_enabled=params.get("ocr_enabled", False),
-            subtitle_format=params.get("subtitle_format", "none"),
-            collection_id=params.get("collection_id"),
-            frame_interval=params.get("frame_interval", 30),
-            frame_mode=params.get("frame_mode", "fixed"),
-            max_frames=params.get("max_frames", 30),
-            smart_summary=params.get("smart_summary", False),
-            map_max_workers=params.get("map_max_workers", 6),
-            provider=params.get("provider"),
-            api_key=params.get("api_key"),
-            base_url=params.get("base_url"),
-        )
-
-        # 在后台线程中运行管线
-        import threading
-
-        token = job_queue.create_token(run_id)
-
-        def _run():
-            try:
-                result = orchestrator.run(
-                    request=request,
-                    resume_run_id=run_id,
-                    job_queue=job_queue,
-                    cancel_token=token,
-                )
-                job_queue.complete(
-                    run_id,
-                    notes_path=result.notes_path,
-                    transcript_path=result.transcript_path,
-                    elapsed_sec=result.elapsed_sec,
-                    frames_count=result.frames_count,
-                    note_id=result.note_id,
-                )
-            except TaskCancelledError:
-                pass  # job_queue.finalize_stop already called inside orchestrator
-            except Exception as exc:
-                logger.exception("Pipeline failed for run_id=%s", run_id)
-                job_queue.fail(run_id, str(exc))
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-
-        return {"job_id": run_id}
+        try:
+            return {"job_id": supervisor.start(_build_request(params))}
+        except RuntimeError as exc:
+            raise InvalidParams(str(exc)) from exc
 
     def handle_pause(params: dict[str, Any]) -> bool:
-        """process.pause — 暂停运行中的任务。"""
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
-        try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-        return job_queue.pause_task(run_id)
+        return job_queue.pause_task(_run_id(params))
 
     def handle_cancel(params: dict[str, Any]) -> bool:
-        """process.cancel — 取消任务。"""
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
-        try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-        return job_queue.cancel_task(run_id)
+        return job_queue.cancel_task(_run_id(params))
 
     def handle_resume(params: dict[str, Any]) -> dict[str, Any]:
-        """process.resume — 恢复暂停/失败的任务。"""
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
+        run_id = _run_id(params)
+        get_job(run_id)
         try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-
-        job = _get_job_or_error(run_id)
-        if not job.can_resume:
-            raise InvalidParams(f"Job {run_id} cannot be resumed (status={job.status})")
-
-        # 准备断点续跑
-        refreshed = job_queue.prepare_resume(run_id)
-
-        # 构建请求
-        request = PipelineRequest(
-            input=refreshed.input,
-            title=refreshed.title,
-            output_dir=os.path.dirname(
-                os.path.dirname(os.path.dirname(refreshed.job_dir or ""))
-            ) or "./output",
-        )
-
-        token = job_queue.get_token(run_id) or job_queue.create_token(run_id)
-
-        import threading
-
-        def _run():
-            try:
-                result = orchestrator.run(
-                    request=request,
-                    resume_run_id=run_id,
-                    job_queue=job_queue,
-                    cancel_token=token,
-                )
-                job_queue.complete(
-                    run_id,
-                    notes_path=result.notes_path,
-                    transcript_path=result.transcript_path,
-                    elapsed_sec=result.elapsed_sec,
-                    frames_count=result.frames_count,
-                    note_id=result.note_id,
-                )
-            except TaskCancelledError:
-                pass
-            except Exception as exc:
-                logger.exception("Resume failed for run_id=%s", run_id)
-                job_queue.fail(run_id, str(exc))
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-
-        return {"job_id": run_id}
+            return {"job_id": supervisor.resume(run_id)}
+        except (ValueError, RuntimeError, FileNotFoundError) as exc:
+            raise InvalidParams(str(exc)) from exc
 
     def handle_retry(params: dict[str, Any]) -> dict[str, Any]:
-        """process.retry — 从头重跑失败的任务。"""
-        # 逻辑与 resume 相同，但强制 force=True
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
+        run_id = _run_id(params)
+        get_job(run_id)
         try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-
-        job = _get_job_or_error(run_id)
-        if not job.is_failed and not job.is_cancelled:
-            raise InvalidParams(
-                f"Job {run_id} cannot be retried (status={job.status})"
-            )
-
-        # 重建请求
-        request = PipelineRequest(
-            input=job.input,
-            title=job.title,
-            output_dir=os.path.dirname(
-                os.path.dirname(os.path.dirname(job.job_dir or ""))
-            ) or "./output",
-        )
-
-        # 入队新任务（从头开始用新 run_id）
-        new_run_id = job_queue.enqueue(input_path=job.input, title=job.title)
-        token = job_queue.create_token(new_run_id)
-
-        import threading
-
-        def _run():
-            try:
-                # force=True 忽略已有产物
-                result = orchestrator.run(
-                    request=request,
-                    resume_run_id=new_run_id,
-                    job_queue=job_queue,
-                    cancel_token=token,
-                    force=True,
-                )
-                job_queue.complete(
-                    new_run_id,
-                    notes_path=result.notes_path,
-                    transcript_path=result.transcript_path,
-                    elapsed_sec=result.elapsed_sec,
-                    frames_count=result.frames_count,
-                    note_id=result.note_id,
-                )
-            except TaskCancelledError:
-                pass
-            except Exception as exc:
-                logger.exception("Retry failed for run_id=%s", new_run_id)
-                job_queue.fail(new_run_id, str(exc))
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-
-        return {"job_id": new_run_id}
+            return {"job_id": supervisor.retry(run_id)}
+        except (ValueError, RuntimeError) as exc:
+            raise InvalidParams(str(exc)) from exc
 
     def handle_list(params: dict[str, Any]) -> list[dict[str, Any]]:
-        """process.list — 列出所有任务。"""
-        limit = params.get("limit", 50)
-        offset = params.get("offset", 0)
-        status = params.get("status")
-        records = job_queue.list_jobs(limit=limit, offset=offset, status=status)
-        return [_job_record_to_dict(r) for r in records]
+        try:
+            limit = max(1, min(500, int(params.get("limit", 50))))
+            offset = max(0, int(params.get("offset", 0)))
+        except (TypeError, ValueError) as exc:
+            raise InvalidParams("limit and offset must be integers") from exc
+        records = job_queue.list_jobs(
+            limit=limit, offset=offset, status=params.get("status")
+        )
+        return [_job_record_to_dict(record) for record in records]
 
     def handle_get(params: dict[str, Any]) -> dict[str, Any]:
-        """process.get — 获取单任务详情。"""
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
-        try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-        job = _get_job_or_error(run_id)
-        return _job_record_to_dict(job)
+        return _job_record_to_dict(get_job(_run_id(params)))
+
+    def handle_events(params: dict[str, Any]) -> list[dict[str, Any]]:
+        if journal is None:
+            return []
+        run_id = _run_id(params)
+        get_job(run_id)
+        return journal.events_since(run_id, int(params.get("after_id", 0) or 0))
 
     def handle_delete(params: dict[str, Any]) -> bool:
-        """process.delete — 删除任务记录。"""
-        run_id = params.get("job_id")
-        if run_id is None:
-            raise InvalidParams("job_id is required")
         try:
-            run_id = int(run_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("job_id must be an integer")
-        return job_queue.delete_job(run_id)
+            return job_queue.delete_job(_run_id(params))
+        except RuntimeError as exc:
+            raise InvalidParams(str(exc)) from exc
 
     def handle_permanent_clean(params: dict[str, Any]) -> dict[str, Any]:
-        """process.permanent_clean — 永久清理隐藏任务数据。"""
-        result = job_queue.purge_hidden_history()
-        return dict(result)
+        return dict(job_queue.purge_hidden_history())
 
     return {
         "process.start": handle_start,
@@ -319,6 +198,7 @@ def create_process_handlers(
         "process.retry": handle_retry,
         "process.list": handle_list,
         "process.get": handle_get,
+        "process.events": handle_events,
         "process.delete": handle_delete,
         "process.permanent_clean": handle_permanent_clean,
     }

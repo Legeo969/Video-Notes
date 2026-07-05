@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -29,6 +30,9 @@ class JobRepository:
         title: Optional[str] = None,
         job_dir: Optional[str] = None,
         job_id: Optional[str] = None,
+        request_snapshot: dict | None = None,
+        parent_run_id: int | None = None,
+        attempt: int = 1,
     ) -> int:
         """Create a new processing run record, return run_id."""
         job_id = job_id or str(uuid.uuid4())
@@ -36,17 +40,72 @@ class JobRepository:
         cursor = self._conn.execute(
             """INSERT INTO processing_runs
                   (input_path, title, status, stage, stage_started_at,
-                   job_id, job_dir, started_at)
-               VALUES (?, ?, 'running', ?, ?, ?, ?, ?)""",
-            (input_path, title, JobState.PENDING.value, now, job_id, job_dir, now),
+                   job_id, job_dir, started_at, request_json, parent_run_id,
+                   attempt, heartbeat_at, last_active_stage)
+               VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                input_path,
+                title,
+                JobState.PENDING.value,
+                now,
+                job_id,
+                job_dir,
+                now,
+                json.dumps(request_snapshot or {}, ensure_ascii=False),
+                parent_run_id,
+                max(1, int(attempt)),
+                now,
+                JobState.PENDING.value,
+            ),
         )
         return cursor.lastrowid
 
     def update_stage(self, run_id: int, stage: JobState) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if stage.is_running or stage == JobState.PENDING:
+            self._conn.execute(
+                """UPDATE processing_runs
+                   SET stage = ?, last_active_stage = ?, stage_started_at = ?,
+                       heartbeat_at = ?
+                   WHERE id = ?""",
+                (stage.value, stage.value, now, now, run_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE processing_runs
+                   SET stage = ?, stage_started_at = ?, heartbeat_at = ?
+                   WHERE id = ?""",
+                (stage.value, now, now, run_id),
+            )
+
+    def update_progress(
+        self,
+        run_id: int,
+        stage: JobState,
+        progress: float,
+        message: str = "",
+    ) -> None:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        value = max(0.0, min(100.0, float(progress)))
         self._conn.execute(
-            "UPDATE processing_runs SET stage = ?, stage_started_at = ? WHERE id = ?",
-            (stage.value, now, run_id),
+            """UPDATE processing_runs
+               SET stage_started_at = CASE
+                       WHEN stage <> ? OR stage_started_at IS NULL THEN ?
+                       ELSE stage_started_at
+                   END,
+                   stage = ?, last_active_stage = ?, progress = ?,
+                   progress_message = ?, heartbeat_at = ?
+               WHERE id = ?""",
+            (
+                stage.value,
+                now,
+                stage.value,
+                stage.value,
+                value,
+                message or None,
+                now,
+                run_id,
+            ),
         )
 
     def complete_run(
@@ -65,10 +124,11 @@ class JobRepository:
                SET status = 'completed', stage = ?,
                    output_path = ?, transcript_path = ?,
                    elapsed_sec = ?, frames_count = ?,
-                   blocks_count = ?, note_id = ?, completed_at = ?
+                   blocks_count = ?, note_id = ?, completed_at = ?,
+                   progress = 100, progress_message = '任务完成', heartbeat_at = ?
                WHERE id = ?""",
             (JobState.COMPLETED.value, output_path, transcript_path,
-             elapsed_sec, frames_count, blocks_count, note_id, now, run_id),
+             elapsed_sec, frames_count, blocks_count, note_id, now, now, run_id),
         )
 
     def fail_run(self, run_id: int, error_message: str) -> None:
@@ -76,10 +136,22 @@ class JobRepository:
         self._conn.execute(
             """UPDATE processing_runs
                SET status = 'failed', stage = ?,
-                   error_message = ?, completed_at = ?
+                   error_message = ?, completed_at = ?, heartbeat_at = ?
                WHERE id = ?""",
-            (JobState.FAILED.value, error_message, now, run_id),
+            (JobState.FAILED.value, error_message, now, now, run_id),
         )
+
+    def mark_interrupted_runs(self, reason: str) -> int:
+        """Mark stale workers from a previous engine process as resumable."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = self._conn.execute(
+            """UPDATE processing_runs
+               SET status = 'interrupted', stage = ?, error_message = ?,
+                   interrupted_at = ?, completed_at = ?, heartbeat_at = ?
+               WHERE status IN ('running', 'pausing', 'cancelling')""",
+            (JobState.INTERRUPTED.value, reason, now, now, now),
+        )
+        return max(cursor.rowcount, 0)
 
     def request_stop(self, run_id: int, action: str) -> None:
         if action not in {"pause", "cancel"}:
@@ -122,9 +194,11 @@ class JobRepository:
                SET status = 'running',
                    error_message = NULL,
                    completed_at = NULL,
-                   stage_started_at = ?
+                   interrupted_at = NULL,
+                   stage = COALESCE(NULLIF(last_active_stage, ''), 'pending'),
+                   stage_started_at = ?, heartbeat_at = ?
                WHERE id = ?""",
-            (now, run_id),
+            (now, now, run_id),
         )
         return cursor.rowcount > 0
 

@@ -53,13 +53,13 @@ def main():
 
 
 def process_url(*args, **kwargs):
-    from src.core.pipeline.video_pipeline import process_url as _process_url
+    from src.application.pipeline.video_pipeline import process_url as _process_url
 
     return _process_url(*args, **kwargs)
 
 
 def process_local(*args, **kwargs):
-    from src.core.pipeline.video_pipeline import process_local as _process_local
+    from src.application.pipeline.video_pipeline import process_local as _process_local
 
     return _process_local(*args, **kwargs)
 

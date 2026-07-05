@@ -1,0 +1,15 @@
+# requirements/sidecar.txt — isolated packaged runtime
+#
+# This is intentionally smaller than the developer environment. Heavy optional
+# OCR/ML stacks (PaddleOCR, PaddlePaddle, Torch, ModelScope, etc.) are not part
+# of the core desktop installer; the application detects their absence and
+# exposes them as optional runtimes.
+-r base.txt
+-r vision.txt
+
+# Direct runtime imports used by the JSON-RPC engine and video pipeline.
+pydantic>=2.10,<3.0
+PyYAML>=6.0,<7.0
+psutil>=5.9,<8.0
+Pillow>=10.0,<13.0
+av>=12.0,<17.0

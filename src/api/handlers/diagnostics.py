@@ -1,117 +1,164 @@
-"""diagnostics.* RPC 处理器
+"""Runtime diagnostics handlers.
 
-系统检查与诊断信息收集。
+Diagnostics are deliberately lazy: optional heavy libraries are imported only
+when the user explicitly runs the doctor.  Exported bundles contain a safe
+allow-list of environment facts and never include API keys or the full process
+environment.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from src.api.protocol.errors import InternalError
-from src.config.constants import DEFAULT_SETTINGS_DIRNAME
+from src.config.settings import get_settings_path
 
 logger = logging.getLogger(__name__)
 
 
-def create_diagnostics_handlers(
-    output_dir: str = "./output",
-) -> dict[str, Any]:
-    """创建 diagnostics.* 方法处理器字典。"""
+def _result(name: str, status: str, detail: str) -> dict[str, str]:
+    return {"name": name, "status": status, "detail": detail}
 
-    def _check_python() -> dict[str, Any]:
-        try:
-            v = platform.python_version()
-            return {"name": "Python", "status": "passed", "detail": v}
-        except Exception as e:
-            return {"name": "Python", "status": "failed", "detail": str(e)}
 
-    def _check_ffmpeg() -> dict[str, Any]:
+def _module_available(name: str) -> bool:
+    """Return module availability even when a test stub has no __spec__."""
+    if name in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def create_diagnostics_handlers(output_dir: str = "./output") -> dict[str, Any]:
+    """Create doctor.run and diagnostics.bundle handlers."""
+
+    def _check_python() -> dict[str, str]:
+        return _result("Python", "pass", f"{platform.python_version()} ({sys.executable})")
+
+    def _check_ffmpeg() -> dict[str, str]:
+        executable = shutil.which("ffmpeg")
+        if not executable:
+            return _result("FFmpeg", "fail", "未在 PATH 中找到 ffmpeg")
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-version"],
-                capture_output=True, timeout=10,
+            completed = subprocess.run(
+                [executable, "-version"],
+                capture_output=True,
+                timeout=10,
+                check=False,
             )
-            if result.returncode == 0:
-                line = result.stdout.decode("utf-8", errors="replace").split("\n")[0]
-                return {"name": "FFmpeg", "status": "passed", "detail": line.strip()}
-            return {"name": "FFmpeg", "status": "failed", "detail": "exit code %d" % result.returncode}
-        except FileNotFoundError:
-            return {"name": "FFmpeg", "status": "failed", "detail": "ffmpeg not found in PATH"}
-        except Exception as e:
-            return {"name": "FFmpeg", "status": "failed", "detail": str(e)}
+            line = completed.stdout.decode("utf-8", errors="replace").splitlines()
+            if completed.returncode == 0:
+                return _result("FFmpeg", "pass", line[0] if line else executable)
+            return _result("FFmpeg", "fail", f"退出码 {completed.returncode}")
+        except Exception as exc:
+            return _result("FFmpeg", "fail", str(exc))
 
-    def _check_cuda() -> dict[str, Any]:
+    def _check_cuda() -> dict[str, str]:
+        if not _module_available("ctranslate2"):
+            return _result("CUDA", "warn", "未安装 ctranslate2，将无法使用 faster-whisper")
         try:
             import ctranslate2
-            count = ctranslate2.get_cuda_device_count()
+
+            count = int(ctranslate2.get_cuda_device_count())
             if count > 0:
-                return {"name": "CUDA", "status": "passed", "detail": f"{count} device(s) detected"}
-            return {"name": "CUDA", "status": "warning", "detail": "No CUDA devices found, using CPU"}
-        except ImportError:
-            return {"name": "CUDA", "status": "skipped", "detail": "ctranslate2 not installed"}
-        except Exception as e:
-            return {"name": "CUDA", "status": "warning", "detail": str(e)}
+                return _result("CUDA", "pass", f"检测到 {count} 个 CUDA 设备")
+            return _result("CUDA", "warn", "未检测到 CUDA 设备，将使用 CPU")
+        except Exception as exc:
+            return _result("CUDA", "warn", str(exc))
 
-    def _check_whisper_model() -> dict[str, Any]:
+    def _check_whisper() -> dict[str, str]:
+        if not _module_available("faster_whisper"):
+            return _result("faster-whisper", "fail", "未安装 faster-whisper")
+        return _result("faster-whisper", "pass", "Python 模块可导入")
+
+    def _check_ocr() -> dict[str, str]:
+        # OCR is optional.  Report capability without importing model weights.
+        candidates = ["paddleocr", "easyocr", "rapidocr_onnxruntime"]
+        available = [name for name in candidates if _module_available(name)]
+        if available:
+            return _result("OCR", "pass", "可用后端：" + ", ".join(available))
+        return _result("OCR", "warn", "未检测到可选 OCR 后端")
+
+    def _check_settings() -> dict[str, str]:
+        path = Path(get_settings_path())
+        if not path.is_file():
+            return _result("设置文件", "warn", f"尚未创建：{path}")
         try:
-            from faster_whisper import WhisperModel
-            # 只是检查导入，不加载模型
-            return {"name": "faster-whisper", "status": "passed", "detail": "library imported successfully"}
-        except ImportError:
-            return {"name": "faster-whisper", "status": "failed", "detail": "faster-whisper not installed"}
-        except Exception as e:
-            return {"name": "faster-whisper", "status": "warning", "detail": str(e)}
+            json.loads(path.read_text(encoding="utf-8"))
+            return _result("设置文件", "pass", str(path))
+        except Exception as exc:
+            return _result("设置文件", "fail", f"JSON 无法读取：{exc}")
 
-    def _check_settings_file() -> dict[str, Any]:
-        settings_dir = os.path.join(os.path.expanduser("~"), DEFAULT_SETTINGS_DIRNAME)
-        settings_file = os.path.join(settings_dir, "settings.json")
-        if os.path.isfile(settings_file):
-            return {"name": "Settings file", "status": "passed", "detail": settings_file}
-        return {"name": "Settings file", "status": "warning", "detail": f"Not found at {settings_file}"}
-
-    def _check_output_dir() -> dict[str, Any]:
-        out = os.path.abspath(output_dir)
-        if os.path.isdir(out):
-            return {"name": "Output directory", "status": "passed", "detail": out}
+    def _check_output_dir() -> dict[str, str]:
+        path = Path(output_dir).expanduser().resolve()
         try:
-            os.makedirs(out, exist_ok=True)
-            return {"name": "Output directory", "status": "passed", "detail": f"{out} (created)"}
-        except Exception as e:
-            return {"name": "Output directory", "status": "failed", "detail": str(e)}
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return _result("输出目录", "pass", str(path))
+        except Exception as exc:
+            return _result("输出目录", "fail", str(exc))
 
-    def handle_doctor_run(params: dict[str, Any]) -> dict[str, Any]:
-        """doctor.run — 运行系统健康检查。"""
-        checks = [
+    def _run_checks() -> list[dict[str, str]]:
+        return [
             _check_python(),
             _check_ffmpeg(),
             _check_cuda(),
-            _check_whisper_model(),
-            _check_settings_file(),
+            _check_whisper(),
+            _check_ocr(),
+            _check_settings(),
             _check_output_dir(),
         ]
-        all_passed = all(c["status"] == "passed" for c in checks)
-        return {
-            "all_passed": all_passed,
-            "checks": checks,
-        }
 
-    def handle_bundle(params: dict[str, Any]) -> dict[str, Any]:
-        """diagnostics.bundle — 生成诊断信息包。"""
-        import json
-        import platform
+    def handle_doctor_run(params: dict[str, Any]) -> list[dict[str, str]]:
+        return _run_checks()
 
+    def handle_bundle(params: dict[str, Any]) -> str:
+        checks = _run_checks()
         bundle = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "platform": platform.platform(),
+            "machine": platform.machine(),
             "python_version": platform.python_version(),
-            "engine_version": "1.2.0",
-            "checks": handle_doctor_run({}),
-            "environment": dict(os.environ) if params.get("include_env", False) else {},
+            "python_executable": sys.executable,
+            "checks": checks,
+            "summary": {
+                "pass": sum(item["status"] == "pass" for item in checks),
+                "warn": sum(item["status"] == "warn" for item in checks),
+                "fail": sum(item["status"] == "fail" for item in checks),
+            },
         }
-        return bundle
+        target_dir = Path(output_dir).expanduser().resolve() / "diagnostics"
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = target_dir / f"video-notes-diagnostics-{timestamp}.json"
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(bundle, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, target)
+            return str(target)
+        except Exception as exc:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            logger.exception("Failed to create diagnostics bundle")
+            raise InternalError(str(exc)) from exc
 
     return {
         "doctor.run": handle_doctor_run,

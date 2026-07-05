@@ -7,23 +7,32 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from src.api.protocol.errors import InternalError, InvalidParams
 
 logger = logging.getLogger(__name__)
 
 
-def _get_collection_service(output_dir: str = "./output"):
-    """获取 CollectionService 实例（每次调用新建连接）。"""
+@contextmanager
+def _collection_service(output_dir: str = "./output") -> Iterator[Any]:
+    """Yield a CollectionService with a live, correctly-owned DB connection.
+
+    Do not call ``gateway.connection().__enter__()`` on a temporary context
+    manager.  On CPython that temporary may be finalized immediately, which
+    runs ``__exit__`` and closes the SQLite connection before the handler uses
+    it (``Cannot operate on a closed database``).
+    """
     from src.application.services.job_queue import get_default_db_path
     from src.infrastructure.db.gateway import DatabaseGateway
+    from src.application.collections.service import CollectionService
+
     db_path = get_default_db_path(output_dir)
     gateway = DatabaseGateway(db_path)
     gateway.initialize()
-    conn = gateway.connection().__enter__()
-    from src.application.collections.service import CollectionService
-    return CollectionService(conn), conn
+    with gateway.connection() as conn:
+        yield CollectionService(conn)
 
 
 def create_collections_handlers(
@@ -31,14 +40,13 @@ def create_collections_handlers(
 ) -> dict[str, Any]:
     """创建 collection.* 方法处理器字典。"""
 
-    def _ensure_service(params: dict[str, Any]) -> tuple[Any, Any]:
+    def _service_context(params: dict[str, Any]):
         od = params.get("output_dir", output_dir)
-        return _get_collection_service(od)
+        return _collection_service(od)
 
     def handle_list(params: dict[str, Any]) -> list[dict[str, Any]]:
         """collection.list — 列出所有集合。"""
-        svc, conn = _ensure_service(params)
-        try:
+        with _service_context(params) as svc:
             records = svc.list_collections()
             return [
                 {
@@ -49,8 +57,6 @@ def create_collections_handlers(
                 }
                 for r in records
             ]
-        finally:
-            conn.close()
 
     def handle_get(params: dict[str, Any]) -> dict[str, Any]:
         """collection.get — 获取集合详情。"""
@@ -58,8 +64,7 @@ def create_collections_handlers(
         if not collection_id:
             raise InvalidParams("collection_id is required")
 
-        svc, conn = _ensure_service(params)
-        try:
+        with _service_context(params) as svc:
             record = svc.get_collection(collection_id)
             if record is None:
                 raise InternalError(f"Collection not found: {collection_id}")
@@ -77,8 +82,6 @@ def create_collections_handlers(
                 "status": "active",
                 "created_at": record.created_at,
             }
-        finally:
-            conn.close()
 
     def handle_create(params: dict[str, Any]) -> dict[str, Any]:
         """collection.create — 创建新集合。"""
@@ -86,8 +89,7 @@ def create_collections_handlers(
         if not title:
             raise InvalidParams("title is required")
 
-        svc, conn = _ensure_service(params)
-        try:
+        with _service_context(params) as svc:
             record = svc.create_collection(
                 title=title,
                 collection_type=params.get("collection_type", "course"),
@@ -98,8 +100,6 @@ def create_collections_handlers(
                 "id": record.collection_id,
                 "name": record.title,
             }
-        finally:
-            conn.close()
 
     def handle_delete(params: dict[str, Any]) -> bool:
         """collection.delete — 删除集合。"""
@@ -107,13 +107,8 @@ def create_collections_handlers(
         if not collection_id:
             raise InvalidParams("collection_id is required")
 
-        svc, conn = _ensure_service(params)
-        try:
-            svc.delete_collection(collection_id)
-            conn.commit()
-            return True
-        finally:
-            conn.close()
+        with _service_context(params) as svc:
+            return svc.delete_collection(collection_id)
 
     def handle_list_items(params: dict[str, Any]) -> list[dict[str, Any]]:
         """collection.list_items — 列出集合中的条目。"""
@@ -121,8 +116,7 @@ def create_collections_handlers(
         if not collection_id:
             raise InvalidParams("collection_id is required")
 
-        svc, conn = _ensure_service(params)
-        try:
+        with _service_context(params) as svc:
             items = svc.get_items(collection_id)
             return [
                 {
@@ -135,8 +129,6 @@ def create_collections_handlers(
                 }
                 for item in items
             ]
-        finally:
-            conn.close()
 
     return {
         "collection.list": handle_list,

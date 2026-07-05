@@ -21,10 +21,6 @@ from src.application.services.job_queue import (
     get_default_db_path,
 )
 from src.application.services.cleanup_manager import CleanupManager
-from src.application.services.media_resolver import MediaResolver
-from src.application.services.transcription import TranscriptionService
-from src.application.services.note_service import NoteService
-from src.application.services.artifact_writer import ArtifactWriter
 from src.application.pipeline.context import ProcessingContext, ProgressCallback
 from src.application.pipeline.runner import StageRunner, FileManifestStore
 
@@ -78,11 +74,24 @@ class PipelineOrchestrator:
     """
 
     def __init__(self):
-        self.media = MediaResolver()
-        self.transcription = TranscriptionService()
-        self.notes_service = NoteService()
-        self.writer = ArtifactWriter()
+        # Optional/heavy providers are loaded only when a real task starts.
+        # This keeps system.info, settings and diagnostics available even when
+        # yt-dlp, faster-whisper or CUDA components are not installed yet.
+        self.media = None
+        self.transcription = None
+        self.notes_service = None
+        self.writer = None
         self.cleanup = CleanupManager()
+
+    def _ensure_runtime_services(self) -> None:
+        if self.media is None:
+            from src.application.services.media_resolver import MediaResolver
+
+            self.media = MediaResolver()
+        if self.writer is None:
+            from src.application.services.artifact_writer import ArtifactWriter
+
+            self.writer = ArtifactWriter()
 
     def _cleanup_owned_files(self, ctx: ProcessingContext) -> None:
         """清理当前任务明确拥有的兼容临时路径。
@@ -130,6 +139,8 @@ class PipelineOrchestrator:
         from src.application.pipeline.stages.write_artifacts import WriteArtifactsStage
         from src.application.pipeline.stages.index_provenance import IndexProvenanceStage
 
+        self._ensure_runtime_services()
+
         t_start = _time.time()
         audio_path = None
         video_path = None
@@ -167,6 +178,7 @@ class PipelineOrchestrator:
             owned_files=[],
             progress=_progress_cb,
             cancel_token=cancel_token,
+            emit_console_progress=False,
         )
 
         _runner = StageRunner(FileManifestStore())
@@ -241,7 +253,7 @@ class PipelineOrchestrator:
                     raise RuntimeError(
                         "视觉 API Key 未配置：请在 设置 → 视觉识别 → API Key 中填入"
                     )
-                vision_provider = ProviderFactory().create(request.vision_llm_config())
+                vision_provider = ProviderFactory().create_vision(request.vision_llm_config())
                 logger.info(f"🔑 视觉 provider: {request.vision_provider}"
                       f"{f' @ {request.vision_base_url}' if request.vision_base_url else ''}"
                       f"  model={request.vision_model or '(默认)'}")

@@ -1,0 +1,26 @@
+id: study
+name: 学习笔记
+description: 适合课程、自学视频和知识讲解，强调概念、推导与复习。
+version: 1
+prompt: 你是学习教练。根据材料制作可复习的中文 Markdown 笔记，准确解释概念与术语，呈现知识之间的关系、示例、易错点和自测问题。不要把推测写成原讲者结论。
+sections:
+- id: objectives
+  title: 学习目标
+  required: true
+- id: concepts
+  title: 核心概念
+  required: true
+- id: explanation
+  title: 知识讲解
+  required: true
+- id: examples
+  title: 示例与应用
+  required: false
+- id: review
+  title: 复习清单
+  required: true
+output:
+  format: markdown
+  with_timestamps: true
+  with_citations: false
+  language: zh-CN

@@ -28,6 +28,8 @@ class TranscriptionOptions:
     language: str | None = None
     beam_size: int = 5
     vad_filter: bool = False
+    whisper_device: str = "auto"  # auto | cuda | cpu
+    whisper_compute_type: str = "auto"  # auto | float16 | int8_float16 | int8 | float32
 
 
 @dataclass
@@ -124,6 +126,8 @@ class PipelineRequest:
         "language": ("transcription", "language"),
         "beam_size": ("transcription", "beam_size"),
         "vad_filter": ("transcription", "vad_filter"),
+        "whisper_device": ("transcription", "whisper_device"),
+        "whisper_compute_type": ("transcription", "whisper_compute_type"),
         # notes
         "gpt_model": ("notes", "gpt_model"),
         "api_key": ("notes", "api_key"),
@@ -218,6 +222,16 @@ class PipelineRequest:
     def vad_filter(self) -> bool: return self.transcription.vad_filter
     @vad_filter.setter
     def vad_filter(self, v: bool): self.transcription.vad_filter = v
+
+    @property
+    def whisper_device(self) -> str: return self.transcription.whisper_device
+    @whisper_device.setter
+    def whisper_device(self, v: str): self.transcription.whisper_device = v
+
+    @property
+    def whisper_compute_type(self) -> str: return self.transcription.whisper_compute_type
+    @whisper_compute_type.setter
+    def whisper_compute_type(self, v: str): self.transcription.whisper_compute_type = v
 
     @property
     def gpt_model(self) -> str: return self.notes.gpt_model

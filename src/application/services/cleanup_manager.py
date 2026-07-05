@@ -22,9 +22,14 @@ class CleanupManager:
 
     @staticmethod
     def create_job_dir(base_output_dir: str) -> str:
-        """在 ``<output>/.jobs/<uuid>/`` 创建任务工作目录。"""
+        """Create a private resumable workspace under AppData ``.jobs``.
+
+        ``base_output_dir`` is kept for API compatibility; final products are
+        written there later by ArtifactWriter, while checkpoints stay private.
+        """
+        from src.application.services.job_queue import get_default_jobs_root
         job_id = str(uuid.uuid4())
-        job_dir = Path(base_output_dir) / ".jobs" / job_id
+        job_dir = Path(get_default_jobs_root()) / job_id
         (job_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         (job_dir / "temp").mkdir(parents=True, exist_ok=True)
         return str(job_dir)
@@ -100,22 +105,23 @@ class CleanupManager:
             logger.warning("⛔ CleanupManager 拒绝清理非任务目录: %s", job_dir)
             return False
 
-        temp_dir = boundary / "temp"
-        if not temp_dir.exists():
-            return True
-
-        try:
-            shutil.rmtree(temp_dir)
-        except OSError as exc:
-            logger.warning("⚠️  临时文件清理失败: %s", exc)
-            return False
-
-        if temp_dir.exists():
-            logger.warning("⚠️  临时目录清理后仍然存在: %s", temp_dir)
-            return False
-
-        logger.info("🗑️  已清理临时文件 (temp/)")
-        return True
+        targets = [boundary / "temp", boundary / ".temp_frames"]
+        success = True
+        for temp_dir in targets:
+            if not temp_dir.exists():
+                continue
+            try:
+                shutil.rmtree(temp_dir)
+            except OSError as exc:
+                logger.warning("⚠️  临时文件清理失败 (%s): %s", temp_dir.name, exc)
+                success = False
+                continue
+            if temp_dir.exists():
+                logger.warning("⚠️  临时目录清理后仍然存在: %s", temp_dir)
+                success = False
+        if success:
+            logger.info("🗑️  已清理任务临时文件")
+        return success
 
     @classmethod
     def cleanup_job(cls, job_dir: str | None, label: str = "任务临时目录") -> bool:

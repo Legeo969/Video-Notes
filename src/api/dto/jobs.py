@@ -17,7 +17,7 @@ class JobInfo(BaseModel):
     job_id: str                 # UUID
     title: str | None = None
     input: str
-    status: str = "pending"     # pending / running / paused / completed / failed / cancelled
+    status: str = "pending"     # pending / running / paused / interrupted / completed / failed / cancelled
     stage: str = "pending"      # 当前执行阶段
     progress: float = 0.0       # 0-100
     created_at: str | None = None  # ISO 8601
@@ -28,6 +28,11 @@ class JobInfo(BaseModel):
     transcript_path: str | None = None
     frames_count: int = 0
     note_id: int | None = None
+    progress_message: str | None = None
+    last_active_stage: str | None = None
+    attempt: int = 1
+    parent_run_id: int | None = None
+    can_resume: bool = False
 
 
 class JobStartRequest(BaseModel):

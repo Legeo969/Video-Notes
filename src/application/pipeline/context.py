@@ -56,6 +56,10 @@ class ProcessingContext:
     owned_files: list[str] = field(default_factory=list)
     progress: ProgressCallback | None = None
     cancel_token: CancellationToken | None = None
+    # Direct CLI/test contexts may show human-readable progress.  The stdio
+    # engine explicitly disables this because stdout is reserved for framed
+    # JSON-RPC messages.
+    emit_console_progress: bool = True
 
     def check_cancelled(self) -> None:
         """检查取消令牌，若已取消则抛出 TaskCancelledError。"""
@@ -71,5 +75,7 @@ class ProcessingContext:
             percent: 进度百分比（0-100）。
         """
         logger.info("[%s] %s", stage, message)
+        if self.emit_console_progress:
+            print(f"[{stage}] {message} ({percent}%)")
         if self.progress is not None:
             self.progress(stage, message, percent)

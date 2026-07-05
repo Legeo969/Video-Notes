@@ -6,22 +6,6 @@ from src.domain.interfaces.provider import Provider, ProviderConfig
 from src.infrastructure.providers.ocr_adapter import OCRProvider
 
 
-class _LLMProviderAdapter(Provider):
-    """将 LLMProvider 实例适配为 Provider 接口。"""
-
-    def __init__(self, config: ProviderConfig, inner: LLMProvider):
-        super().__init__(config)
-        self._inner = inner
-
-    def chat(self, messages: list[dict], **kwargs):
-        if "model" not in kwargs:
-            kwargs["model"] = self.config.model or self._inner.DEFAULT_MODEL
-        return self._inner.chat(messages, **kwargs)
-
-    def embed(self, texts: list[str], **kwargs):
-        return self._inner.embed(texts, **kwargs)
-
-
 def _resolve_provider_name(config) -> str:
     """从 config 对象解析归一化的 provider 名称。
 
@@ -36,21 +20,13 @@ def _resolve_provider_name(config) -> str:
 
 
 class ProviderFactory:
-    def create(self, config) -> Provider:
+    def create(self, config) -> LLMProvider:
         provider_name = _resolve_provider_name(config)
-        llm_provider = get_provider(
+        return get_provider(
             provider_name,
             api_key=config.api_key,
             base_url=config.base_url,
         )
-        # 构建 base 层 ProviderConfig 供 Provider 接口使用
-        provider_config = ProviderConfig(
-            provider=provider_name,
-            api_key=config.api_key,
-            base_url=config.base_url,
-            model=config.model,
-        )
-        return _LLMProviderAdapter(config=provider_config, inner=llm_provider)
 
     def create_vision(self, config) -> Provider:
         """创建 VisionProvider 实例。"""

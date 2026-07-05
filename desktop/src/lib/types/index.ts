@@ -1,12 +1,49 @@
 export type PageName = "process" | "tasks" | "notes" | "collections" | "settings";
 
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "pausing"
+  | "cancelling"
+  | "paused"
+  | "interrupted"
+  | "failed"
+  | "cancelled"
+  | "completed";
+
 export interface JobInfo {
   id: number;
-  title: string;
-  status: string;
-  progress: number;
+  job_id: string;
+  title: string | null;
+  status: JobStatus | string;
+  progress: number; // 0..100
+  progress_message?: string | null;
   stage: string;
+  last_active_stage?: string | null;
   input: string;
+  created_at?: string | null;
+  completed_at?: string | null;
+  elapsed_sec?: number;
+  error_message?: string | null;
+  output_path?: string | null;
+  transcript_path?: string | null;
+  frames_count?: number;
+  note_id?: number | null;
+  attempt?: number;
+  parent_run_id?: number | null;
+  can_resume?: boolean;
+  heartbeat_at?: string | null;
+}
+
+export interface JobProgressEvent {
+  event_id: number;
+  job_id: number;
+  stable_job_id?: string | null;
+  status: JobStatus | string;
+  stage: string;
+  progress: number;
+  message: string;
+  timestamp?: string | null;
 }
 
 export interface NoteInfo {
@@ -16,7 +53,6 @@ export interface NoteInfo {
   created_at: string;
 }
 
-/** Full note detail returned by notes.get */
 export interface NoteDetail {
   id: number;
   title: string;
@@ -38,6 +74,9 @@ export interface ProviderProfile {
   api_key_preview: string;
   base_url: string;
   model: string;
+  vision_model?: string;
+  models?: string[];
+  active?: boolean;
 }
 
 export interface RpcRequest {

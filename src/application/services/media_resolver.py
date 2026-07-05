@@ -9,10 +9,34 @@ import time
 from src.application.services.cleanup_manager import CleanupManager
 from src.domain.types import PipelineRequest
 from src.infrastructure.video.audio_extractor import extract_audio
-from src.infrastructure.video.downloader import download_audio, download_video
 from src.utils.system import check_ffmpeg, check_ytdlp
 
 logger = logging.getLogger(__name__)
+
+def download_audio(*args, **kwargs):
+    """Lazy compatibility wrapper around the optional yt-dlp adapter."""
+    try:
+        from src.infrastructure.video.downloader import download_audio as _download_audio
+    except ModuleNotFoundError as exc:
+        if exc.name == "yt_dlp":
+            raise RuntimeError(
+                "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
+            ) from exc
+        raise
+    return _download_audio(*args, **kwargs)
+
+
+def download_video(*args, **kwargs):
+    """Lazy compatibility wrapper around the optional yt-dlp adapter."""
+    try:
+        from src.infrastructure.video.downloader import download_video as _download_video
+    except ModuleNotFoundError as exc:
+        if exc.name == "yt_dlp":
+            raise RuntimeError(
+                "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
+            ) from exc
+        raise
+    return _download_video(*args, **kwargs)
 
 
 class MediaResolver:
@@ -69,6 +93,8 @@ class MediaResolver:
         is_url = request.input.startswith(("http://", "https://"))
 
         if is_url:
+            # Module-level wrappers import the optional Python adapter only
+            # when an online job actually starts.
             if not check_ytdlp():
                 raise RuntimeError("yt-dlp 不可用，无法下载视频")
             if not check_ffmpeg():
@@ -77,7 +103,7 @@ class MediaResolver:
             need_video = request.vision_enabled or request.ocr_enabled
             if need_video:
                 started = time.time()
-                video_path = download_video(request.input, temp_dir)
+                video_path = download_video(request.input, temp_dir, cookies=request.bilibili_cookies)
                 logger.info("⏱  视频下载耗时: %.1fs", time.time() - started)
 
                 started = time.time()
@@ -90,7 +116,7 @@ class MediaResolver:
                 return audio_path, video_path, owned_files
 
             started = time.time()
-            audio_path = download_audio(request.input, temp_dir)
+            audio_path = download_audio(request.input, temp_dir, cookies=request.bilibili_cookies)
             logger.info("⏱  音频下载耗时: %.1fs", time.time() - started)
             return audio_path, None, owned_files
 

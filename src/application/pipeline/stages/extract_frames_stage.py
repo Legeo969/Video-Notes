@@ -97,7 +97,7 @@ class ExtractFramesStage:
             ]
             frames = extract_frames(
                 video_path,
-                os.path.join(ctx.job_dir, "temp"),
+                os.path.join(ctx.job_dir, ".temp_frames"),
                 interval_sec=ctx.request.frame_interval,
                 mode=ctx.request.frame_mode,
                 max_frames=ctx.request.max_frames,
@@ -105,7 +105,8 @@ class ExtractFramesStage:
             )
             if frames and ctx.request.ocr_enabled:
                 logger.info("🔍 OCR: 识别 %d 帧...", len(frames))
-                _run_ocr(frames)
+                from src.application.services.frame_service import FrameService
+                FrameService()._analyze_ocr(frames)
 
         return StageResult(
             outputs={"frames": frames}

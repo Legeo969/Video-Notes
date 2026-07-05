@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 
+const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 /// Content-Length framed JSON-RPC 2.0 message (request).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RpcRequest {
@@ -94,6 +96,13 @@ pub fn read_frame(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
         )
     })?;
 
+    if len > MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes (max {MAX_FRAME_BYTES})"),
+        ));
+    }
+
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     Ok(body)
@@ -101,6 +110,12 @@ pub fn read_frame(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
 
 /// Write `data` as a Content-Length framed message to `writer`.
 pub fn write_frame<W: Write>(writer: &mut W, data: &[u8]) -> std::io::Result<()> {
+    if data.len() > MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("frame too large: {} bytes (max {MAX_FRAME_BYTES})", data.len()),
+        ));
+    }
     let header = format!("Content-Length: {}\r\n\r\n", data.len());
     writer.write_all(header.as_bytes())?;
     writer.write_all(data)?;

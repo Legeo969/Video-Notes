@@ -535,7 +535,7 @@ def extract_frames(
 
     mode 语义：
     - ``fixed``  : 按固定间隔 + max_frames 直接提帧，**跳过** scene detect（快速）
-    - ``auto``   : scene detect + transcript keywords 智能提帧（max_frames 为软上限）
+    - ``auto``   : scene detect + transcript keywords 智能提帧（严格遵守 max_frames）
     - ``disabled``: 不提帧，返回空列表
 
     Args:
@@ -543,7 +543,7 @@ def extract_frames(
         output_dir: 帧输出目录
         interval_sec: 提取间隔（秒），默认 30。为 0 时直接返回空列表
         mode: 提帧模式（fixed / auto / disabled）
-        max_frames: 最多保留的帧数（auto 模式下默认 200 软上限）
+        max_frames: 最多保留的帧数（fixed / auto 均为硬上限）
         transcript_segments: 转录片段列表，auto 模式下用于关键词时间点融合
 
     Returns:
@@ -554,10 +554,6 @@ def extract_frames(
     """
     if interval_sec <= 0 or mode == "disabled":
         return []
-
-    # auto 模式：解除硬性帧数上限（默认 200 软上限，让场景检测决定帧数）
-    if mode == "auto" and max_frames <= 30:
-        max_frames = 200
 
     os.makedirs(output_dir, exist_ok=True)
 

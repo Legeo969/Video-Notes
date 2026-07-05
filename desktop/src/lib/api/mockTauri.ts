@@ -14,9 +14,9 @@
 // ── Mock data ──────────────────────────────────────────
 
 const mockJobs = [
-  { id: 1, title: "Transformer 架构详解", status: "completed", progress: 1.0, stage: "done", input: "https://youtube.com/watch?v=xxx", created_at: "2026-07-04T10:00:00Z" },
-  { id: 2, title: "LLM 推理优化实践", status: "running", progress: 0.65, stage: "transcribing", input: "https://youtube.com/watch?v=yyy", created_at: "2026-07-05T08:30:00Z" },
-  { id: 3, title: "本地视频测试", status: "paused", progress: 0.3, stage: "extracting_frames", input: "C:\\videos\\test.mp4", created_at: "2026-07-05T09:00:00Z" },
+  { id: 1, title: "Transformer 架构详解", status: "completed", progress: 100, stage: "done", input: "https://youtube.com/watch?v=xxx", created_at: "2026-07-04T10:00:00Z" },
+  { id: 2, title: "LLM 推理优化实践", status: "running", progress: 65, stage: "transcribing", input: "https://youtube.com/watch?v=yyy", created_at: "2026-07-05T08:30:00Z" },
+  { id: 3, title: "本地视频测试", status: "paused", progress: 30, stage: "extracting_frames", input: "C:\\videos\\test.mp4", created_at: "2026-07-05T09:00:00Z" },
 ];
 
 const mockNotes: any[] = [
@@ -110,6 +110,42 @@ const mockCollections = [
   { id: 2, name: "LLM 相关", item_count: 3, status: "processing" },
 ];
 
+const mockProviders: any[] = [
+  {
+    name: "默认",
+    provider: "mimo",
+    api_key_configured: true,
+    api_key_preview: "sk-****8fa2",
+    base_url: "",
+    model: "mimo-v2.5",
+    vision_model: "mimo-v2.5",
+    models: ["mimo-v2.5"],
+    active: true,
+  },
+];
+
+const mockTemplates = [
+  { id: "default", name: "通用总结", description: "适合一般视频内容", path: "builtin://default" },
+  { id: "study", name: "学习笔记", description: "适合课程与知识讲解", path: "builtin://study" },
+  { id: "meeting", name: "会议纪要", description: "适合会议和复盘", path: "builtin://meeting" },
+];
+
+let mockSettings: any = {
+  output_dir: "./output",
+  whisper_model: "large-v3",
+  whisper_model_dir: "",
+  model_dir: "",
+  language: "",
+  frame_interval: 30,
+  frame_mode: "fixed",
+  max_frames: 30,
+  ocr_enabled: false,
+  vision_enabled: false,
+  template: "default",
+  template_id: "default",
+  active_provider: "默认",
+};
+
 // ── Mock responses ─────────────────────────────────────
 
 const mockResponses: Record<string, (params: any) => any> = {
@@ -123,8 +159,37 @@ const mockResponses: Record<string, (params: any) => any> = {
   }),
   "system.ping": () => "pong",
   "process.list": () => mockJobs,
-  "process.get": (params: { id: number }) => mockJobs.find(j => j.id === params.id) || null,
-  "process.start": (params: any) => ({ job_id: Date.now(), ...params }),
+  "process.get": (params: { job_id: number }) => mockJobs.find(j => j.id === params.job_id) || null,
+  "process.start": (params: any) => {
+    const id = Date.now();
+    mockJobs.unshift({
+      id,
+      job_id: `mock-${id}`,
+      title: params.title || null,
+      status: "running",
+      progress: 0,
+      stage: "pending",
+      input: params.input,
+      created_at: new Date().toISOString(),
+    } as any);
+    return { job_id: id };
+  },
+  "process.pause": (params: { job_id: number }) => {
+    const job = mockJobs.find(j => j.id === params.job_id);
+    if (job) job.status = "paused";
+    return true;
+  },
+  "process.cancel": (params: { job_id: number }) => {
+    const job = mockJobs.find(j => j.id === params.job_id);
+    if (job) job.status = "cancelled";
+    return true;
+  },
+  "process.resume": (params: { job_id: number }) => {
+    const job = mockJobs.find(j => j.id === params.job_id);
+    if (job) job.status = "running";
+    return { job_id: params.job_id };
+  },
+  "process.retry": (params: { job_id: number }) => ({ job_id: params.job_id + 1000 }),
   "notes.list": () => mockNotes,
   "notes.get": (params: { id: number }) => {
     const note = mockNotes.find(n => n.id === params.id);
@@ -156,20 +221,73 @@ const mockResponses: Record<string, (params: any) => any> = {
   },
   "collection.list": () => mockCollections,
   "collection.get": (params: { id: number }) => mockCollections.find(c => c.id === params.id) || null,
-  "settings.get": () => ({
-    output_dir: "./output",
-    model_dir: "",
-    whisper_model: "large-v3",
-    language: "",
-    frame_interval: 30,
-    frame_mode: "fixed",
-    max_frames: 30,
-    ocr_enabled: false,
-    vision_enabled: false,
-    providers: [
-      { name: "默认", provider: "mimo", api_key_configured: true, api_key_preview: "sk-****8fa2", base_url: "", model: "mimo-v2.5" },
-    ],
-  }),
+  "settings.get": () => ({ ...mockSettings, providers: mockProviders }),
+  "settings.update": (params: any) => {
+    mockSettings = { ...mockSettings, ...(params?.patches ?? params ?? {}) };
+    if (mockSettings.template) mockSettings.template_id = mockSettings.template;
+    return true;
+  },
+  "settings.providers.list": () => mockProviders,
+  "settings.providers.create": (params: any) => {
+    const profile = {
+      name: params.name,
+      provider: params.provider ?? "openai_compat",
+      api_key_configured: Boolean(params.api_key),
+      api_key_preview: params.api_key ? "sk-****mock" : "",
+      base_url: params.base_url ?? "",
+      model: params.model ?? "",
+      vision_model: params.vision_model ?? params.model ?? "",
+      models: [params.model, params.vision_model].filter(Boolean),
+      active: false,
+    };
+    mockProviders.push(profile);
+    return true;
+  },
+  "settings.providers.update": (params: any) => {
+    const profile = mockProviders.find(p => p.name === params.name);
+    if (profile) Object.assign(profile, params);
+    return true;
+  },
+  "settings.providers.delete": (params: any) => {
+    const index = mockProviders.findIndex(p => p.name === params.name);
+    if (index >= 0) mockProviders.splice(index, 1);
+    return true;
+  },
+  "settings.providers.set_active": (params: any) => {
+    mockSettings.active_provider = params.name;
+    mockProviders.forEach(p => p.active = p.name === params.name);
+    return true;
+  },
+  "settings.providers.test": () => ({ success: true, message: "Mock 连接成功" }),
+  "settings.providers.models": () => ["qwen-plus", "qwen-max", "qwen-vl-max", "gpt-4o"],
+  "settings.secret.set": (params: any) => {
+    const profile = mockProviders.find(p => p.name === params.provider);
+    if (profile) {
+      profile.api_key_configured = true;
+      profile.api_key_preview = "sk-****mock";
+    }
+    return true;
+  },
+  "settings.secret.delete": (params: any) => {
+    const profile = mockProviders.find(p => p.name === params.provider);
+    if (profile) {
+      profile.api_key_configured = false;
+      profile.api_key_preview = "";
+    }
+    return true;
+  },
+  "settings.templates.list": () => mockTemplates,
+  "settings.models.scan": () => ["small", "medium", "large-v3"],
+  "settings.models.local": () => [
+    { id: "small", path: "D:/models/faster-whisper-small", source: "configured" },
+    { id: "medium", path: "D:/models/faster-whisper-medium", source: "configured" },
+    { id: "large-v3-turbo", path: "D:/models/faster-whisper-large-v3-turbo", source: "configured" },
+  ],
+  "doctor.run": () => [
+    { name: "Python", status: "pass", detail: "3.13 (mock)" },
+    { name: "FFmpeg", status: "pass", detail: "mock" },
+  ],
+  "diagnostics.bundle": () => "./output/diagnostics/mock.json",
 };
 
 // ── Mock implementation ─────────────────────────────────
@@ -181,15 +299,15 @@ let eventIdCounter = 0;
 setInterval(() => {
   const running = mockJobs.find(j => j.status === "running");
   if (running) {
-    running.progress = Math.min(1, running.progress + 0.05);
+    running.progress = Math.min(100, running.progress + 5);
     const listeners = eventListeners["job.progress"] || [];
     listeners.forEach(fn => fn({
       event_id: ++eventIdCounter,
       job_id: running.id,
       stage: running.stage,
-      stage_progress: running.progress,
-      overall_progress: running.progress * 0.7,
-      message: `处理中... ${Math.round(running.progress * 100)}%`,
+      status: running.status,
+      progress: running.progress,
+      message: `处理中... ${Math.round(running.progress)}%`,
       timestamp: new Date().toISOString(),
     }));
   }

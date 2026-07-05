@@ -30,6 +30,8 @@ class TranscribeStage:
             "language": ctx.request.language,
             "beam_size": ctx.request.beam_size,
             "vad_filter": ctx.request.vad_filter,
+            "whisper_device": ctx.request.whisper_device,
+            "whisper_compute_type": ctx.request.whisper_compute_type,
         }
 
     @staticmethod
@@ -63,6 +65,8 @@ class TranscribeStage:
             transcriber = SpeechTranscriber(
                 model_size=ctx.request.whisper_model,
                 model_dir=ctx.request.model_dir,
+                device=ctx.request.whisper_device,
+                compute_type=ctx.request.whisper_compute_type,
             )
         else:
             transcriber = self._transcriber

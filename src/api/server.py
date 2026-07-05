@@ -16,6 +16,7 @@ from src.api.protocol import (
     send_response,
     send_error,
 )
+from src.api.protocol.framing import send_event
 from src.api.protocol.version import ENGINE_VERSION, PROTOCOL_VERSION
 from src.api.handlers.system import create_system_handlers
 from src.api.handlers.process import create_process_handlers
@@ -26,10 +27,32 @@ from src.api.handlers.diagnostics import create_diagnostics_handlers
 from src.api.event_journal import EventJournal
 from src.application.services.orchestrator import PipelineOrchestrator
 from src.application.services.job_queue import JobQueue, get_default_db_path
+from src.application.services.task_supervisor import TaskSupervisor
 
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_REQUESTED = False
+
+
+def _resolve_runtime_output_dir(output_dir: str | None = None) -> str:
+    """Return the user-configured output directory for all product RPC state.
+
+    The Tauri sidecar is launched from a private AppData working directory.
+    Using ``./output`` there creates a second invisible note index.  When the
+    caller has not supplied an explicit output dir, load the user setting so
+    process.*, notes.* and collections.* all point at the same database.
+    """
+    requested = (output_dir or "").strip() or "./output"
+    if requested not in {"./output", ".\\output", "output"}:
+        return requested
+    try:
+        from src.config.settings import get_settings_path, load_settings
+        configured = str(load_settings(get_settings_path()).get("output_dir") or "").strip()
+        if configured:
+            return configured
+    except Exception:
+        pass
+    return requested
 
 
 def _shutdown() -> None:
@@ -55,18 +78,58 @@ def create_dispatcher(
     Returns:
         配置好的 Dispatcher 实例。
     """
+    output_dir = _resolve_runtime_output_dir(output_dir)
+    db_path = get_default_db_path(output_dir)
     if orchestrator is None:
         orchestrator = PipelineOrchestrator()
     if job_queue is None:
-        db_path = get_default_db_path(output_dir)
         job_queue = JobQueue(db_path=db_path, output_dir=output_dir)
     if journal is None:
-        journal = EventJournal()
+        journal = EventJournal(db_path)
+
+    def _publish_job_event(run_id, stage, message, percent) -> None:
+        job = job_queue.get_job(run_id)
+        status = job.status if job is not None else stage.value
+        payload = {
+            "job_id": run_id,
+            "stable_job_id": job.job_id if job is not None else None,
+            "status": status,
+            "stage": stage.value,
+            "progress": float(percent),
+            "message": message,
+            "timestamp": job.heartbeat_at if job is not None else None,
+        }
+        terminal_events = {
+            "completed": "job.completed",
+            "failed": "job.failed",
+            "interrupted": "job.interrupted",
+            "paused": "job.paused",
+            "cancelled": "job.cancelled",
+        }
+        event_type = terminal_events.get(status, "job.progress")
+        event_id = journal.append(run_id, event_type, payload)
+        payload["event_id"] = event_id
+        # One stable frontend subscription for all lifecycle changes.
+        send_event("job.progress", payload)
+
+    job_queue.set_progress_callback(_publish_job_event)
+    supervisor = TaskSupervisor(orchestrator, job_queue)
+
+    # A new engine process cannot own workers from the previous process. Mark
+    # persisted live states as resumable before accepting frontend requests.
+    interrupted = job_queue.reconcile_interrupted_jobs()
+    if interrupted:
+        logger.warning("Marked %d stale job(s) as interrupted", interrupted)
 
     d = Dispatcher()
 
     d.register_all(create_system_handlers(shutdown_hook=_shutdown))
-    d.register_all(create_process_handlers(orchestrator, job_queue))
+    d.register_all(create_process_handlers(
+        orchestrator,
+        job_queue,
+        journal=journal,
+        supervisor=supervisor,
+    ))
     d.register_all(create_notes_handlers(
         db_path=get_default_db_path(output_dir),
         output_dir=output_dir,
@@ -93,6 +156,8 @@ def run_server(
     """
     global _SHUTDOWN_REQUESTED
     _SHUTDOWN_REQUESTED = False
+
+    output_dir = _resolve_runtime_output_dir(output_dir)
 
     if dispatcher is None:
         dispatcher = create_dispatcher(output_dir=output_dir)

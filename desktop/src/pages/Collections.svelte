@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { engineCall } from "../lib/api";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import { engineCall, runningInTauri } from "../lib/api";
   import type { CollectionInfo } from "../lib/types";
-
-  // ── Types ─────────────────────────────────────────────
+  import Icon from "../lib/components/Icon.svelte";
+  import PageHeader from "../lib/components/PageHeader.svelte";
+  import EmptyState from "../lib/components/EmptyState.svelte";
+  import StatusPill from "../lib/components/StatusPill.svelte";
 
   interface CollectionItem {
     id: number;
@@ -20,876 +23,438 @@
     items: CollectionItem[];
   }
 
-  // ── State ─────────────────────────────────────────────
-
   let collections = $state<CollectionInfo[]>([]);
   let selectedId = $state<number | null>(null);
   let detail = $state<CollectionDetail | null>(null);
   let loading = $state(false);
   let detailLoading = $state(false);
   let error = $state<string | null>(null);
+  let searchQuery = $state("");
 
-  // Create dialog
   let showCreateDialog = $state(false);
   let createName = $state("");
   let createItems = $state("");
   let creating = $state(false);
 
-  // Batch processing
   let processing = $state(false);
   let batchJobId = $state<string | null>(null);
   let batchProgress = $state<string>("");
-
-  // Export
   let exportPath = $state<string | null>(null);
-
-  // Confirm delete
   let confirmDeleteId = $state<number | null>(null);
-
-  // Add items to existing collection
   let showAddItems = $state(false);
   let addItemsText = $state("");
 
-  // ── Load collections ──────────────────────────────────
+  let filteredCollections = $derived.by(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return collections;
+    return collections.filter((collection) => collection.name.toLowerCase().includes(q));
+  });
+
+  let totalItems = $derived(collections.reduce((sum, collection) => sum + (collection.item_count || 0), 0));
+  let completedItems = $derived(detail?.items.filter((item) => item.status === "completed").length || 0);
 
   async function loadCollections() {
     loading = true;
     error = null;
     try {
       collections = await engineCall<CollectionInfo[]>("collection.list");
+      if (selectedId && !collections.some((item) => item.id === selectedId)) {
+        selectedId = null; detail = null;
+      }
     } catch (e) {
-      error = `加载合集列表失败: ${e}`;
+      error = `加载合集列表失败：${e}`;
       console.error(e);
-    } finally {
-      loading = false;
-    }
+    } finally { loading = false; }
   }
 
-  // ── Select collection ─────────────────────────────────
-
-  async function selectCollection(id: number) {
-    if (selectedId === id) return;
-    selectedId = id;
-    detailLoading = true;
-    detail = null;
-    exportPath = null;
-    batchJobId = null;
-    batchProgress = "";
-    try {
-      detail = await engineCall<CollectionDetail>("collection.get", { id });
-    } catch (e) {
-      error = `加载合集详情失败: ${e}`;
-      console.error(e);
-    } finally {
-      detailLoading = false;
-    }
+  async function selectCollection(id: number, force = false) {
+    if (selectedId === id && !force) return;
+    selectedId = id; detailLoading = true; detail = null; exportPath = null; batchJobId = null; batchProgress = "";
+    try { detail = await engineCall<CollectionDetail>("collection.get", { id }); }
+    catch (e) { error = `加载合集详情失败：${e}`; console.error(e); }
+    finally { detailLoading = false; }
   }
-
-  // ── Create collection ─────────────────────────────────
 
   async function createCollection() {
     if (!createName.trim() || !createItems.trim()) return;
     creating = true;
     try {
-      const items = createItems
-        .split("\n")
-        .map(l => l.trim())
-        .filter(l => l.length > 0);
-      await engineCall("collection.create", { name: createName.trim(), items });
-      showCreateDialog = false;
-      createName = "";
-      createItems = "";
-      await loadCollections();
-    } catch (e) {
-      error = `创建合集失败: ${e}`;
-      console.error(e);
-    } finally {
-      creating = false;
-    }
+      const items = createItems.split("\n").map((line) => line.trim()).filter(Boolean);
+      const result = await engineCall<{ id?: number }>("collection.create", { name: createName.trim(), items });
+      showCreateDialog = false; createName = ""; createItems = ""; await loadCollections();
+      if (result?.id) await selectCollection(result.id);
+    } catch (e) { error = `创建合集失败：${e}`; }
+    finally { creating = false; }
   }
-
-  // ── Delete collection ─────────────────────────────────
 
   async function deleteCollection(id: number) {
     try {
       await engineCall("collection.delete", { id });
-      if (selectedId === id) {
-        selectedId = null;
-        detail = null;
-      }
-      confirmDeleteId = null;
-      await loadCollections();
-    } catch (e) {
-      error = `删除合集失败: ${e}`;
-      console.error(e);
-    }
+      if (selectedId === id) { selectedId = null; detail = null; }
+      confirmDeleteId = null; await loadCollections();
+    } catch (e) { error = `删除合集失败：${e}`; }
   }
-
-  // ── Add items to existing collection ──────────────────
 
   async function addItems() {
     if (!selectedId || !addItemsText.trim()) return;
     try {
-      const items = addItemsText
-        .split("\n")
-        .map(l => l.trim())
-        .filter(l => l.length > 0);
+      const items = addItemsText.split("\n").map((line) => line.trim()).filter(Boolean);
       await engineCall("collection.add_items", { id: selectedId, items });
-      addItemsText = "";
-      showAddItems = false;
-      await selectCollection(selectedId);
-    } catch (e) {
-      error = `添加条目失败: ${e}`;
-      console.error(e);
-    }
+      addItemsText = ""; showAddItems = false; await loadCollections(); await selectCollection(selectedId, true);
+    } catch (e) { error = `添加条目失败：${e}`; }
   }
-
-  // ── Remove item ───────────────────────────────────────
 
   async function removeItem(itemId: number) {
     if (!selectedId) return;
     try {
-      await engineCall("collection.remove_items", {
-        id: selectedId,
-        item_ids: [itemId],
-      });
-      await selectCollection(selectedId);
-    } catch (e) {
-      error = `移除条目失败: ${e}`;
-      console.error(e);
-    }
+      await engineCall("collection.remove_items", { id: selectedId, item_ids: [itemId] });
+      await loadCollections(); await selectCollection(selectedId, true);
+    } catch (e) { error = `移除条目失败：${e}`; }
   }
-
-  // ── Batch process ─────────────────────────────────────
 
   async function batchProcess() {
     if (!selectedId) return;
-    processing = true;
-    batchJobId = null;
-    batchProgress = "正在提交批量处理...";
+    processing = true; batchJobId = null; batchProgress = "正在提交批量处理…";
     try {
-      const result = await engineCall<{ batch_job_id: string }>(
-        "collection.batch_process",
-        { id: selectedId, opts: {} }
-      );
-      batchJobId = result.batch_job_id;
-      batchProgress = "批量处理已提交，请在任务页面查看进度";
-      await selectCollection(selectedId);
-    } catch (e) {
-      batchProgress = `批量处理失败: ${e}`;
-      console.error(e);
-    } finally {
-      processing = false;
-    }
+      const result = await engineCall<{ batch_job_id: string }>("collection.batch_process", { id: selectedId, opts: {} });
+      batchJobId = result.batch_job_id; batchProgress = "批量处理已提交，可在任务中心查看实时进度。";
+      await loadCollections(); await selectCollection(selectedId, true);
+    } catch (e) { batchProgress = `批量处理失败：${e}`; }
+    finally { processing = false; }
   }
-
-  // ── Export ────────────────────────────────────────────
 
   async function exportCollection() {
     if (!selectedId) return;
     try {
-      const result = await engineCall<{ path: string }>("collection.export", {
-        id: selectedId,
-      });
+      const result = await engineCall<{ path: string }>("collection.export", { id: selectedId });
       exportPath = result.path;
-    } catch (e) {
-      error = `导出失败: ${e}`;
-      console.error(e);
-    }
+    } catch (e) { error = `导出失败：${e}`; }
   }
-
-  // ── Import folder ─────────────────────────────────────
 
   async function importFolder() {
-    // Placeholder — Tauri dialog integration needed for real folder picker
-    const path = prompt("输入文件夹路径：");
-    if (!path || !path.trim()) return;
-    try {
-      await engineCall("collection.import_folder", { path: path.trim() });
-      await loadCollections();
-    } catch (e) {
-      error = `导入文件夹失败: ${e}`;
-      console.error(e);
+    let path: string | null = null;
+    if (runningInTauri()) {
+      const selected = await open({ multiple: false, directory: true });
+      if (typeof selected === "string") path = selected;
+    } else {
+      path = prompt("输入文件夹路径：");
     }
+    if (!path?.trim()) return;
+    try { await engineCall("collection.import_folder", { path: path.trim() }); await loadCollections(); }
+    catch (e) { error = `导入文件夹失败：${e}`; }
   }
 
-  // ── Helpers ───────────────────────────────────────────
-
   function statusLabel(status: string): string {
-    const map: Record<string, string> = {
-      completed: "已完成",
-      processing: "处理中",
-      pending: "等待中",
-      failed: "失败",
-      paused: "已暂停",
-      cancelled: "已取消",
-    };
+    const map: Record<string, string> = { completed: "已完成", processing: "处理中", pending: "等待中", failed: "失败", paused: "已暂停", cancelled: "已取消" };
     return map[status] || status;
   }
 
-  function statusClass(status: string): string {
-    return "status-" + status;
-  }
-
-  function itemStatusLabel(status: string): string {
-    return statusLabel(status);
-  }
-
-  // ── Init ──────────────────────────────────────────────
+  function fileName(path: string) { return path.split(/[\\/]/).pop() || path; }
+  function sourceIcon(path: string) { return path.startsWith("http") ? "link" : "video"; }
 
   $effect(() => { loadCollections(); });
 </script>
 
 <div class="page collections-page">
-  <!-- ── Top bar ─────────────────────────────────────── -->
-  <div class="top-bar">
-    <h2 class="page-title">合集</h2>
-    <div class="top-actions">
-      <button class="btn btn-secondary" onclick={() => importFolder()}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-        </svg>
-        导入文件夹
-      </button>
-      <button class="btn btn-primary" onclick={() => { showCreateDialog = true; }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        新建合集
-      </button>
-    </div>
-  </div>
+  <PageHeader
+    eyebrow="知识组织空间"
+    title="合集"
+    description="将同一课程、项目或主题下的视频统一组织，批量处理并导出完整知识库。"
+    icon="folder"
+  >
+    {#snippet actions()}
+      <button class="btn btn-secondary" onclick={importFolder}><Icon name="folder-open" size={15} />导入文件夹</button>
+      <button class="btn btn-primary" onclick={() => showCreateDialog = true}><Icon name="plus" size={15} />新建合集</button>
+    {/snippet}
+  </PageHeader>
 
-  <!-- ── Error banner ─────────────────────────────────── -->
+  <section class="collection-metrics">
+    <div class="metric surface"><span class="metric-icon collections"><Icon name="folder" size={19} /></span><div><strong>{collections.length}</strong><small>合集总数</small></div></div>
+    <div class="metric surface"><span class="metric-icon items"><Icon name="video" size={19} /></span><div><strong>{totalItems}</strong><small>媒体条目</small></div></div>
+    <div class="metric surface"><span class="metric-icon batch"><Icon name="activity" size={19} /></span><div><strong>{collections.filter((item) => item.status === "processing").length}</strong><small>批量处理中</small></div></div>
+  </section>
+
   {#if error}
-    <div class="error-banner">
-      <span>{error}</span>
-      <button class="error-close" onclick={() => error = null}>&times;</button>
-    </div>
+    <div class="alert alert-error collection-alert"><Icon name="alert" size={17} /><span>{error}</span><button onclick={() => error = null} aria-label="关闭错误"><Icon name="x" size={13} /></button></div>
   {/if}
 
-  <div class="layout-split">
-    <!-- ── Left panel: Collection list ───────────────── -->
-    <div class="list-panel">
-      {#if loading}
-        <div class="empty-state">加载中...</div>
-      {:else if collections.length === 0}
-        <div class="empty-state">
-          <p>暂无合集</p>
-          <p class="empty-hint">点击上方"新建合集"或"导入文件夹"开始</p>
-        </div>
-      {:else}
-        <div class="collection-list">
-          {#each collections as col (col.id)}
-            <button
-              class="collection-card"
-              class:selected={selectedId === col.id}
-              onclick={() => selectCollection(col.id)}
-            >
-              <div class="card-main">
-                <span class="card-name">{col.name}</span>
-                <span class={`status-badge ${statusClass(col.status)}`}>
-                  {statusLabel(col.status)}
-                </span>
-              </div>
-              <span class="card-count">{col.item_count} 条目</span>
+  <div class="collection-workspace surface">
+    <aside class="collection-sidebar">
+      <div class="collection-search input-wrap has-icon">
+        <span class="input-icon"><Icon name="search" size={15} /></span>
+        <input type="search" bind:value={searchQuery} placeholder="搜索合集" aria-label="搜索合集" />
+        {#if searchQuery}<button class="search-clear" onclick={() => searchQuery = ""} aria-label="清空搜索"><Icon name="x" size={13} /></button>{/if}
+      </div>
+
+      <div class="sidebar-label"><span>我的合集</span><em>{filteredCollections.length}</em></div>
+      <div class="collection-list">
+        {#if loading && collections.length === 0}
+          <div class="side-loading"><span class="loading-ring"></span><p>正在加载合集</p></div>
+        {:else if filteredCollections.length === 0}
+          <EmptyState icon={searchQuery ? "search" : "folder"} title={searchQuery ? "没有匹配合集" : "暂无合集"} description={searchQuery ? "尝试其他关键词。" : "创建合集或导入文件夹开始组织内容。"} compact />
+        {:else}
+          {#each filteredCollections as collection (collection.id)}
+            <button class="collection-item" class:selected={selectedId === collection.id} onclick={() => selectCollection(collection.id)}>
+              <span class="collection-folder"><Icon name="folder" size={17} /></span>
+              <span class="collection-copy"><strong>{collection.name}</strong><small>{collection.item_count} 个条目</small></span>
+              <StatusPill status={collection.status} label={statusLabel(collection.status)} />
             </button>
           {/each}
-        </div>
-      {/if}
-    </div>
+        {/if}
+      </div>
+      <button class="new-collection-inline" onclick={() => showCreateDialog = true}><Icon name="plus" size={14} />创建新合集</button>
+    </aside>
 
-    <!-- ── Right panel: Detail view ─────────────────── -->
-    <div class="detail-panel">
-      {#if !selectedId}
-        <div class="empty-state detail-empty">
-          <p>选择一个合集查看详情</p>
-        </div>
-      {:else if detailLoading}
-        <div class="empty-state">加载中...</div>
+    <main class="collection-detail">
+      {#if detailLoading}
+        <div class="detail-loading"><span class="loading-ring large"></span><h2>正在加载合集</h2><p>读取条目与处理状态…</p></div>
       {:else if detail}
-        {@const d = detail}
-        <div class="detail-header">
-          <div class="detail-title-row">
-            <h3>{d.name}</h3>
-            <span class={`status-badge ${statusClass(d.status)}`}>
-              {statusLabel(d.status)}
-            </span>
+        <header class="detail-header">
+          <div class="detail-title-wrap">
+            <div class="detail-folder"><Icon name="folder-open" size={22} /></div>
+            <div><span>COLLECTION #{detail.id}</span><h2>{detail.name}</h2><p>{detail.item_count} 个媒体条目 · {completedItems} 个已完成</p></div>
           </div>
           <div class="detail-actions">
-            <button
-              class="btn btn-primary"
-              disabled={processing || d.items.length === 0}
-              onclick={batchProcess}
-            >
-              {#if processing}
-                提交中...
-              {:else}
-                批量处理
-              {/if}
-            </button>
-            <button class="btn btn-secondary" onclick={() => { showAddItems = true; }}>
-              添加条目
-            </button>
-            <button class="btn btn-secondary" onclick={exportCollection}>
-              导出
-            </button>
-            <button class="btn btn-danger btn-sm" onclick={() => { confirmDeleteId = d.id; }}>
-              删除合集
-            </button>
+            <button class="btn btn-secondary btn-sm" onclick={() => showAddItems = true}><Icon name="plus" size={14} />添加条目</button>
+            <button class="btn btn-secondary btn-sm" onclick={exportCollection}><Icon name="download" size={14} />导出</button>
+            <button class="btn btn-primary btn-sm" onclick={batchProcess} disabled={processing || detail.items.length === 0}><Icon name="play" size={14} />{processing ? "提交中" : "批量处理"}</button>
+            <button class="icon-btn danger-button" onclick={() => confirmDeleteId = detail?.id ?? null} title="删除合集"><Icon name="trash" size={15} /></button>
           </div>
+        </header>
+
+        <div class="detail-progress-strip">
+          <div><span>完成进度</span><strong>{detail.item_count ? Math.round((completedItems / detail.item_count) * 100) : 0}%</strong></div>
+          <div class="progress-track"><div class="progress-bar" style={`width:${detail.item_count ? (completedItems / detail.item_count) * 100 : 0}%`}></div></div>
         </div>
 
-        {#if batchJobId}
-          <div class="batch-info">
-            <span>批量任务已提交：{batchJobId}</span>
-            <span class="batch-hint">{batchProgress}</span>
-          </div>
+        {#if batchProgress}
+          <div class="alert {batchJobId ? 'alert-success' : 'alert-info'} detail-message"><Icon name={batchJobId ? "check" : "info"} size={16} /><span>{batchProgress}</span></div>
         {/if}
-
         {#if exportPath}
-          <div class="export-info">
-            <span>已导出至：{exportPath}</span>
-          </div>
+          <div class="alert alert-success detail-message"><Icon name="download" size={16} /><span>已导出到：<code>{exportPath}</code></span></div>
         {/if}
 
-        <!-- Items table -->
-        <div class="items-section">
-          <h4>条目 ({d.items.length})</h4>
-          {#if d.items.length === 0}
-            <div class="empty-state">
-              <p>合集为空</p>
-              <p class="empty-hint">点击"添加条目"添加视频链接或文件路径</p>
-            </div>
+        <div class="items-toolbar">
+          <div><h3>媒体条目</h3><span>每个条目都可独立处理和恢复</span></div>
+          <span class="item-counter">{detail.items.length} 项</span>
+        </div>
+
+        <div class="items-list">
+          {#if detail.items.length === 0}
+            <EmptyState icon="video" title="合集还是空的" description="添加视频链接或本地媒体路径后，即可统一批量处理。">
+              {#snippet action()}<button class="btn btn-primary btn-sm" onclick={() => showAddItems = true}><Icon name="plus" size={14} />添加第一个条目</button>{/snippet}
+            </EmptyState>
           {:else}
-            <table class="item-table">
-              <thead>
-                <tr>
-                  <th class="col-input">输入</th>
-                  <th class="col-status">状态</th>
-                  <th class="col-actions">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each d.items as item (item.id)}
-                  <tr>
-                    <td class="col-input" title={item.input}>
-                      <span class="item-input">{item.input}</span>
-                      {#if item.title}
-                        <span class="item-title">{item.title}</span>
-                      {/if}
-                    </td>
-                    <td class="col-status">
-                      <span class={`status-badge ${statusClass(item.status)}`}>
-                        {itemStatusLabel(item.status)}
-                      </span>
-                    </td>
-                    <td class="col-actions">
-                      <button
-                        class="btn-sm btn-danger"
-                        onclick={() => removeItem(item.id)}
-                      >
-                        移除
-                      </button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+            <div class="items-head"><span>媒体</span><span>状态与进度</span><span>操作</span></div>
+            {#each detail.items as item, index (item.id)}
+              <article class="media-row">
+                <span class="row-index">{String(index + 1).padStart(2, "0")}</span>
+                <span class="row-media-icon"><Icon name={sourceIcon(item.input)} size={17} /></span>
+                <span class="row-copy"><strong>{item.title || fileName(item.input)}</strong><small>{item.input}</small></span>
+                <span class="row-status">
+                  <span><StatusPill status={item.status} label={statusLabel(item.status)} /><em>{Math.round(item.progress || 0)}%</em></span>
+                  <span class="progress-track"><span class="progress-bar" style={`width:${item.progress || 0}%`}></span></span>
+                </span>
+                <button class="icon-btn remove-item" onclick={() => removeItem(item.id)} title="从合集中移除"><Icon name="trash" size={14} /></button>
+              </article>
+            {/each}
           {/if}
         </div>
+      {:else}
+        <div class="collection-welcome">
+          <div class="welcome-stack">
+            <span class="folder-back"><Icon name="folder" size={42} /></span>
+            <span class="folder-front"><Icon name="folder-open" size={50} /></span>
+            <span class="welcome-spark"><Icon name="sparkles" size={18} /></span>
+          </div>
+          <h2>选择一个合集查看详情</h2>
+          <p>在左侧选择合集，管理其中的媒体条目、批量启动处理或导出完整笔记集合。</p>
+          <div class="welcome-actions"><button class="btn btn-primary" onclick={() => showCreateDialog = true}><Icon name="plus" size={15} />新建合集</button><button class="btn btn-secondary" onclick={importFolder}><Icon name="folder-open" size={15} />导入文件夹</button></div>
+        </div>
       {/if}
-    </div>
+    </main>
   </div>
 </div>
 
-<!-- ── Create Dialog ─────────────────────────── -->
 {#if showCreateDialog}
-  <div class="modal-overlay" role="button" tabindex="0"
-    onclick={() => { if (!creating) showCreateDialog = false; }}
-    onkeydown={(e) => {
-      if (e.key === 'Escape' && !creating) showCreateDialog = false;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!creating) showCreateDialog = false; }
-    }}>
-    <div class="modal" role="dialog" tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}>
-      <h3>新建合集</h3>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="create-name">合集名称</label>
-          <input
-            id="create-name"
-            type="text"
-            bind:value={createName}
-            placeholder="例如：深度学习入门"
-          />
-        </div>
-        <div class="form-group">
-          <label for="create-items">视频链接或文件路径（一行一个）</label>
-          <textarea
-            id="create-items"
-            bind:value={createItems}
-            placeholder="https://youtube.com/watch?v=...&#10;https://bilibili.com/video/...&#10;C:\videos\lecture.mp4"
-            rows="8"
-          ></textarea>
-        </div>
+  <div class="modal-overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && (showCreateDialog = false)}>
+    <div class="modal-shell create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <header class="modal-header"><div><span class="modal-kicker">NEW COLLECTION</span><h2 id="create-title">创建内容合集</h2><p>输入合集名称，并逐行添加视频链接或本地文件路径。</p></div><button class="icon-btn" onclick={() => showCreateDialog = false}><Icon name="x" size={15} /></button></header>
+      <div class="modal-body modal-form">
+        <div class="field"><label class="field-label" for="collection-name">合集名称 <small>必填</small></label><input id="collection-name" type="text" bind:value={createName} placeholder="例如：产品设计课程 · 2026 夏季" /></div>
+        <div class="field"><label class="field-label" for="collection-items">媒体条目 <small>每行一个链接或路径</small></label><textarea id="collection-items" bind:value={createItems} rows="8" placeholder="https://example.com/video-01&#10;D:\Courses\lesson-02.mp4"></textarea><span class="field-hint">已识别 {createItems.split("\n").filter((line) => line.trim()).length} 个条目</span></div>
+        <div class="modal-tip"><Icon name="info" size={16} /><p>创建合集不会立即开始处理。你可以在检查条目后，从合集详情中统一启动批量任务。</p></div>
       </div>
-      <div class="modal-footer">
-        <button
-          class="btn btn-secondary"
-          disabled={creating}
-          onclick={() => { showCreateDialog = false; }}
-        >
-          取消
-        </button>
-        <button
-          class="btn btn-primary"
-          disabled={!createName.trim() || !createItems.trim() || creating}
-          onclick={createCollection}
-        >
-          {creating ? "创建中..." : "创建"}
-        </button>
-      </div>
+      <footer class="modal-footer"><button class="btn btn-secondary" onclick={() => showCreateDialog = false}>取消</button><button class="btn btn-primary" onclick={createCollection} disabled={creating || !createName.trim() || !createItems.trim()}><Icon name="plus" size={15} />{creating ? "创建中" : "创建合集"}</button></footer>
     </div>
   </div>
 {/if}
 
-<!-- ── Add Items Dialog ──────────────────────── -->
 {#if showAddItems}
-  <div class="modal-overlay" role="button" tabindex="0"
-    onclick={() => { showAddItems = false; }}
-    onkeydown={(e) => {
-      if (e.key === 'Escape') showAddItems = false;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showAddItems = false; }
-    }}>
-    <div class="modal" role="dialog" tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}>
-      <h3>添加条目</h3>
-      <p class="modal-hint">添加到：{detail?.name}</p>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="add-items">视频链接或文件路径（一行一个）</label>
-          <textarea
-            id="add-items"
-            bind:value={addItemsText}
-            placeholder="https://youtube.com/watch?v=...&#10;C:\videos\lecture.mp4"
-            rows="8"
-          ></textarea>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick={() => { showAddItems = false; }}>
-          取消
-        </button>
-        <button
-          class="btn btn-primary"
-          disabled={!addItemsText.trim()}
-          onclick={addItems}
-        >
-          添加
-        </button>
-      </div>
+  <div class="modal-overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && (showAddItems = false)}>
+    <div class="modal-shell add-modal" role="dialog" aria-modal="true" aria-labelledby="add-title">
+      <header class="modal-header"><div><span class="modal-kicker">ADD MEDIA</span><h2 id="add-title">添加媒体条目</h2><p>新条目将添加到「{detail?.name}」，不会影响已完成的任务。</p></div><button class="icon-btn" onclick={() => showAddItems = false}><Icon name="x" size={15} /></button></header>
+      <div class="modal-body modal-form"><div class="field"><label class="field-label" for="add-items">链接或本地路径 <small>每行一个</small></label><textarea id="add-items" bind:value={addItemsText} rows="9" placeholder="粘贴视频链接或本地媒体路径…"></textarea><span class="field-hint">将添加 {addItemsText.split("\n").filter((line) => line.trim()).length} 个条目</span></div></div>
+      <footer class="modal-footer"><button class="btn btn-secondary" onclick={() => showAddItems = false}>取消</button><button class="btn btn-primary" onclick={addItems} disabled={!addItemsText.trim()}><Icon name="plus" size={15} />添加条目</button></footer>
     </div>
   </div>
 {/if}
 
-<!-- ── Confirm Delete Dialog ─────────────────── -->
 {#if confirmDeleteId !== null}
-  <div class="modal-overlay" role="button" tabindex="0"
-    onclick={() => { confirmDeleteId = null; }}
-    onkeydown={(e) => {
-      if (e.key === 'Escape') confirmDeleteId = null;
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirmDeleteId = null; }
-    }}>
-    <div class="modal modal-sm" role="dialog" tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}>
-      <h3>确认删除</h3>
-      <p class="modal-hint">确定要删除此合集吗？此操作不可撤销。</p>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick={() => { confirmDeleteId = null; }}>
-          取消
-        </button>
-        <button
-          class="btn btn-danger"
-          onclick={() => deleteCollection(confirmDeleteId!)}
-        >
-          删除
-        </button>
-      </div>
+  <div class="modal-overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && (confirmDeleteId = null)}>
+    <div class="modal-shell delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="delete-content"><div class="delete-icon"><Icon name="trash" size={23} /></div><h2 id="delete-title">删除这个合集？</h2><p>合集记录将被删除，但已生成的笔记文件不会自动删除。此操作无法撤销。</p></div>
+      <footer class="modal-footer"><button class="btn btn-secondary" onclick={() => confirmDeleteId = null}>取消</button><button class="btn btn-danger" onclick={() => confirmDeleteId !== null && deleteCollection(confirmDeleteId)}><Icon name="trash" size={15} />确认删除</button></footer>
     </div>
   </div>
 {/if}
 
 <style>
-  /* ── Layout ──────────────────────────────────────── */
-  .collections-page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
+  .collections-page { max-width: 1440px; }
+  .collection-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+  .metric { display: flex; align-items: center; gap: 11px; padding: 13px 15px; }
+  .metric-icon { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; }
+  .metric-icon.collections { color: var(--accent-color); background: var(--accent-soft); }
+  .metric-icon.items { color: var(--info-color); background: var(--info-soft); }
+  .metric-icon.batch { color: var(--success-color); background: var(--success-soft); }
+  .metric div { display: flex; flex-direction: column; }
+  .metric strong { font-size: 23px; line-height: 1.05; }
+  .metric small { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
+  .collection-alert { margin-bottom: 14px; }
+  .collection-alert span { flex: 1; }
+  .collection-alert button { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; color: inherit; background: transparent; cursor: pointer; }
+
+  .collection-workspace { display: grid; grid-template-columns: 280px minmax(0,1fr); min-height: 600px; overflow: hidden; }
+  .collection-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .collection-search { margin: 14px 13px 8px; }
+  .collection-search input { min-height: 35px; font-size: 14px; }
+  .search-clear { position: absolute; right: 6px; display: grid; place-items: center; width: 23px; height: 23px; border: 0; border-radius: 6px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
+  .sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; color: var(--text-tertiary); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+  .sidebar-label em { font-style: normal; }
+  .collection-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 7px; }
+  .collection-item { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; margin-bottom: 3px; padding: 9px; border: 1px solid transparent; border-radius: 11px; color: var(--text-primary); background: transparent; cursor: pointer; text-align: left; transition: background .14s, border-color .14s; }
+  .collection-item:hover { background: var(--bg-hover); }
+  .collection-item.selected { border-color: color-mix(in srgb, var(--accent-color) 22%, var(--border-color)); background: var(--accent-faint); box-shadow: inset 3px 0 0 var(--accent-color); }
+  .collection-folder { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); }
+  .selected .collection-folder { color: var(--accent-color); background: var(--accent-soft); }
+  .collection-copy { display: flex; min-width: 0; flex-direction: column; }
+  .collection-copy strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+  .collection-copy small { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
+  .new-collection-inline { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 10px 12px 13px; min-height: 34px; border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; }
+  .new-collection-inline:hover { color: var(--accent-color); border-color: var(--accent-color); background: var(--accent-faint); }
+  .side-loading { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 13px; }
+  .loading-ring { width: 27px; height: 27px; margin-bottom: 9px; border: 3px solid var(--bg-progress); border-top-color: var(--accent-color); border-radius: 50%; animation: spin .8s linear infinite; }
+  .loading-ring.large { width: 38px; height: 38px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .collection-detail { min-width: 0; background: var(--bg-card); }
+  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid var(--border-color); }
+  .detail-title-wrap { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .detail-folder { display: grid; place-items: center; width: 45px; height: 45px; flex: 0 0 auto; border-radius: 14px; color: var(--accent-color); background: var(--accent-soft); }
+  .detail-title-wrap > div:last-child { display: flex; min-width: 0; flex-direction: column; }
+  .detail-title-wrap span { color: var(--accent-color); font-size: 11px; font-weight: 800; letter-spacing: .11em; }
+  .detail-title-wrap h2 { margin-top: 2px; overflow: hidden; font-size: 21px; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
+  .detail-title-wrap p { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
+  .detail-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+  .danger-button { color: var(--danger-color); }
+  .detail-progress-strip { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 14px; padding: 12px 22px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .detail-progress-strip > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .detail-progress-strip span { color: var(--text-secondary); font-size: 12px; }
+  .detail-progress-strip strong { font-size: 15px; }
+  .detail-progress-strip .progress-track { height: 6px; }
+  .detail-message { margin: 12px 22px 0; }
+  .detail-message code { font-family: var(--font-mono); font-size: 13px; }
+  .items-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 22px 10px; }
+  .items-toolbar div { display: flex; flex-direction: column; }
+  .items-toolbar h3 { font-size: 15px; }
+  .items-toolbar span { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
+  .item-counter { margin: 0 !important; padding: 4px 8px; border-radius: 99px; background: var(--bg-muted); font-size: 12px !important; font-weight: 650; }
+  .items-list { padding: 0 22px 22px; }
+  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 40px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 40px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
+  .media-row:last-child { border-bottom: 0; }
+  .row-index { color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
+  .row-media-icon { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
+  .row-copy { display: flex; min-width: 0; flex-direction: column; }
+  .row-copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .row-copy small { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .row-status { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+  .row-status > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+  .row-status em { color: var(--text-secondary); font-size: 12px; font-style: normal; }
+  .row-status .progress-track { height: 4px; }
+  .remove-item { width: 31px; height: 31px; color: var(--text-tertiary); }
+  .remove-item:hover { color: var(--danger-color); background: var(--danger-soft); }
+  .detail-loading, .collection-welcome { min-height: 560px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
+  .detail-loading h2, .collection-welcome h2 { font-size: 20px; }
+  .detail-loading p, .collection-welcome p { max-width: 420px; margin-top: 6px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+  .welcome-stack { position: relative; width: 120px; height: 100px; margin-bottom: 19px; }
+  .folder-back, .folder-front { position: absolute; display: grid; place-items: center; color: var(--warning-color); }
+  .folder-back { left: 15px; top: 15px; opacity: .35; transform: rotate(-9deg); }
+  .folder-front { left: 37px; top: 6px; color: var(--accent-color); }
+  .welcome-spark { position: absolute; right: 2px; top: 0; color: var(--accent-color); }
+  .welcome-actions { display: flex; gap: 8px; margin-top: 18px; }
+
+  .modal-kicker { color: var(--accent-color); font-size: 12px; font-weight: 800; letter-spacing: .13em; }
+  .modal-form { display: flex; flex-direction: column; gap: 18px; }
+  .modal-tip { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border: 1px solid color-mix(in srgb, var(--info-color) 18%, var(--border-color)); border-radius: 10px; color: var(--info-color); background: var(--info-soft); }
+  .modal-tip p { color: var(--text-secondary); font-size: 13px; line-height: 1.55; }
+  .delete-modal { width: min(430px, calc(100vw - 48px)); }
+  .delete-content { display: flex; flex-direction: column; align-items: center; padding: 30px 28px 20px; text-align: center; }
+  .delete-icon { display: grid; place-items: center; width: 52px; height: 52px; margin-bottom: 15px; border-radius: 16px; color: var(--danger-color); background: var(--danger-soft); }
+  .delete-content h2 { font-size: 21px; }
+  .delete-content p { margin-top: 7px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
+
+  @media (max-width: 1100px) {
+    .collection-workspace { grid-template-columns: 245px minmax(0,1fr); }
   }
 
-  .top-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-    flex-shrink: 0;
+  .collections-page { max-width: 1320px; }
+  .collection-metrics { gap: 9px; margin-bottom: 13px; }
+  .metric { min-height: 64px; padding: 11px 13px; border-radius: 13px; }
+  .metric-icon { width: 35px; height: 35px; border-radius: 10px; }
+  .collection-workspace { grid-template-columns: 258px minmax(0,1fr); min-height: 570px; border-radius: 16px; box-shadow: var(--shadow-sm); }
+  .collection-sidebar { background: var(--bg-sidebar); }
+  .collection-search { margin: 12px 11px 7px; }
+  .collection-list { padding: 0 6px; }
+  .collection-item { padding: 8px; border-radius: 10px; }
+  .collection-item.selected { box-shadow: none; }
+  .detail-header { padding: 17px 19px; }
+  .detail-folder { width: 41px; height: 41px; border-radius: 12px; }
+  .detail-progress-strip { padding: 10px 19px; }
+  .items-toolbar { padding: 16px 19px 9px; }
+  .items-list { padding: 0 19px 19px; }
+
+
+  /* UI v7 — collection management workspace */
+  .collections-page { max-width: 1240px; }
+  .collection-metrics { gap: 14px; margin-bottom: 18px; }
+  .metric { min-height: 88px; padding: 17px 18px; }
+  .metric-icon { width: 44px; height: 44px; }
+  .metric strong { font-size: 24px; }
+  .metric small { font-size: 12px; }
+  .collection-workspace { grid-template-columns: 320px minmax(0,1fr); min-height: 590px; border-radius: 16px; box-shadow: var(--shadow-sm); }
+  .collection-sidebar { padding: 16px 12px; }
+  .collection-search input { min-height: 42px; font-size: 13px; }
+  .sidebar-label { padding: 14px 10px 9px; font-size: 11px; }
+  .collection-item { grid-template-columns: 42px minmax(0,1fr); gap: 11px; padding: 12px; }
+  .collection-folder { width: 40px; height: 40px; }
+  .collection-copy strong { font-size: 14px; }
+  .collection-copy small { font-size: 11px; }
+  .collection-detail { padding: 24px; }
+  .detail-header { padding-bottom: 20px; }
+  .detail-folder { width: 48px; height: 48px; }
+  .detail-title-wrap h2 { font-size: 24px; }
+  .detail-title-wrap p, .detail-title-wrap span { font-size: 12px; }
+  .detail-progress-strip { padding: 15px; }
+  .items-toolbar h3 { font-size: 16px; }
+  .items-toolbar span { font-size: 12px; }
+  .items-head { font-size: 11px; }
+  .media-row { min-height: 66px; padding: 12px 14px; }
+  .row-copy strong { font-size: 14px; }
+  .row-copy small, .row-status > span:first-child, .row-status em { font-size: 11px; }
+
+  @media (max-width: 1180px) {
+    .collection-workspace { grid-template-columns: 280px minmax(0,1fr); }
   }
 
-  .top-actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .top-actions .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-  }
-
-  .layout-split {
-    display: flex;
-    gap: 16px;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  /* ── Error banner ────────────────────────────────── */
-  .error-banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: #f8d7da;
-    color: #721c24;
-    padding: 8px 14px;
-    border-radius: 6px;
-    font-size: 13px;
-    margin-bottom: 12px;
-  }
-
-  .error-close {
-    background: none;
-    border: none;
-    color: #721c24;
-    font-size: 18px;
-    cursor: pointer;
-    padding: 0 4px;
-    line-height: 1;
-  }
-
-  /* ── Left panel: list ────────────────────────────── */
-  .list-panel {
-    width: 280px;
-    flex-shrink: 0;
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: var(--bg-card);
-  }
-
-  .collection-list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .collection-card {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 12px 14px;
-    border: none;
-    border-bottom: 1px solid var(--border-color);
-    background: transparent;
-    cursor: pointer;
-    text-align: left;
-    width: 100%;
-    color: var(--text-primary);
-    transition: background 0.1s;
-    font-size: 14px;
-  }
-
-  .collection-card:last-child {
-    border-bottom: none;
-  }
-
-  .collection-card:hover {
-    background: var(--bg-hover);
-  }
-
-  .collection-card.selected {
-    background: var(--accent-bg);
-    border-left: 3px solid var(--accent-color);
-    padding-left: 11px;
-  }
-
-  .card-main {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .card-name {
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .card-count {
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  /* ── Right panel: detail ─────────────────────────── */
-  .detail-panel {
-    flex: 1;
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: var(--bg-card);
-    padding: 20px;
-  }
-
-  .detail-empty {
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .detail-header {
-    margin-bottom: 16px;
-  }
-
-  .detail-title-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-
-  .detail-title-row h3 {
-    font-size: 18px;
-    font-weight: 600;
-  }
-
-  .detail-actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .detail-actions .btn-danger.btn-sm {
-    margin-left: auto;
-  }
-
-  .batch-info,
-  .export-info {
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 13px;
-    margin-bottom: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .batch-info {
-    background: #cce5ff;
-    color: #004085;
-  }
-
-  .batch-hint {
-    font-size: 12px;
-    opacity: 0.8;
-  }
-
-  .export-info {
-    background: #d4edda;
-    color: #155724;
-  }
-
-  /* ── Items table ─────────────────────────────────── */
-  .items-section {
-    margin-top: 4px;
-  }
-
-  .items-section h4 {
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 10px;
-    color: var(--text-secondary);
-  }
-
-  .item-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  .item-table th {
-    text-align: left;
-    padding: 8px 10px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    border-bottom: 2px solid var(--border-color);
-  }
-
-  .item-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border-color);
-    font-size: 13px;
-    vertical-align: middle;
-  }
-
-  .col-input { width: auto; }
-  .col-status { width: 100px; }
-  .col-actions { width: 70px; text-align: right; }
-
-  .item-input {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 400px;
-  }
-
-  .item-title {
-    display: block;
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 2px;
-  }
-
-  .item-table td.col-actions {
-    text-align: right;
-  }
-
-  /* ── Status badges ───────────────────────────────── */
-  .status-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-
-  .status-completed { background: #d4edda; color: #155724; }
-  .status-processing { background: #cce5ff; color: #004085; }
-  .status-pending { background: #e2e3e5; color: #383d41; }
-  .status-failed { background: #f8d7da; color: #721c24; }
-  .status-paused { background: #fff3cd; color: #856404; }
-  .status-cancelled { background: #e2e3e5; color: #383d41; }
-
-  /* ── Empty state ─────────────────────────────────── */
-  .empty-state {
-    padding: 32px 16px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 14px;
-  }
-
-  .empty-hint {
-    font-size: 12px;
-    margin-top: 6px;
-    opacity: 0.7;
-  }
-
-  /* ── Modal ────────────────────────────────────────── */
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-  }
-
-  .modal {
-    background: var(--bg-card);
-    border-radius: 10px;
-    padding: 24px;
-    width: 520px;
-    max-width: 90vw;
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-  }
-
-  .modal-sm {
-    width: 380px;
-  }
-
-  .modal h3 {
-    font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 8px;
-  }
-
-  .modal-hint {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-bottom: 12px;
-  }
-
-  .modal-body {
-    flex: 1;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .form-group label {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-  }
-
-  .form-group input,
-  .form-group textarea {
-    padding: 8px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 14px;
-    font-family: inherit;
-    resize: vertical;
-  }
-
-  .form-group input:focus,
-  .form-group textarea:focus {
-    outline: none;
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 2px var(--accent-bg);
-  }
-
-  .form-group textarea {
-    min-height: 120px;
-  }
 </style>

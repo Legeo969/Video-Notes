@@ -1,10 +1,74 @@
+# v1.4.0 / Product UI v6
+
+- Replaced the dashboard-heavy shell with a compact desktop productivity workspace.
+- Added a context-aware application bar with engine health, active task count, and note search navigation.
+- Rebuilt sidebar hierarchy around a single primary create action and simplified navigation.
+- Refined Process, Tasks, Notes, Collections, and Settings density, spacing, surfaces, and modal hierarchy.
+- Added a new neutral/violet light and dark design system.
+- Added Windows Cargo mirror normalization for `cc 1.2.75 -> 1.2.65`.
+- Frontend production build and Svelte diagnostics: 0 errors, 0 warnings.
+
+# v1.3.0 / Product UI v5
+
+- Rebuilt all five desktop panels around a unified product design system.
+- Added a professional workspace sidebar with engine health, active-task count, and persisted light/dark appearance.
+- Redesigned Create Notes with media selection, model quality cards, enhancement controls, live status, and task overview.
+- Redesigned Task Center with metrics, search, filters, dense progress rows, recovery actions, and a persistent detail panel.
+- Redesigned Notes Library as a full-height two-pane reading and Markdown editing workspace.
+- Redesigned Collections with searchable navigation, progress, native folder import, media management, and productized dialogs.
+- Redesigned Settings into General, Providers, Templates, and Diagnostics categories with a secure provider editor.
+- Added shared SVG icon, page-header, empty-state, and status-pill components.
+- Preserved all existing Tauri/Python RPC contracts.
+- Frontend production build and Svelte diagnostics: 0 errors, 0 warnings.
+
+## 1.2.6 / v4.2.5
+
+## v1.2.7 / product refactor v4.2.6
+
+- Fixed collection RPC database lifecycle (`Cannot operate on a closed database`).
+- Collection handlers now retain the `DatabaseGateway.connection()` context for the full request.
+- Added collection API regression coverage for list/create/get/list-items/delete.
+- Included the Rust Tauri event-name compile hotfix in the full source baseline.
+
+
+- Fixed Tauri v2 event subscription failures by translating dotted engine event names to colon-separated transport names.
+- Fixed forwarded Python events (`job.progress`, etc.) so they are emitted as Tauri-safe names.
+- Hid the bundled Python sidecar console window on Windows with `CREATE_NO_WINDOW` while retaining piped stdio.
+
+# v1.2.2 — Windows Release 编译热修
+
+- 修复 Rust `E0597` 生命周期错误：退出事件中的 `try_lock()` 临时值现在会在应用状态之前释放。
+- 修复 PowerShell 构建脚本在 `cargo`/Tauri 编译失败后仍打印“Build completed”的误导行为。
+- 构建脚本现在严格检查所有原生命令退出码，并确认 MSI/NSIS 安装包真实存在。
+- Sidecar 构建会删除旧产物并检查 PyInstaller 退出码，避免失败后误用旧 EXE。
+- 新增 `-ReuseSidecar`，Rust/前端重编译时可复用已成功生成的 Python Sidecar。
+
+# v1.2.1 — Windows 启动与图标热修
+
+- 替换蓝橙棋盘占位图标，新增多分辨率 Windows ICO/PNG。
+- 修复 release 启动阶段直接调用 `tokio::spawn` 可能静默退出的问题，改用 Tauri 异步运行时。
+- 启动失败写入 `%LOCALAPPDATA%\Video Notes AI\logs\desktop-startup.log`。
+- 壳层致命错误显示 Windows 原生对话框；Python 引擎失败时保留主界面并展示可见错误。
+- 新增 Windows sidecar 构建、release 构建和双击启动诊断脚本。
+
+## Unreleased (2026-07-05) — 产品级任务内核与断点恢复收敛
+
+- 新增 `TaskSupervisor`，统一新建、继续和从头重试的 worker 生命周期，防止重复任务线程。
+- SQLite 升级到 v14，持久化进度、心跳、最后阶段、请求快照、执行次数、重试来源和任务事件。
+- 任务快照保存完整非密钥配置，并记录原 LLM/Vision 供应商配置名称；继续任务不再漂移到当前默认配置。
+- Rust 长 RPC 不再占用引擎生命周期锁，持续消费 stderr，并在 Sidecar 断开时立即唤醒等待请求。
+- Svelte Process/Tasks 页面统一使用共享 jobs store，所有业务调用收敛到 `engine_call`。
+- 设置、供应商、模板与诊断 API 契约统一；补齐 8 套正式 YAML 模板。
+- 引擎改为延迟加载 yt-dlp、faster-whisper/CTranslate2 等可选组件，缺组件时仍可打开设置和诊断。
+- 活跃 Python 后端套件：618 passed；Svelte：0 errors / 0 warnings。Rust/Tauri 仍需在 Windows Cargo 环境完成编译门禁。
+
 ## V2.0.0 (2026-07-05) — 技术栈重构：Tauri + Svelte + 干净分层架构
 
 - **GUI 框架替换**：PySide6 → Tauri 2 + Svelte 5 + TypeScript。桌面壳使用 Rust 原生，前端 20 kB gzipped。
 - **架构分层清理**：删除 `src/core/`（100 文件），代码迁移到 `src/application/`（管线/服务/LLM）、`src/infrastructure/`（DB/转录/Provider）、`src/domain/`（模型/接口）。
 - **新增 Engine API 层**：`src/api/` — 完整的 JSON-RPC 2.0 over stdin/stdout 协议，18 个文件，9 个冒烟测试。
 - **Rust Engine Manager**：Python 侧车进程管理 + Windows Job Object 进程树清理 + Content-Length 帧协议。
-- **Python 侧车架构**：Tauri 启动 Python `engine.py --stdio`，通过 framed JSON-RPC 通信，stderr 专用日志通道。
+- **Python 侧车架构**：Tauri 启动 Python `-m src.engine --stdio`，通过 framed JSON-RPC 通信，stderr 专用日志通道。
 - **桌面应用构建**：`npx tauri build` 生成 MSI + NSIS 安装包。告别 PyInstaller（~1.6 GB 打包）。
 - **组件化运行时**：`runtime/manifests/` + `infrastructure/system/component_manager.py` — 支持组件独立安装/更新/回滚。
 - **所有导入路径清理**：`src.*` 400+ 处 `src.core.*` 引用全部迁移到正确层，零遗留。

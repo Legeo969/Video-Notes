@@ -32,8 +32,10 @@ from src.domain.job_state import (
 from src.infrastructure.db.processing_metadata import ProcessingMetadata
 from src.db.database import compact_database
 
-# Progress callback: (stage, message, percent 0-100)
-ProgressCallback = Callable[[JobState, str, float], None]
+# Progress callback: preferred signature is
+# (run_id, stage, message, percent 0-100). The legacy three-argument callback
+# remains supported so older CLI/tests do not break during the migration.
+ProgressCallback = Callable[..., None]
 
 
 # JobQueue instances are created independently by the processing page and the
@@ -44,6 +46,31 @@ _SHARED_STATE_LOCK = threading.RLock()
 _SHARED_TOKENS: dict[str, dict[int, "CancellationToken"]] = {}
 _SHARED_REGISTRIES: dict[str, "ProcessRegistry"] = {}
 _SHARED_ACTIVE_RUNS: dict[str, set[int]] = {}
+
+
+def get_default_app_data_dir() -> str:
+    """Return the private per-user data directory used for runtime state."""
+    override = os.environ.get("VIDEO_NOTES_DATA_DIR", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "Video Notes AI")
+    return os.path.join(os.path.expanduser("~"), ".video-notes-ai")
+
+
+def get_default_jobs_root() -> str:
+    """Return the private checkpoint directory.
+
+    Job workspaces are intentionally not stored in the user output folder.
+    Final Markdown/assets belong in the output folder; resumable manifests,
+    downloads and temporary audio live under AppData to avoid duplicate user
+    visible products and uncontrolled vault growth.
+    """
+    override = os.environ.get("VIDEO_NOTES_JOBS_DIR", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+    return os.path.join(get_default_app_data_dir(), ".jobs")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -275,6 +302,7 @@ class JobQueue:
     ):
         self.db_path = db_path
         self.output_dir = os.path.abspath(output_dir)
+        self.jobs_root = get_default_jobs_root()
         self.meta = ProcessingMetadata(db_path)
         self._on_progress = on_progress
         self._state_key = os.path.abspath(db_path)
@@ -285,6 +313,10 @@ class JobQueue:
             )
             self._active_runs = _SHARED_ACTIVE_RUNS.setdefault(self._state_key, set())
         self._lock = _SHARED_STATE_LOCK
+
+    def set_progress_callback(self, callback: ProgressCallback | None) -> None:
+        """Attach the engine-level event sink after dependency construction."""
+        self._on_progress = callback
 
     # ── Token 管理 ──
 
@@ -332,7 +364,7 @@ class JobQueue:
             return False
         if action == "pause":
             self.meta.pause_run(run_id)
-            self._notify(JobState.PAUSED, "任务已暂停，断点数据已保留", 0)
+            self._notify(run_id, JobState.PAUSED, "任务已暂停，断点数据已保留", 0)
             return True
         if action != "cancel":
             raise ValueError(f"unsupported stop action: {action}")
@@ -341,7 +373,7 @@ class JobQueue:
         if removed:
             self.meta.detach_workspace(run_id)
         self.meta.cancel_run(run_id)
-        self._notify(JobState.CANCELLED, "任务已取消，工作数据已清理", 0)
+        self._notify(run_id, JobState.CANCELLED, "任务已取消，工作数据已清理", 0)
         return True
 
     def _request_stop(self, run_id: int, action: str) -> bool:
@@ -380,7 +412,7 @@ class JobQueue:
         with self._lock:
             self._tokens.pop(run_id, None)
         if active:
-            self._notify(state, message, 0)
+            self._notify(run_id, state, message, 0)
         return True
 
     def pause_task(self, run_id: int) -> bool:
@@ -413,6 +445,9 @@ class JobQueue:
         input_path: str,
         title: Optional[str] = None,
         job_id: Optional[str] = None,
+        request_snapshot: dict | None = None,
+        parent_run_id: int | None = None,
+        attempt: int = 1,
     ) -> int:
         """创建新任务，返回 run_id。
 
@@ -422,7 +457,7 @@ class JobQueue:
             └── temp/
         """
         job_id = job_id or str(uuid.uuid4())
-        job_dir = os.path.join(self.output_dir, ".jobs", job_id)
+        job_dir = os.path.join(self.jobs_root, job_id)
 
         # 创建两层目录
         os.makedirs(os.path.join(job_dir, "artifacts"), exist_ok=True)
@@ -433,8 +468,11 @@ class JobQueue:
             title=title,
             job_dir=job_dir,
             job_id=job_id,
+            request_snapshot=request_snapshot,
+            parent_run_id=parent_run_id,
+            attempt=attempt,
         )
-        self._notify(JobState.PENDING, f"任务已创建: {title or input_path}", 0)
+        self._notify(run_id, JobState.PENDING, f"任务已创建: {title or input_path}", 0)
         return run_id
 
     def update_stage(
@@ -445,8 +483,8 @@ class JobQueue:
         percent: float = 0.0,
     ) -> None:
         """更新任务执行阶段。"""
-        self.meta.update_stage(run_id, stage)
-        self._notify(stage, message, percent)
+        self.meta.update_progress(run_id, stage, percent, message)
+        self._notify(run_id, stage, message, percent)
 
     def save_progress(
         self,
@@ -496,14 +534,14 @@ class JobQueue:
         # 清理 token
         with self._lock:
             self._tokens.pop(run_id, None)
-        self._notify(JobState.COMPLETED, "任务完成", 100)
+        self._notify(run_id, JobState.COMPLETED, "任务完成", 100)
 
     def fail(self, run_id: int, error: str) -> None:
         """标记任务失败。"""
         self.meta.fail_run(run_id, error)
         with self._lock:
             self._tokens.pop(run_id, None)
-        self._notify(JobState.FAILED, error, 0)
+        self._notify(run_id, JobState.FAILED, error, 0)
 
     def cancel(self, run_id: int) -> None:
         """Backward-compatible alias for a real cancellation request."""
@@ -525,8 +563,19 @@ class JobQueue:
         refreshed = self.meta.get_job(run_id)
         if refreshed is None:
             raise RuntimeError(f"任务状态重置失败: {run_id}")
-        self._notify(JobState.PENDING, "任务已恢复，正在校验断点", 0)
+        self._notify(run_id, JobState.PENDING, "任务已恢复，正在校验断点", refreshed.progress)
         return refreshed
+
+    def reconcile_interrupted_jobs(self) -> int:
+        """Convert stale live states from a previous engine process.
+
+        The engine owns all workers. At process startup there cannot be a live
+        worker from the previous process, so any persisted running/stopping row
+        is safe to mark as resumable ``interrupted``.
+        """
+        return self.meta.mark_interrupted_runs(
+            "引擎上次运行异常结束；任务工作区已保留，可从断点继续。"
+        )
 
     # ── 断点续跑（基于 manifest） ──
 
@@ -696,7 +745,7 @@ class JobQueue:
         import shutil
         import time
 
-        jobs_dir = os.path.join(self.output_dir, ".jobs")
+        jobs_dir = self.jobs_root
         if not os.path.isdir(jobs_dir):
             return 0
         known = {
@@ -811,10 +860,20 @@ class JobQueue:
 
     # ── 内部 ──
 
-    def _notify(self, stage: JobState, message: str, percent: float) -> None:
+    def _notify(
+        self,
+        run_id: int,
+        stage: JobState,
+        message: str,
+        percent: float,
+    ) -> None:
         if self._on_progress:
             try:
-                self._on_progress(stage, message, percent)
+                try:
+                    self._on_progress(run_id, stage, message, percent)
+                except TypeError:
+                    # Temporary compatibility bridge for V13 callbacks.
+                    self._on_progress(stage, message, percent)
             except Exception as e:
                 logger.warning("Progress callback failed: %s", e)  # 回调不应中断管线
 
@@ -828,5 +887,9 @@ def get_default_db_path(output_dir: str) -> str:
 
 
 def get_job_dir_from_output(output_dir: str, job_id: str) -> str:
-    """从 output_dir + job_id 获取 .jobs/{job_id}/ 路径。"""
-    return os.path.join(os.path.abspath(output_dir), ".jobs", job_id)
+    """Return the private workspace path for ``job_id``.
+
+    ``output_dir`` is ignored for new product builds and kept only for legacy
+    callers that still pass it.
+    """
+    return os.path.join(get_default_jobs_root(), job_id)

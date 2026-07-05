@@ -29,12 +29,14 @@ class FasterWhisperBackend:
         beam_size: int | None = None,
         vad_filter: bool | None = None,
         compute_type: str | None = None,
+        device: str | None = None,
     ):
         self.model_size = model_size
         self.model_dir = model_dir
         self.beam_size = beam_size
         self.vad_filter = vad_filter
         self.compute_type = compute_type
+        self.device = device
 
     # -- TranscriptionBackend protocol -----------------------------------
 
@@ -62,6 +64,7 @@ class FasterWhisperBackend:
         beam_size = kwargs.get("beam_size", self.beam_size)
         vad_filter = kwargs.get("vad_filter", self.vad_filter)
         compute_type = kwargs.get("compute_type", self.compute_type)
+        device = kwargs.get("device", self.device)
 
         text, segments = transcribe_with_segments(
             audio_path,
@@ -71,6 +74,7 @@ class FasterWhisperBackend:
             beam_size=beam_size,
             vad_filter=vad_filter,
             compute_type=compute_type,
+            device=device,
         )
 
         # 从 segments 中提取检测到的语言（whisper_engine 里已打印，但不返回）

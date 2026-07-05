@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.build/
 
 # Environment
 .env
@@ -73,4 +74,5 @@ config/yt-dlp.conf
 desktop/node_modules/
 desktop/dist/
 desktop/src-tauri/target/
+desktop/src-tauri/binaries/*.fingerprint
 desktop/.svelte-kit/

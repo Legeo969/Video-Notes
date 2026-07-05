@@ -6,6 +6,7 @@ import re
 import sys
 
 logger = logging.getLogger(__name__)
+_DLL_DIRECTORY_HANDLES = []
 
 
 def _setup_cuda_env() -> None:
@@ -23,7 +24,14 @@ def _setup_cuda_env() -> None:
         import site
         sitedirs = [site.getusersitepackages()] + site.getsitepackages()
     except Exception:
-        return
+        sitedirs = []
+
+    search_roots = list(sitedirs)
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        search_roots.insert(0, frozen_root)
+    if getattr(sys, "frozen", False):
+        search_roots.insert(0, os.path.dirname(sys.executable))
 
     # 需要扫描的 nvidia 子包及其 DLL 子目录
     nvidia_subpkgs = [
@@ -34,8 +42,8 @@ def _setup_cuda_env() -> None:
     ]
 
     paths_to_add = []
-    for sitedir in sitedirs:
-        nvidia_base = os.path.join(sitedir, 'nvidia')
+    for root in search_roots:
+        nvidia_base = os.path.join(root, 'nvidia')
         if not os.path.isdir(nvidia_base):
             continue
         for subpkg, dll_subdir in nvidia_subpkgs:
@@ -51,6 +59,14 @@ def _setup_cuda_env() -> None:
     if paths_to_add[0] not in current_path:
         os.environ['PATH'] = new_path + os.pathsep + current_path
         logger.info(f"[CUDA] Added {len(paths_to_add)} DLL directories to PATH")
+
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        for path in paths_to_add:
+            try:
+                _DLL_DIRECTORY_HANDLES.append(add_dll_directory(path))
+            except OSError:
+                logger.debug("[CUDA] Could not add DLL directory: %s", path, exc_info=True)
 
 
 # 在导入 ctranslate2 之前设置 CUDA 环境
@@ -152,9 +168,13 @@ def _resolve_model(model_size: str, model_dir: str = None) -> str:
     dirs_to_check = _candidate_model_dirs(model_dir)
 
     for d in dirs_to_check:
-        candidate = os.path.join(d, f"faster-whisper-{model_size}")
-        if os.path.isdir(candidate):
-            return candidate
+        candidates = [
+            os.path.join(d, f"faster-whisper-{model_size}"),
+            os.path.join(d, model_size),
+        ]
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                return candidate
 
     searched = " → ".join(dirs_to_check)
     raise FileNotFoundError(
@@ -190,7 +210,8 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
                              language: str = None, model_dir: str = None,
                              beam_size: int | None = None,
                              vad_filter: bool | None = None,
-                             compute_type: str | None = None):
+                             compute_type: str | None = None,
+                             device: str | None = None):
     """转录音频文件，返回 (全文本, segments列表)
 
     Args:
@@ -200,7 +221,8 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
         model_dir: 模型目录，None 使用默认目录
         beam_size: beam search 宽度，None 使用默认值（环境变量 WHISPER_BEAM_SIZE 或 5）
         vad_filter: 是否启用 VAD 过滤，None 使用默认值（WHISPER_VAD_FILTER）
-        compute_type: 计算精度，None 则自动检测（GPU=float16, CPU=int8）
+        compute_type: 计算精度，None/auto 则自动检测（CUDA=float16, CPU=int8）
+        device: auto/cuda/cpu。显式选择 cuda 时不可用会直接报错，不静默降级。
 
     Returns:
         tuple[str, list[dict]]: (full_text, segments)
@@ -208,24 +230,48 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
     """
     model_path = _resolve_model(model_size, model_dir=model_dir)
 
-    # 自动检测 GPU，有 CUDA 则用 GPU 加速
+    requested_device = (device or os.environ.get("WHISPER_DEVICE") or "auto").strip().lower()
+    requested_compute = (compute_type or os.environ.get("WHISPER_COMPUTE_TYPE") or "auto").strip().lower()
+    if requested_device not in {"auto", "cuda", "cpu"}:
+        raise ValueError(f"不支持的 Whisper 运行设备: {requested_device}")
+
     has_gpu = ctranslate2.get_cuda_device_count() > 0
-    device = "cuda" if has_gpu else "cpu"
-    resolved_compute_type = compute_type or ("float16" if has_gpu else "int8")
+    explicit_cuda = requested_device == "cuda"
+    if explicit_cuda and not has_gpu:
+        raise RuntimeError("已选择 Whisper CUDA，但 CTranslate2 未检测到可用 CUDA 设备。")
+
+    resolved_device = "cuda" if (requested_device == "cuda" or (requested_device == "auto" and has_gpu)) else "cpu"
+    if requested_compute in {"", "auto", "none"}:
+        resolved_compute_type = "float16" if resolved_device == "cuda" else "int8"
+    else:
+        resolved_compute_type = requested_compute
+
+    try:
+        supported_types = ctranslate2.get_supported_compute_types(resolved_device)
+    except Exception:
+        supported_types = set()
+    if supported_types and resolved_compute_type not in supported_types:
+        raise RuntimeError(
+            f"Whisper {resolved_device} 不支持 compute_type={resolved_compute_type}; "
+            f"可用: {sorted(supported_types)}"
+        )
+
     resolved_beam_size = beam_size if beam_size is not None else _DEFAULT_BEAM_SIZE
     resolved_vad_filter = vad_filter if vad_filter is not None else _DEFAULT_VAD_FILTER
 
-    logger.info(f"📝 正在加载 faster-whisper 模型 ({model_size}) [本地: {model_path}] [{device}]...")
+    logger.info(
+        "📝 正在加载 faster-whisper 模型 (%s) [本地: %s] [device=%s, compute=%s]...",
+        model_size, model_path, resolved_device, resolved_compute_type,
+    )
     try:
-        model = _get_cached_model(model_path, device, resolved_compute_type)
+        model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
     except RuntimeError as e:
-        if has_gpu and "cannot be loaded" in str(e):
-            logger.warning(f"⚠️ CUDA 加载失败 ({e})，降级到 CPU 模式")
-            device = "cpu"
+        if requested_device == "auto" and resolved_device == "cuda":
+            logger.warning("⚠️ CUDA 加载失败 (%s)，自动降级到 CPU/int8。显式选择 CUDA 时将不会降级。", e)
+            resolved_device = "cpu"
             resolved_compute_type = "int8"
-            # 清除缓存中的 CUDA 版本，重新用 CPU 缓存
             _get_cached_model.cache_clear()
-            model = _get_cached_model(model_path, device, resolved_compute_type)
+            model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
         else:
             raise
 
@@ -238,12 +284,12 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
             vad_filter=resolved_vad_filter,
         )
     except RuntimeError as e:
-        if has_gpu and device == "cuda" and "cannot be loaded" in str(e):
-            logger.warning(f"⚠️ CUDA 推理失败 ({e})，降级到 CPU 模式重新加载")
-            device = "cpu"
+        if requested_device == "auto" and resolved_device == "cuda" and "cannot be loaded" in str(e):
+            logger.warning(f"⚠️ CUDA 推理失败 ({e})，自动降级到 CPU/int8 重新加载")
+            resolved_device = "cpu"
             resolved_compute_type = "int8"
             _get_cached_model.cache_clear()
-            model = _get_cached_model(model_path, device, resolved_compute_type)
+            model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
             segments_gen, info = model.transcribe(
                 audio_path,
                 language=language,
@@ -286,7 +332,7 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
             '', seg["text"], flags=re.IGNORECASE
         ).strip()
 
-    logger.info(f"✅ 转录完成，共 {len(full_text)} 字 (检测语言: {info.language})")
+    logger.info(f"✅ 转录完成，共 {len(full_text)} 字 (检测语言: {info.language}, device={resolved_device}, compute={resolved_compute_type})")
     return full_text, segments_list
 
 

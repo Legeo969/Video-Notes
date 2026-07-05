@@ -1,13 +1,13 @@
-"""notes.* RPC 处理器
+"""notes.* RPC handlers.
 
-委托 NoteRepository 和文件系统提供笔记查询能力。
+All SQLite connections are owned by a context manager for the full request.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from src.api.protocol.errors import InternalError, InvalidParams
 
@@ -18,33 +18,28 @@ def create_notes_handlers(
     db_path: str | None = None,
     output_dir: str = "./output",
 ) -> dict[str, Any]:
-    """创建 notes.* 方法处理器字典。
-
-    Args:
-        db_path: 数据库路径。为 None 时自动从 output_dir 推导。
-        output_dir: 输出根目录。
-    """
+    """Create the ``notes.*`` RPC handlers."""
 
     if db_path is None:
         from src.application.services.job_queue import get_default_db_path
+
         db_path = get_default_db_path(output_dir)
 
-    def _get_connection():
-        """获取数据库连接（延迟初始化）。"""
-        import sqlite3
-        # 使用默认 gateway 简化
+    @contextmanager
+    def _connection() -> Iterator[Any]:
+        """Yield a live connection and close it only after the request ends."""
         from src.infrastructure.db.gateway import DatabaseGateway
+
         gateway = DatabaseGateway(db_path)
         gateway.initialize()
-        return gateway.connection().__enter__()
+        with gateway.connection() as conn:
+            yield conn
 
     def handle_list(params: dict[str, Any]) -> list[dict[str, Any]]:
-        """notes.list — 列出所有笔记。"""
-        limit = params.get("limit", 50)
-        offset = params.get("offset", 0)
+        limit = int(params.get("limit", 50))
+        offset = int(params.get("offset", 0))
         try:
-            conn = _get_connection()
-            try:
+            with _connection() as conn:
                 rows = conn.execute(
                     "SELECT id, title, rel_path, created_at FROM notes "
                     "ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -59,25 +54,21 @@ def create_notes_handlers(
                     }
                     for row in rows
                 ]
-            finally:
-                conn.close()
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Failed to list notes")
-            raise InternalError(str(e))
+            raise InternalError(str(exc)) from exc
 
     def handle_get(params: dict[str, Any]) -> dict[str, Any]:
-        """notes.get — 获取笔记完整内容。"""
-        note_id = params.get("note_id")
+        note_id = params.get("note_id", params.get("id"))
         if note_id is None:
             raise InvalidParams("note_id is required")
         try:
             note_id = int(note_id)
-        except (ValueError, TypeError):
-            raise InvalidParams("note_id must be an integer")
+        except (ValueError, TypeError) as exc:
+            raise InvalidParams("note_id must be an integer") from exc
 
         try:
-            conn = _get_connection()
-            try:
+            with _connection() as conn:
                 row = conn.execute(
                     "SELECT id, title, content, rel_path FROM notes WHERE id = ?",
                     (note_id,),
@@ -90,23 +81,19 @@ def create_notes_handlers(
                     "content": row["content"],
                     "path": row["rel_path"],
                 }
-            finally:
-                conn.close()
         except InternalError:
             raise
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Failed to get note")
-            raise InternalError(str(e))
+            raise InternalError(str(exc)) from exc
 
     def handle_get_by_path(params: dict[str, Any]) -> dict[str, Any]:
-        """notes.get_by_path — 按路径获取笔记内容。"""
-        path = params.get("path", "").strip()
+        path = str(params.get("path", "")).strip()
         if not path:
             raise InvalidParams("path is required")
 
         try:
-            conn = _get_connection()
-            try:
+            with _connection() as conn:
                 row = conn.execute(
                     "SELECT id, title, content, rel_path FROM notes WHERE rel_path = ?",
                     (path,),
@@ -119,13 +106,11 @@ def create_notes_handlers(
                     "content": row["content"],
                     "path": row["rel_path"],
                 }
-            finally:
-                conn.close()
         except InternalError:
             raise
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Failed to get note by path")
-            raise InternalError(str(e))
+            raise InternalError(str(exc)) from exc
 
     return {
         "notes.list": handle_list,

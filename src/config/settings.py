@@ -8,7 +8,16 @@ from src.config.constants import DEFAULT_SETTINGS_DIRNAME, DEFAULT_SETTINGS_FILE
 
 
 def get_settings_path() -> str:
-    """Return the existing per-user settings JSON path."""
+    """Return the per-user settings JSON path.
+
+    ``VIDEO_NOTES_SETTINGS_PATH`` is an explicit override for tests, portable
+    builds and managed deployments.  It avoids relying on platform-specific
+    ``HOME``/``USERPROFILE`` expansion rules while preserving the normal
+    per-user location when no override is configured.
+    """
+    override = os.environ.get("VIDEO_NOTES_SETTINGS_PATH", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
     return os.path.join(
         os.path.expanduser("~"),
         DEFAULT_SETTINGS_DIRNAME,

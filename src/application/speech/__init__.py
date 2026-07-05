@@ -69,7 +69,7 @@ class SpeechTranscriber:
     输出 SpeechSegment 列表 + chunk_text 分块工具供下游使用。
     """
 
-    def __init__(self, model_size: str = "large-v3-turbo", model_dir: str | None = None):
+    def __init__(self, model_size: str = "large-v3-turbo", model_dir: str | None = None, device: str = "auto", compute_type: str = "auto"):
         """初始化。
 
         Args:
@@ -78,6 +78,8 @@ class SpeechTranscriber:
         """
         self._model_size = model_size
         self._model_dir = model_dir
+        self._device = device or "auto"
+        self._compute_type = compute_type or "auto"
 
     def transcribe(
         self,
@@ -110,6 +112,8 @@ class SpeechTranscriber:
             language=language,
             model_dir=self._model_dir,
             beam_size=beam_size,
+            device=self._device,
+            compute_type=self._compute_type,
             vad_filter=vad_filter,
         )
 

@@ -76,7 +76,7 @@ class MapNotesStage:
 
         _all_failed = all(not mr.summary for mr in map_results)
         if _all_failed and map_results:
-            _err_hint = "所有 AI 笔记请求均失败。请检查当前生成笔记供应商的 API Key、模型和网络连接。"
+            _err_hint = "所有 LLM 调用失败：所有 AI 笔记请求均失败。请检查当前生成笔记供应商的 API Key、模型和网络连接。"
             if not ctx.request.api_key:
                 _err_hint += "\n当前任务没有读取到 API Key，请在设置页保存 Key 并绑定到“生成笔记”用途后继续任务。"
             raise RuntimeError(_err_hint)
