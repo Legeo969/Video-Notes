@@ -655,7 +655,14 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head with-action"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>默认 Whisper 模型</h3><p>选择新任务默认使用的语音转录模型。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={() => openExternalUrl(whisperModelDownloadUrl)}><Icon name="external" size={13} />模型下载页</button><button class="btn btn-secondary btn-sm" onclick={scanModels} disabled={scanning}><Icon name="refresh" size={13} />{scanning ? "扫描中" : "扫描本地模型"}</button></div>
+              <div class="group-head with-action">
+                <div class="group-icon"><Icon name="audio" size={18} /></div>
+                <div><h3>默认 Whisper 模型</h3><p>选择新任务默认使用的语音转录模型。</p></div>
+                <div class="group-actions">
+                  <button class="btn btn-secondary btn-sm" type="button" onclick={() => openExternalUrl(whisperModelDownloadUrl)}><Icon name="external" size={13} />模型下载页</button>
+                  <button class="btn btn-secondary btn-sm" type="button" onclick={scanModels} disabled={scanning}><Icon name="refresh" size={13} />{scanning ? "扫描中" : "扫描本地模型"}</button>
+                </div>
+              </div>
               {#if scanning}
                 <div class="model-scan-state"><span class="loading-ring compact"></span><div><strong>正在扫描本地模型</strong><small>检查配置目录和应用默认模型目录…</small></div></div>
               {:else if localWhisperModels.length === 0}
@@ -722,7 +729,7 @@
                 </button>
                 <button type="button" class="setting-toggle-card as-button" class:enabled={settings.vision_enabled} onclick={() => { settings.vision_enabled = !settings.vision_enabled; markDirty(); }} aria-pressed={settings.vision_enabled}>
                   <span class="toggle-feature-icon"><Icon name="eye" size={20} /></span>
-                  <span class="toggle-copy"><strong>视觉理解</strong><small>对关键帧、图表和演示内容做语义分析。需要活动 AI 供应商和视觉模型。</small></span>
+                  <span class="toggle-copy"><strong>视觉理解</strong><small>抽取关键帧并调用当前活动供应商的视觉模型，分析图表、界面和演示步骤。</small></span>
                   <span class="switch" aria-hidden="true"><input type="checkbox" checked={settings.vision_enabled} tabindex="-1" /><span class="switch-track"></span></span>
                 </button>
               </div>
@@ -757,7 +764,7 @@
                   </button>
                 </div>
               </div>
-              <div class="enhancement-explain"><Icon name="info" size={14} />OCR 是本地能力；视觉理解会调用当前活动 AI 供应商。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
+              <div class="enhancement-explain"><Icon name="info" size={14} />OCR 使用配置的 OCR 后端；视觉理解会抽取关键帧并调用当前活动 AI 供应商的视觉模型。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
             </div>
           </section>
 
@@ -1145,7 +1152,9 @@
   .setting-group { padding: 22px 0; border-bottom: 1px solid var(--border-color); }
   .setting-group:last-child { border-bottom: 0; }
   .group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-  .group-head.with-action { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; }
+  .group-head.with-action { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; }
+  .group-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
+  .group-actions .btn { min-height: 36px; white-space: nowrap; }
   .group-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
   .group-head > div:nth-child(2) { display: flex; flex-direction: column; }
   .group-head h3 { font-size: 14px; }
@@ -1167,6 +1176,8 @@
   .scan-results { display: flex; align-items: center; gap: 6px; margin-top: 11px; padding: 8px 10px; border-radius: 8px; color: var(--success-color); background: var(--success-soft); font-size: 12px; }
   .setting-toggle-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .14s, background .14s; }
   .setting-toggle-card.as-button { appearance: none; font: inherit; }
+  .setting-toggle-card.disabled { opacity: .62; cursor: not-allowed; }
+  .setting-toggle-card.disabled:hover { border-color: var(--border-color); background: var(--bg-card); }
   .enhancement-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .enhancement-explain, .provider-type-warning { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: 10px; color: var(--text-secondary); background: var(--bg-subtle); border: 1px solid var(--border-color); font-size: 12px; line-height: 1.55; }
   .provider-type-warning { margin: 0; color: var(--warning-color); background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning-color) 25%, var(--border-color)); }
@@ -1365,6 +1376,11 @@
   .provider-modal { width: min(820px, calc(100vw - 48px)); }
   .form-section-head h3 { font-size: 15px; }
   .form-section-head p { font-size: 12px; }
+
+  @media (max-width: 920px) {
+    .group-head.with-action { grid-template-columns: 38px minmax(0,1fr); }
+    .group-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; min-width: 0; }
+  }
 
   @media (max-width: 1180px) {
     .settings-shell { grid-template-columns: 220px minmax(0,1fr); }

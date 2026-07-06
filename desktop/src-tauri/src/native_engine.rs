@@ -1062,6 +1062,15 @@ impl NativeEngine {
                 .or_else(|| string_value(&settings, "ocr_api_key"))
                 .unwrap_or_default(),
         };
+        let vision_enabled = params
+            .get("vision_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                settings
+                    .get("vision_enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
         std::thread::spawn(move || {
             run_native_job(
                 jobs,
@@ -1076,6 +1085,7 @@ impl NativeEngine {
                 whisper_device,
                 provider,
                 ocr_config,
+                vision_enabled,
             );
         });
 
@@ -1112,6 +1122,9 @@ impl NativeEngine {
             .and_then(|job| job.output_path.as_ref())
             .map(PathBuf::from)
             .ok_or_else(|| format!("Job {id} has no note output yet"))?;
+        if !path.is_file() {
+            return Err(format!("Note output not found: {}", path.display()));
+        }
         if reveal {
             reveal_path(&path)
         } else {
@@ -1578,6 +1591,7 @@ impl NativeEngine {
 
 impl NativeJob {
     fn to_value(&self) -> Value {
+        let elapsed_sec = job_elapsed_sec(&self.created_at, self.completed_at.as_deref());
         json!({
             "id": self.id,
             "job_id": self.job_id,
@@ -1590,7 +1604,7 @@ impl NativeJob {
             "input": self.input,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
-            "elapsed_sec": null,
+            "elapsed_sec": elapsed_sec,
             "error_message": self.error_message,
             "output_path": self.output_path,
             "transcript_path": self.transcript_path,
@@ -1602,6 +1616,14 @@ impl NativeJob {
             "heartbeat_at": Utc::now().to_rfc3339(),
         })
     }
+}
+
+fn job_elapsed_sec(created_at: &str, completed_at: Option<&str>) -> Option<u64> {
+    let start = DateTime::parse_from_rfc3339(created_at).ok()?;
+    let end = completed_at
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .unwrap_or_else(|| Utc::now().with_timezone(start.offset()));
+    Some((end - start).num_seconds().max(0) as u64)
 }
 
 fn run_native_job(
@@ -1617,6 +1639,7 @@ fn run_native_job(
     whisper_device: String,
     provider: Option<NativeProviderProfile>,
     ocr_config: OcrRuntimeConfig,
+    vision_enabled: bool,
 ) {
     update_job(
         &jobs,
@@ -1766,6 +1789,8 @@ fn run_native_job(
             ),
             _ => extract_ocr_with_tesseract(&input_path, &output_dir, &file_stem, id, &runtime_dir),
         };
+        let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
+        update_job_frames(&jobs, &app_handle, id, count_frame_files(&frame_dir));
         match ocr_result {
             Ok(ocr_text) if !ocr_text.trim().is_empty() => {
                 transcript.push_str("\n\n## OCR\n\n");
@@ -1776,6 +1801,62 @@ fn run_native_job(
             }
             Err(error) => {
                 transcript.push_str("\n\n## OCR\n\nOCR unavailable: ");
+                transcript.push_str(&error);
+            }
+        }
+    }
+    if vision_enabled {
+        update_job(
+            &jobs,
+            &app_handle,
+            id,
+            "running",
+            "vision_analyzing",
+            62,
+            "调用视觉模型分析关键帧",
+            None,
+            None,
+            None,
+        );
+        let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
+        let frames = if count_frame_files(&frame_dir) > 0 {
+            collect_frame_files(&frame_dir)
+        } else {
+            extract_sample_frames(&input_path, &output_dir, &file_stem, id, &runtime_dir)
+        };
+        match frames {
+            Ok(frames) => {
+                update_job_frames(
+                    &jobs,
+                    &app_handle,
+                    id,
+                    frames.len().try_into().unwrap_or(u32::MAX),
+                );
+                match provider.as_ref() {
+                    Some(profile) => {
+                        match analyze_frames_with_vision(profile, &base_title, &frames) {
+                            Ok(vision_text) if !vision_text.trim().is_empty() => {
+                                transcript.push_str("\n\n## Vision\n\n");
+                                transcript.push_str(vision_text.trim());
+                            }
+                            Ok(_) => {
+                                transcript.push_str("\n\n## Vision\n\nNo visual details were returned by the vision model.");
+                            }
+                            Err(error) => {
+                                transcript.push_str("\n\n## Vision\n\nVision unavailable: ");
+                                transcript.push_str(&error);
+                            }
+                        }
+                    }
+                    None => {
+                        transcript.push_str(
+                            "\n\n## Vision\n\nVision unavailable: configure an active AI provider.",
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                transcript.push_str("\n\n## Vision\n\nFrame extraction unavailable: ");
                 transcript.push_str(&error);
             }
         }
@@ -1919,6 +2000,24 @@ fn update_job(
                 "message": message,
                 "timestamp": Utc::now().to_rfc3339(),
             }));
+        }
+    }
+    if let (Some(handle), Some(payload)) = (app_handle, event) {
+        let _ = handle.emit("job:progress", payload);
+    }
+}
+
+fn update_job_frames(
+    jobs: &Arc<Mutex<Vec<NativeJob>>>,
+    app_handle: &Option<AppHandle>,
+    id: u64,
+    frames_count: u32,
+) {
+    let mut event = None;
+    if let Ok(mut locked) = jobs.lock() {
+        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
+            job.frames_count = frames_count;
+            event = Some(job.to_value());
         }
     }
     if let (Some(handle), Some(payload)) = (app_handle, event) {
@@ -2254,6 +2353,82 @@ fn fetch_provider_models(profile: &NativeProviderProfile) -> Result<Vec<String>,
     }
 }
 
+fn analyze_frames_with_vision(
+    profile: &NativeProviderProfile,
+    title: &str,
+    frames: &[PathBuf],
+) -> Result<String, String> {
+    let model = if profile.vision_model.trim().is_empty() {
+        &profile.model
+    } else {
+        &profile.vision_model
+    };
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!(
+        "{}/chat/completions",
+        profile.base_url.trim_end_matches('/')
+    );
+    let mut content = vec![json!({
+        "type": "text",
+        "text": format!(
+            "请分析这些视频关键帧，提取对学习笔记有帮助的视觉信息。标题：{title}\n要求：用中文输出，重点说明画面中的 UI、图表、步骤、参数、节点、对象关系；不要泛泛描述。"
+        )
+    })];
+    for frame in frames.iter().take(4) {
+        let bytes = fs::read(frame).map_err(|error| error.to_string())?;
+        let image = general_purpose::STANDARD.encode(bytes);
+        content.push(json!({
+            "type": "image_url",
+            "image_url": {
+                "url": format!("data:image/png;base64,{image}")
+            }
+        }));
+    }
+    if content.len() == 1 {
+        return Err("no frames available for vision analysis".to_string());
+    }
+    let response = client
+        .post(url)
+        .bearer_auth(&profile.api_key)
+        .json(&json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a visual analysis assistant for video learning notes. Return concise Chinese Markdown only."
+                },
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ],
+            "temperature": 0.1
+        }))
+        .send()
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let payload: Value = response.json().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "vision chat completion returned {status}: {payload}"
+        ));
+    }
+    payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "vision chat completion returned no content".to_string())
+}
+
 fn synthesize_note_with_provider(
     profile: &NativeProviderProfile,
     title: &str,
@@ -2283,7 +2458,7 @@ fn synthesize_note_with_provider(
                 {
                     "role": "user",
                     "content": format!(
-                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，包含摘要、关键概念、步骤/论证、行动项和原始转写要点。\n\n图片素材：\n{}\n\n要求：\n- 只有图片与当前段落内容明确相关时，才在对应段落附近插入图片；没有相关图片就不插。\n- 图片语法必须使用素材中给出的 Markdown，例如 ![frame-001](xxx/frame-001.png)。\n- 不要把图片集中放在文末，也不要编造图片路径。\n\n转写：\n{}",
+                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，包含摘要、关键概念、步骤/论证、行动项和“转写与 OCR 依据”。\n\n图片素材：\n{}\n\n要求：\n- 只有图片与当前段落内容明确相关时，才在对应段落附近插入图片；没有相关图片就不插。\n- 图片语法必须使用素材中给出的 Markdown，例如 ![frame-001](xxx/frame-001.png)。\n- 不要把图片集中放在文末，也不要编造图片路径。\n- “转写与 OCR 依据”只列出支撑笔记结论的关键转写/OCR 片段，不要把它写成完整原文转录。\n\n转写：\n{}",
                         title,
                         source.display(),
                         if image_context.trim().is_empty() { "无" } else { image_context },
@@ -2718,6 +2893,27 @@ fn extract_sample_frames(
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
+        .collect::<Vec<_>>();
+    frames.sort();
+    Ok(frames)
+}
+
+fn collect_frame_files(frame_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut frames = fs::read_dir(frame_dir)
+        .map_err(|error| error.to_string())?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                })
+                .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
     frames.sort();
     Ok(frames)
@@ -3308,7 +3504,10 @@ fn open_url(url: &str) -> Result<Value, String> {
 fn reveal_path(path: &Path) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
     let result = hidden_command("explorer")
-        .arg(format!("/select,{}", path.to_string_lossy()))
+        .arg(format!(
+            "/select,\"{}\"",
+            path.to_string_lossy().replace('"', "")
+        ))
         .spawn();
 
     #[cfg(target_os = "macos")]
@@ -3958,6 +4157,30 @@ fn dir_size(path: &Path) -> u64 {
 
 fn file_size(path: &Path) -> u64 {
     path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+}
+
+fn count_frame_files(path: &Path) -> u32 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 fn dir_counts(path: &Path) -> Value {

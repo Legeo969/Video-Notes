@@ -40,7 +40,7 @@
 
   const stageText: Record<string, string> = {
     pending: "准备任务", resolving: "解析媒体", downloading: "下载媒体", transcribing: "语音转录",
-    extracting_frames: "提取画面", generating_notes: "生成笔记", indexing: "写入产物", completed: "处理完成",
+    extracting_frames: "提取画面", vision_analyzing: "视觉理解", generating_notes: "生成笔记", indexing: "写入产物", completed: "处理完成",
     failed: "处理失败", interrupted: "异常中断", paused: "已暂停", cancelled: "已取消",
   };
 
@@ -66,11 +66,16 @@
   }
 
   function formatDuration(seconds?: number) {
-    if (!seconds) return "—";
+    if (seconds === undefined || seconds === null) return "—";
     if (seconds < 60) return `${Math.round(seconds)} 秒`;
     const minutes = Math.floor(seconds / 60);
     const rest = Math.round(seconds % 60);
     return `${minutes} 分 ${rest} 秒`;
+  }
+
+  function durationCaption(job: JobInfo) {
+    if (job.elapsed_sec !== undefined && job.elapsed_sec !== null) return `已用 ${formatDuration(job.elapsed_sec)}`;
+    return ["pending", "running", "pausing", "cancelling"].includes(job.status) ? "统计中" : "—";
   }
 
   function sourceKind(input: string) { return input.startsWith("http") ? "link" : "video"; }
@@ -220,7 +225,7 @@
                     <span class="progress-track"><span class="progress-bar" style={`width:${Math.max(0, Math.min(100, job.progress || 0))}%`}></span></span>
                     {#if job.error_message}<small class="inline-error">{job.error_message}</small>{/if}
                   </span>
-                  <span class="time-cell"><strong>{formatTime(job.created_at)}</strong><small>{job.elapsed_sec ? `已用 ${formatDuration(job.elapsed_sec)}` : "等待统计"}</small></span>
+                  <span class="time-cell"><strong>{formatTime(job.created_at)}</strong><small>{durationCaption(job)}</small></span>
                   <span class="status-cell"><StatusPill status={job.status} /></span>
                 </button>
 
@@ -291,7 +296,7 @@
               <div><dt>执行次数</dt><dd>第 {selectedJob.attempt || 1} 次</dd></div>
               <div><dt>抽帧数量</dt><dd>{selectedJob.frames_count || 0} 帧</dd></div>
               <div><dt>开始时间</dt><dd>{formatTime(selectedJob.created_at)}</dd></div>
-              <div><dt>运行时长</dt><dd>{formatDuration(selectedJob.elapsed_sec)}</dd></div>
+              <div><dt>运行时长</dt><dd>{durationCaption(selectedJob).replace(/^已用\s*/, "")}</dd></div>
             </dl>
           </div>
 

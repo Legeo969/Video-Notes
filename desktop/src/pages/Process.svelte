@@ -293,7 +293,7 @@
       <div class="builder-section">
         <div class="section-heading-pro">
           <div class="section-number">02</div>
-          <div><h2>配置处理方式</h2><p>选择转录精度，并按需要启用画面文字和视觉理解。</p></div>
+          <div><h2>配置处理方式</h2><p>选择转录模型，并按需要启用画面文字和视觉理解。</p></div>
         </div>
 
         <div class="field model-control-field">
@@ -379,7 +379,7 @@
 
         <div class="task-preflight">
           <Icon name="info" size={15} />
-          <span>真实任务链路：本地媒体/公开视频 → Whisper 转录 → 可选 OCR/视觉增强 → 当前活动 AI 供应商生成笔记。首次验证建议先关闭 OCR 与视觉理解。</span>
+          <span>真实任务链路：本地媒体/公开视频 → Whisper 转录 → 可选 OCR/视觉理解 → 当前活动 AI 供应商生成笔记。</span>
         </div>
 
         <button type="button" class="advanced-toggle" onclick={() => advancedOpen = !advancedOpen}>
