@@ -46,9 +46,9 @@ def _write_manifest(root: Path, path: str, artifact: Path) -> None:
 
 
 def test_verify_release_candidate_accepts_matching_hashes(tmp_path: Path) -> None:
-    artifact = tmp_path / "components" / "base-engine.zip"
+    artifact = tmp_path / "components" / "whisper-cpp-tools.zip"
     _write(artifact, "payload")
-    _write_manifest(tmp_path, "components/base-engine.zip", artifact)
+    _write_manifest(tmp_path, "components/whisper-cpp-tools.zip", artifact)
 
     report = candidate_verifier.verify_release_candidate(tmp_path)
 
@@ -57,9 +57,9 @@ def test_verify_release_candidate_accepts_matching_hashes(tmp_path: Path) -> Non
 
 
 def test_verify_release_candidate_detects_tampering(tmp_path: Path) -> None:
-    artifact = tmp_path / "components" / "base-engine.zip"
+    artifact = tmp_path / "components" / "whisper-cpp-tools.zip"
     _write(artifact, "payload")
-    _write_manifest(tmp_path, "components/base-engine.zip", artifact)
+    _write_manifest(tmp_path, "components/whisper-cpp-tools.zip", artifact)
     _write(artifact, "changed payload")
 
     report = candidate_verifier.verify_release_candidate(tmp_path)

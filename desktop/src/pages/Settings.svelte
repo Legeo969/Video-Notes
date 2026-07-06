@@ -190,8 +190,8 @@
   let selectedWhisperModel = $derived(whisperCatalog.find((model) => model.id === normalizeWhisperModelId(settings.whisper_model)));
   let selectedWhisperAvailable = $derived(Boolean(selectedWhisperModel?.installed));
   let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
-  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component.startsWith("transcription-") || item.component === "whisper-cpp-tools" || (item.provides ?? []).some((cap) => ["transcription", "transcription-native"].includes(cap))));
-  let ocrComponents = $derived(runtimeComponents.filter((item) => item.component.startsWith("ocr-") || (item.provides ?? []).includes("ocr")));
+  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || (item.provides ?? []).includes("transcription-native")));
+  let ocrComponents = $derived(runtimeComponents.filter((item) => item.component === "tesseract-ocr-tools" || (item.provides ?? []).includes("ocr-native")));
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     toast = { msg, type };
@@ -209,7 +209,7 @@
         engineCall<TemplateInfo[]>("settings.templates.list"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local").catch(() => []),
       ]);
-      settings = { ...s, vault_path: s.vault_path ?? "", transcription_backend: s.transcription_backend ?? "whisper_cpp", ocr_backend: s.ocr_backend ?? "tesseract", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
+      settings = { ...s, vault_path: s.vault_path ?? "", transcription_backend: "whisper_cpp", ocr_backend: "tesseract", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
       providers = provs;
       templates = tmpls;
       localWhisperModels = normalizeLocalWhisperModels(localModels);
@@ -258,13 +258,13 @@
         patches: {
           output_dir: settings.output_dir,
           vault_path: settings.vault_path,
-          transcription_backend: settings.transcription_backend,
+          transcription_backend: "whisper_cpp",
           whisper_model: settings.whisper_model,
           whisper_model_dir: settings.whisper_model_dir,
           whisper_device: settings.whisper_device,
           whisper_compute_type: settings.whisper_compute_type,
           ocr_enabled: settings.ocr_enabled,
-          ocr_backend: settings.ocr_backend,
+          ocr_backend: "tesseract",
           vision_enabled: settings.vision_enabled,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
@@ -654,7 +654,6 @@
                   <label class="field-label" for="transcription_backend">转写后端</label>
                   <select id="transcription_backend" bind:value={settings.transcription_backend} onchange={markDirty}>
                     <option value="whisper_cpp">whisper.cpp native CLI</option>
-                    <option value="faster_whisper">faster-whisper Python component</option>
                   </select>
                 </div>
                 <div class="field">
@@ -697,7 +696,6 @@
                   <label class="field-label" for="ocr_backend">OCR 后端</label>
                   <select id="ocr_backend" bind:value={settings.ocr_backend} onchange={markDirty}>
                     <option value="tesseract">Tesseract native executable</option>
-                    <option value="paddleocr">PaddleOCR Python component</option>
                   </select>
                 </div>
               </div>
@@ -833,7 +831,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>默认使用 whisper.cpp native executable；faster-whisper 仅作为可选 Python component。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>使用 whisper.cpp native executable，不依赖 Python runtime。</p></div></div>
               {#if componentsLoading && transcriptionComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if transcriptionComponents.length === 0}
@@ -871,11 +869,11 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>Tesseract 是 native executable；PaddleOCR 是可选 Python component。只需要安装其中一个。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>使用 Tesseract native executable，不依赖 Python runtime。</p></div></div>
               {#if componentsLoading && ocrComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if ocrComponents.length === 0}
-                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到 OCR 插件清单</strong><small>请确认 runtime/manifests/tesseract-ocr-tools.json 或 ocr-cpu.json 存在。</small></div></div>
+                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到 OCR 插件清单</strong><small>请确认 runtime/manifests/tesseract-ocr-tools.json 存在。</small></div></div>
               {:else}
                 <div class="plugin-grid">
                   {#each ocrComponents as component}

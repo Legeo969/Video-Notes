@@ -19,9 +19,9 @@
   let linkSource = $state("");
   let title = $state("");
   let whisperModel = $state("large-v3");
-  let transcriptionBackend = $state<"whisper_cpp" | "faster_whisper">("whisper_cpp");
+  let transcriptionBackend = $state<"whisper_cpp">("whisper_cpp");
   let ocrEnabled = $state(false);
-  let ocrBackend = $state<"tesseract" | "paddleocr">("tesseract");
+  let ocrBackend = $state<"tesseract">("tesseract");
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
@@ -69,12 +69,12 @@
       const normalizedModels = normalizeLocalWhisperModels(discovered);
       localWhisperModels = normalizedModels;
       const preferred = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
-      transcriptionBackend = (settings.transcription_backend === "faster_whisper" ? "faster_whisper" : "whisper_cpp");
+      transcriptionBackend = "whisper_cpp";
       whisperModel = normalizedModels.some((model) => model.id === preferred)
         ? preferred
         : normalizedModels[0]?.id || preferred;
       ocrEnabled = Boolean(settings.ocr_enabled);
-      ocrBackend = settings.ocr_backend === "paddleocr" ? "paddleocr" : "tesseract";
+      ocrBackend = "tesseract";
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
@@ -338,7 +338,6 @@
               <label class="field-label" for="task-transcription-backend">转写后端</label>
               <select id="task-transcription-backend" bind:value={transcriptionBackend}>
                 <option value="whisper_cpp">whisper.cpp native CLI</option>
-                <option value="faster_whisper">faster-whisper Python component</option>
               </select>
             </div>
             <div class="field">
@@ -374,10 +373,9 @@
 
           <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
             <div class="enhance-icon"><Icon name="scan" size={20} /></div>
-            <div class="enhance-copy"><strong>OCR 后端</strong><span>{ocrBackend === "tesseract" ? "native executable" : "Python component"}</span></div>
+            <div class="enhance-copy"><strong>OCR 后端</strong><span>native executable</span></div>
             <select bind:value={ocrBackend} disabled={!ocrEnabled}>
               <option value="tesseract">Tesseract native</option>
-              <option value="paddleocr">PaddleOCR</option>
             </select>
           </label>
 

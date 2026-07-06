@@ -9,7 +9,6 @@ from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import unquote
 from src.domain.types import PipelineRequest
-from src.infrastructure.artifacts.obsidian import _sanitize_filename as _sanitize_obsidian_filename
 from src.utils.subtitle_writer import write_srt, write_ass, write_timestamped_txt
 from src.utils.system import _safe_dirname
 from src.vault_writer import archive_to_obsidian
@@ -20,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((<[^>]+>|[^)]+)\)")
 _FALLBACK_KEYFRAME_LIMIT = 8
+
+
+def _sanitize_obsidian_filename(name: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]', "", name)
+    safe = safe.replace(" ", "_")
+    safe = safe.strip().rstrip(".")
+    return safe if safe else "untitled"
 
 
 class ArtifactWriter:

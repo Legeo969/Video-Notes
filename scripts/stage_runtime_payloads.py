@@ -6,8 +6,6 @@ import argparse
 import json
 import os
 import shutil
-import sys
-import sysconfig
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -28,8 +26,6 @@ def stage_runtime_payloads(
     manifest_dir: str | Path | None = None,
     payload_root: str | Path | None = None,
     components: list[str] | None = None,
-    python_root: str | Path | None = None,
-    site_packages: str | Path | None = None,
     ffmpeg_dir: str | Path | None = None,
     source_map: dict[str, str | Path] | None = None,
     clean: bool = False,
@@ -41,8 +37,6 @@ def stage_runtime_payloads(
     selected = set(components or [])
     source_roots = _default_source_roots(
         repo,
-        python_root=python_root,
-        site_packages=site_packages,
         ffmpeg_dir=ffmpeg_dir,
         source_map=source_map or {},
     )
@@ -84,28 +78,15 @@ def stage_runtime_payloads(
 def _default_source_roots(
     repo: Path,
     *,
-    python_root: str | Path | None,
-    site_packages: str | Path | None,
     ffmpeg_dir: str | Path | None,
     source_map: dict[str, str | Path],
 ) -> dict[str, Path]:
-    python = _resolve_source(repo, python_root) if python_root else Path(sys.prefix).resolve()
-    site = (
-        _resolve_source(repo, site_packages)
-        if site_packages
-        else Path(sysconfig.get_paths()["purelib"]).resolve()
-    )
     ffmpeg = _resolve_source(repo, ffmpeg_dir) if ffmpeg_dir else _detect_ffmpeg_dir()
     roots = {
-        "base-engine": python,
         "download-tools": repo / "runtime" / "packages" / "download-tools",
         "ffmpeg-tools": ffmpeg,
         "whisper-cpp-tools": repo / "runtime" / "packages" / "whisper-cpp-tools",
         "tesseract-ocr-tools": repo / "runtime" / "packages" / "tesseract-ocr-tools",
-        "transcription-cpu": site,
-        "transcription-cuda": site,
-        "ocr-cpu": site,
-        "ocr-gpu": site,
     }
     for component, value in source_map.items():
         roots[component] = _resolve_source(repo, value)
@@ -194,8 +175,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest-dir", type=Path)
     parser.add_argument("--payload-root", type=Path)
     parser.add_argument("--component", action="append", dest="components")
-    parser.add_argument("--python-root", type=Path)
-    parser.add_argument("--site-packages", type=Path)
     parser.add_argument("--ffmpeg-dir", type=Path)
     parser.add_argument("--source-map", type=Path)
     parser.add_argument("--clean", action="store_true")
@@ -207,8 +186,6 @@ def main(argv: list[str] | None = None) -> int:
         manifest_dir=args.manifest_dir,
         payload_root=args.payload_root,
         components=args.components,
-        python_root=args.python_root,
-        site_packages=args.site_packages,
         ffmpeg_dir=args.ffmpeg_dir,
         source_map=_load_source_map(args.source_map),
         clean=args.clean,

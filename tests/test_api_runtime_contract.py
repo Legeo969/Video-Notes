@@ -144,19 +144,19 @@ def test_diagnostics_components_install_uses_bundled_package_source(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     manifest_dir = runtime_dir / "manifests"
-    package_dir = runtime_dir / "packages" / "ocr-cpu"
+    package_dir = runtime_dir / "packages" / "tesseract-ocr-tools"
     manifest_dir.mkdir(parents=True)
     package_dir.mkdir(parents=True)
     (package_dir / "tool.exe").write_text("ok", encoding="utf-8")
-    (manifest_dir / "ocr-cpu.json").write_text(
+    (manifest_dir / "tesseract-ocr-tools.json").write_text(
         json.dumps(
             {
-                "component": "ocr-cpu",
+                "component": "tesseract-ocr-tools",
                 "version": "1.0.0",
                 "platform": "windows-x86_64",
                 "engine_api": 1,
                 "files": ["tool.exe"],
-                "provides": ["ocr"],
+                "provides": ["ocr", "ocr-native"],
             }
         ),
         encoding="utf-8",
@@ -164,10 +164,10 @@ def test_diagnostics_components_install_uses_bundled_package_source(
 
     handlers = create_diagnostics_handlers(runtime_dir=str(runtime_dir))
 
-    installed = handlers["components.install"]({"component": "ocr-cpu"})
+    installed = handlers["components.install"]({"component": "tesseract-ocr-tools"})
 
     assert installed["ok"] is True
-    assert (runtime_dir / "components" / "ocr-cpu" / "tool.exe").is_file()
+    assert (runtime_dir / "components" / "tesseract-ocr-tools" / "tool.exe").is_file()
 
 
 def test_diagnostics_components_install_download_tools_fetches_ytdlp_exe(

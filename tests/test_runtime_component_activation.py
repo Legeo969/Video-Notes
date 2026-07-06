@@ -8,25 +8,25 @@ from src.utils.runtime_components import activate_runtime_components, installed_
 from src.utils import external_tools
 
 
-def test_runtime_component_activation_adds_installed_component_to_python_path(
+def test_runtime_component_activation_adds_installed_component_to_search_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     runtime = tmp_path / "runtime"
     installed = runtime / "components" / ".installed"
-    component = runtime / "components" / "transcription-cpu"
+    component = runtime / "components" / "whisper-cpp-tools"
     installed.mkdir(parents=True)
-    (component / "faster_whisper").mkdir(parents=True)
-    (component / "ctranslate2").mkdir()
-    (installed / "transcription-cpu.json").write_text(
+    (component / "whisper-cli.exe").parent.mkdir(parents=True)
+    (component / "whisper-cli.exe").write_text("exe", encoding="utf-8")
+    (installed / "whisper-cpp-tools.json").write_text(
         json.dumps(
             {
-                "component": "transcription-cpu",
+                "component": "whisper-cpp-tools",
                 "version": "1.0.0",
                 "platform": "windows-x86_64",
                 "engine_api": 1,
-                "provides": ["transcription"],
-                "files": ["faster_whisper/", "ctranslate2/"],
+                "provides": ["transcription-native"],
+                "files": ["whisper-cli.exe"],
             }
         ),
         encoding="utf-8",
@@ -34,8 +34,8 @@ def test_runtime_component_activation_adds_installed_component_to_python_path(
     monkeypatch.setattr(sys, "path", sys.path.copy())
 
     paths = activate_runtime_components(
-        components=["transcription-cuda", "transcription-cpu"],
-        provides="transcription",
+        components=["ffmpeg-tools", "whisper-cpp-tools"],
+        provides="transcription-native",
         runtime_root=runtime,
     )
 
@@ -49,7 +49,7 @@ def test_installed_component_paths_follow_requested_component_order(
     runtime = tmp_path / "runtime"
     installed = runtime / "components" / ".installed"
     installed.mkdir(parents=True)
-    for name in ("transcription-cpu", "transcription-cuda"):
+    for name in ("whisper-cpp-tools", "ffmpeg-tools"):
         (runtime / "components" / name).mkdir(parents=True)
         (installed / f"{name}.json").write_text(
             json.dumps(
@@ -58,19 +58,19 @@ def test_installed_component_paths_follow_requested_component_order(
                     "version": "1.0.0",
                     "platform": "windows-x86_64",
                     "engine_api": 1,
-                    "provides": ["transcription"],
+                    "provides": ["native-tools"],
                 }
             ),
             encoding="utf-8",
         )
 
     paths = installed_component_paths(
-        components=["transcription-cuda", "transcription-cpu"],
-        provides="transcription",
+        components=["ffmpeg-tools", "whisper-cpp-tools"],
+        provides="native-tools",
         runtime_root=runtime,
     )
 
-    assert [path.name for path in paths] == ["transcription-cuda", "transcription-cpu"]
+    assert [path.name for path in paths] == ["ffmpeg-tools", "whisper-cpp-tools"]
 
 
 def test_resolve_tool_checks_runtime_component_paths(

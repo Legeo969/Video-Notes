@@ -1,4 +1,4 @@
-"""Release preflight for the Tauri + Python sidecar product shape.
+"""Release preflight for the Tauri native-engine product shape.
 
 This gate checks repository state that can be proven without building an
 installer or booting a clean Windows VM. It intentionally keeps actual MSI/NSIS
@@ -22,7 +22,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 
 REQUIRED_COMPONENTS = {
-    "base-engine",
     "download-tools",
     "ffmpeg-tools",
     "whisper-cpp-tools",
@@ -59,8 +58,8 @@ def verify_repository(root: str | Path, *, strict_packages: bool = False) -> Rel
 
     _check_versions(repo, errors)
     _check_tauri_bundle(repo, errors)
-    _check_engine_manager(repo, errors)
-    _check_sidecar_release_scripts(repo, errors)
+    _check_native_engine(repo, errors)
+    _check_windows_release_script(repo, errors)
     _check_release_acceptance_verifier(repo, errors)
     _check_installed_runtime_verifier(repo, errors)
     _check_runtime_payload_verifier(repo, errors)
@@ -195,11 +194,11 @@ def _check_tauri_bundle(repo: Path, errors: list[GateIssue]) -> None:
         _issue(errors, "tauri_missing_installer_target", "bundle.targets must include nsis or msi", path)
 
     external_bin = set(bundle.get("externalBin") or [])
-    if "binaries/python-engine" not in external_bin:
+    if any("python-engine" in item for item in external_bin):
         _issue(
             errors,
-            "tauri_missing_sidecar",
-            "bundle.externalBin must include binaries/python-engine",
+            "tauri_python_sidecar_bundled",
+            "bundle.externalBin must not include python-engine in the native build",
             path,
         )
 
@@ -215,64 +214,58 @@ def _check_tauri_bundle(repo: Path, errors: list[GateIssue]) -> None:
         _issue(errors, "tauri_frontend_dist", "frontendDist must point to ../dist", path)
 
 
-def _check_engine_manager(repo: Path, errors: list[GateIssue]) -> None:
-    path = repo / "desktop" / "src-tauri" / "src" / "engine_manager.rs"
+def _check_native_engine(repo: Path, errors: list[GateIssue]) -> None:
+    path = repo / "desktop" / "src-tauri" / "src" / "native_engine.rs"
     text = _read_text(path, errors)
     if not text:
         return
 
     required_tokens = {
-        "resolve_bundled_sidecar": "production builds must resolve the bundled sidecar",
-        "production_engine_working_dir": "production engine must run from a writable user data dir",
-        "cfg!(debug_assertions)": "system Python fallback must be limited to development/debug paths",
-        "VIDEO_NOTES_ENGINE": "explicit developer override should remain available",
-        "--stdio": "engine must be launched through the framed stdio protocol",
+        "pub struct NativeEngine": "desktop backend must expose the Rust native engine",
+        "\"system.ping\"": "native engine must answer system.ping",
+        "\"settings.get\"": "native engine must own settings APIs",
+        "\"process.start\"": "native engine must own task processing APIs",
+        "\"components.list\"": "native engine must own runtime component APIs",
+        "default_export_dir": "native engine must keep writable export locations in user space",
     }
     for token, message in required_tokens.items():
         if token not in text:
-            _issue(errors, "engine_manager_contract", message, path)
+            _issue(errors, "native_engine_contract", message, path)
 
-    process_tree_path = repo / "desktop" / "src-tauri" / "src" / "process_tree.rs"
-    process_tree = _read_text(process_tree_path, errors)
-    for token in ("CreateJobObjectW", "AssignProcessToJobObject", "TerminateJobObject"):
-        if token not in process_tree:
-            _issue(
-                errors,
-                "windows_job_object_missing",
-                f"Windows process tree cleanup must use {token}",
-                process_tree_path,
-            )
+    main_path = repo / "desktop" / "src-tauri" / "src" / "main.rs"
+    main_text = _read_text(main_path, errors)
+    for token, message in {
+        "NativeEngine::new": "Tauri startup must create the native engine directly",
+        "\"python_running\": false": "engine status must report that Python is disabled",
+        "\"engine_kind\": \"rust-native\"": "startup event must identify the native engine",
+    }.items():
+        if token not in main_text:
+            _issue(errors, "native_engine_startup_contract", message, main_path)
 
 
-def _check_sidecar_release_scripts(repo: Path, errors: list[GateIssue]) -> None:
-    prepare_path = repo / "scripts" / "prepare_tauri_sidecar.ps1"
+def _check_windows_release_script(repo: Path, errors: list[GateIssue]) -> None:
     release_path = repo / "scripts" / "build_windows_release.ps1"
-    prepare = _read_text(prepare_path, errors)
     release = _read_text(release_path, errors)
 
-    prepare_tokens = {
-        "python -m venv": "sidecar build must use an isolated virtual environment",
-        "-m PyInstaller": "sidecar build must use PyInstaller",
-        "--onefile": "sidecar must be built as a single executable",
-        "--exclude-module PySide6": "sidecar must exclude old PySide6 runtime",
-        "python-engine-$TargetTriple.exe": "sidecar must be staged with Tauri target triple",
-        ".fingerprint": "sidecar source fingerprint must be written",
-    }
-    for token, message in prepare_tokens.items():
-        if token not in prepare:
-            _issue(errors, "sidecar_prepare_contract", message, prepare_path)
-
     release_tokens = {
-        "prepare_tauri_sidecar.ps1": "release build must prepare the Python sidecar",
-        "compute_sidecar_fingerprint.py": "release build must reject stale sidecars",
+        "npm ci": "release build must install frontend dependencies reproducibly",
+        "npm run build": "release build must build the frontend",
         "npm run tauri build": "release build must invoke Tauri bundling",
         "bundle": "release build must verify installer output",
         '".msi", ".exe"': "release build must require MSI/NSIS installer artifacts",
-        "verify_installed_runtime.py": "release build must smoke-test the staged sidecar after bundling",
     }
     for token, message in release_tokens.items():
         if token not in release:
             _issue(errors, "windows_release_contract", message, release_path)
+
+    forbidden_tokens = {
+        "prepare_tauri_sidecar.ps1": "native release build must not prepare a Python sidecar",
+        "compute_sidecar_fingerprint.py": "native release build must not fingerprint a Python sidecar",
+        "python-engine": "native release build must not stage python-engine",
+    }
+    for token, message in forbidden_tokens.items():
+        if token in release:
+            _issue(errors, "windows_release_python_sidecar", message, release_path)
 
 
 def _check_release_acceptance_verifier(repo: Path, errors: list[GateIssue]) -> None:
@@ -302,11 +295,9 @@ def _check_installed_runtime_verifier(repo: Path, errors: list[GateIssue]) -> No
 
     required_tokens = {
         "verify_installed_runtime": "installed release artifacts must have a verifier",
-        "system.ping": "installed verifier must smoke-test the sidecar through JSON-RPC",
-        "Content-Length": "installed verifier must use the framed protocol",
-        "PYTHONPATH": "installed verifier must strip Python development environment variables",
-        "VIDEO_NOTES_ENGINE": "installed verifier must ignore developer engine overrides",
-        "python-engine*.exe": "installed verifier must locate Tauri sidecar binaries",
+        "app_exe": "installed verifier must report the app executable",
+        "installer": "installed verifier must report the installer artifact",
+        "installer_extension": "installed verifier must validate installer type",
     }
     for token, message in required_tokens.items():
         if token not in text:
@@ -339,12 +330,6 @@ def _check_runtime_payload_source_preparer(repo: Path, errors: list[GateIssue]) 
 
     required_tokens = {
         "payload-source-map.json": "runtime payload source preparation must write a source map",
-        "python3.dll": "base-engine source preparation must collect python3.dll",
-        "python$($pythonInfo.version_nodot).dll": "base-engine source preparation must collect the versioned Python DLL",
-        "requirements\\sidecar.txt": "source preparation must use isolated sidecar requirements",
-        "requirements\\transcription-cpu.txt": "transcription source preparation must use isolated transcription requirements",
-        "requirements\\ocr-cpu.txt": "OCR CPU source preparation must use OCR CPU requirements",
-        "requirements\\ocr-gpu.txt": "OCR GPU source preparation must use OCR GPU requirements",
         "whisper-bin-x64.zip": "source preparation must fetch official whisper.cpp native tools",
         "tesseract.exe": "source preparation must collect Tesseract native OCR tools",
         "stage_runtime_payloads.py": "source preparation must optionally stage payloads",
@@ -363,13 +348,10 @@ def _check_runtime_payload_stager(repo: Path, errors: list[GateIssue]) -> None:
 
     required_tokens = {
         "stage_runtime_payloads": "runtime component payloads must have a staging helper",
-        "base-engine": "payload stager must know the base-engine source root",
         "download-tools": "payload stager must know the download-tools source root",
         "ffmpeg-tools": "payload stager must know the ffmpeg-tools source root",
         "whisper-cpp-tools": "payload stager must know the whisper.cpp source root",
         "tesseract-ocr-tools": "payload stager must know the Tesseract source root",
-        "transcription-cpu": "payload stager must know optional transcription source roots",
-        "ocr-cpu": "payload stager must know optional OCR source roots",
         "--clean": "payload stager must require an explicit replacement mode",
         "source-map": "payload stager must support explicit source roots",
     }
@@ -439,11 +421,8 @@ def _check_clean_vm_runtime_verifier(repo: Path, errors: list[GateIssue]) -> Non
         return
 
     required_tokens = {
-        "Content-Length": "clean VM verifier must use the framed protocol",
-        "system.ping": "clean VM verifier must smoke-test the sidecar",
-        "PYTHONPATH": "clean VM verifier must strip Python development environment variables",
-        "VIDEO_NOTES_ENGINE": "clean VM verifier must ignore developer engine overrides",
-        "python-engine*.exe": "clean VM verifier must locate bundled sidecar binaries",
+        "Find-AppExe": "clean VM verifier must locate the installed app executable",
+        "installer_missing": "clean VM verifier must validate installer artifacts",
         "ConvertTo-Json": "clean VM verifier must support machine-readable output",
     }
     for token, message in required_tokens.items():

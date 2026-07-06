@@ -7,9 +7,7 @@
   "sha256": "",
   "signature": "",
   "size_mb": 120,
-  "requires": {
-    "base-engine": ">=1.5.0 <2.0.0"
-  },
+  "requires": {},
   "provides": [
     "ocr",
     "ocr-native"

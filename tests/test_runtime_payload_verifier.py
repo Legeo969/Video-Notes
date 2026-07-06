@@ -57,24 +57,24 @@ def test_runtime_payload_verifier_accepts_complete_payloads(tmp_path: Path) -> N
 def test_runtime_payload_verifier_reports_missing_payload_directory(
     tmp_path: Path,
 ) -> None:
-    _manifest(tmp_path, "ocr-cpu", ["paddle/", "paddleocr/"])
+    _manifest(tmp_path, "tesseract-ocr-tools", ["tesseract.exe", "tessdata/"])
 
     report = payload_verifier.verify_runtime_payloads(tmp_path)
 
     assert not report.ok
-    assert report.components[0].missing_files == ["paddle/", "paddleocr/"]
+    assert report.components[0].missing_files == ["tesseract.exe", "tessdata/"]
 
 
 def test_runtime_payload_verifier_reports_missing_manifest_files(
     tmp_path: Path,
 ) -> None:
-    _manifest(tmp_path, "base-engine", ["python.exe", "Lib/"])
-    _write(tmp_path / "runtime" / "packages" / "base-engine" / "python.exe")
+    _manifest(tmp_path, "whisper-cpp-tools", ["whisper-cli.exe", "whisper.dll"])
+    _write(tmp_path / "runtime" / "packages" / "whisper-cpp-tools" / "whisper-cli.exe")
 
     report = payload_verifier.verify_runtime_payloads(tmp_path)
 
     assert not report.ok
-    assert report.components[0].missing_files == ["Lib/"]
+    assert report.components[0].missing_files == ["whisper.dll"]
 
 
 def test_runtime_payload_verifier_uses_payload_map(tmp_path: Path) -> None:
@@ -104,11 +104,11 @@ def test_runtime_payload_verifier_cli_json_reports_failure(
     tmp_path: Path,
     capsys,
 ) -> None:
-    _manifest(tmp_path, "ocr-gpu", ["paddle/"])
+    _manifest(tmp_path, "tesseract-ocr-tools", ["tessdata/"])
 
     exit_code = payload_verifier.main(["--root", str(tmp_path), "--json"])
     captured = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
     assert captured["ok"] is False
-    assert captured["components"][0]["missing_files"] == ["paddle/"]
+    assert captured["components"][0]["missing_files"] == ["tessdata/"]

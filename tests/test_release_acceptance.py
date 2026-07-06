@@ -27,7 +27,6 @@ def _load_script(name: str):
 acceptance = _load_script("verify_release_acceptance.py")
 
 REQUIRED_COMPONENTS = {
-    "base-engine",
     "download-tools",
     "ffmpeg-tools",
     "whisper-cpp-tools",
@@ -82,7 +81,6 @@ def _create_minimal_release_repo(root: Path, *, signed: bool = True) -> None:
             "bundle": {
                 "active": True,
                 "targets": ["nsis"],
-                "externalBin": ["binaries/python-engine"],
             },
         },
     )
@@ -97,37 +95,28 @@ def _create_minimal_release_repo(root: Path, *, signed: bool = True) -> None:
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "engine_manager.rs",
+        root / "desktop" / "src-tauri" / "src" / "native_engine.rs",
         (
-            'fn resolve_bundled_sidecar() { println!("--stdio"); }\n'
-            "fn production_engine_working_dir() {}\n"
-            "fn main() { if cfg!(debug_assertions) { println!(\"VIDEO_NOTES_ENGINE\"); } }\n"
+            "pub struct NativeEngine { default_export_dir: String }\n"
+            'fn call() { println!("\"system.ping\" \"settings.get\" \"process.start\" \"components.list\""); }\n'
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "process_tree.rs",
-        "CreateJobObjectW AssignProcessToJobObject TerminateJobObject",
-    )
-    _write(
-        root / "scripts" / "prepare_tauri_sidecar.ps1",
+        root / "desktop" / "src-tauri" / "src" / "main.rs",
         (
-            "python -m venv\n"
-            "-m PyInstaller\n"
-            "--onefile\n"
-            "--exclude-module PySide6\n"
-            "python-engine-$TargetTriple.exe\n"
-            ".fingerprint\n"
+            "NativeEngine::new\n"
+            '"python_running": false\n'
+            '"engine_kind": "rust-native"\n'
         ),
     )
     _write(
         root / "scripts" / "build_windows_release.ps1",
         (
-            "prepare_tauri_sidecar.ps1\n"
-            "compute_sidecar_fingerprint.py\n"
+            "npm ci\n"
+            "npm run build\n"
             "npm run tauri build\n"
             "bundle\n"
             '".msi", ".exe"\n'
-            "verify_installed_runtime.py\n"
         ),
     )
     _copy_release_scripts(root)
@@ -143,8 +132,6 @@ def _create_minimal_release_repo(root: Path, *, signed: bool = True) -> None:
             "package_sha256": "package-hash" if signed else "",
             "files": ["payload.txt"],
         }
-        if component != "base-engine":
-            manifest["requires"] = {"base-engine": ">=1.5.0 <2.0.0"}
         _write_json(root / "runtime" / "manifests" / f"{component}.json", manifest)
         _write(root / "runtime" / "packages" / component / "payload.txt", component)
 
@@ -153,48 +140,18 @@ def _create_minimal_release_repo(root: Path, *, signed: bool = True) -> None:
         "installer",
     )
 
-
-def _write_fake_sidecar(path: Path) -> None:
-    _write(
-        path,
-        (
-            "import json, sys\n"
-            "def read_frame():\n"
-            "    content_length = None\n"
-            "    while True:\n"
-            "        line = sys.stdin.buffer.readline()\n"
-            "        if not line:\n"
-            "            return None\n"
-            "        line = line.decode().rstrip('\\r\\n')\n"
-            "        if not line:\n"
-            "            break\n"
-            "        if line.lower().startswith('content-length:'):\n"
-            "            content_length = int(line.split(':', 1)[1].strip())\n"
-            "    return json.loads(sys.stdin.buffer.read(content_length).decode())\n"
-            "def write_frame(message):\n"
-            "    body = json.dumps(message).encode()\n"
-            "    sys.stdout.buffer.write(f'Content-Length: {len(body)}\\r\\n\\r\\n'.encode() + body)\n"
-            "    sys.stdout.buffer.flush()\n"
-            "write_frame({'jsonrpc':'2.0','protocol_version':1,'method':'engine.hello','params':{}})\n"
-            "request = read_frame()\n"
-            "if request:\n"
-            "    write_frame({'jsonrpc':'2.0','protocol_version':1,'id':request.get('id'),'result':'pong'})\n"
-        ),
-    )
-
-
 def _check_map(report) -> dict[str, object]:
     return {check.name: check for check in report.checks}
 
 
 def test_release_acceptance_passes_with_all_evidence(tmp_path: Path) -> None:
     _create_minimal_release_repo(tmp_path, signed=True)
-    sidecar = tmp_path / "fake_sidecar.py"
-    _write_fake_sidecar(sidecar)
+    app_dir = tmp_path / "installed"
+    _write(app_dir / "Video Notes AI.exe", "app")
 
     report = acceptance.verify_release_acceptance(
         tmp_path,
-        sidecar_command=[sys.executable, str(sidecar)],
+        app_dir=app_dir,
     )
 
     assert report.ok, report.to_dict()

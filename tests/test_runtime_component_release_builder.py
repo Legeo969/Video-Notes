@@ -70,7 +70,6 @@ def _create_release_gate_repo(root: Path) -> None:
             "bundle": {
                 "active": True,
                 "targets": ["nsis"],
-                "externalBin": ["binaries/python-engine"],
             },
         },
     )
@@ -85,37 +84,28 @@ def _create_release_gate_repo(root: Path) -> None:
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "engine_manager.rs",
+        root / "desktop" / "src-tauri" / "src" / "native_engine.rs",
         (
-            'fn resolve_bundled_sidecar() { println!("--stdio"); }\n'
-            "fn production_engine_working_dir() {}\n"
-            "fn main() { if cfg!(debug_assertions) { println!(\"VIDEO_NOTES_ENGINE\"); } }\n"
+            "pub struct NativeEngine { default_export_dir: String }\n"
+            'fn call() { println!("\"system.ping\" \"settings.get\" \"process.start\" \"components.list\""); }\n'
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "process_tree.rs",
-        "CreateJobObjectW AssignProcessToJobObject TerminateJobObject",
-    )
-    _write(
-        root / "scripts" / "prepare_tauri_sidecar.ps1",
+        root / "desktop" / "src-tauri" / "src" / "main.rs",
         (
-            "python -m venv\n"
-            "-m PyInstaller\n"
-            "--onefile\n"
-            "--exclude-module PySide6\n"
-            "python-engine-$TargetTriple.exe\n"
-            ".fingerprint\n"
+            "NativeEngine::new\n"
+            '"python_running": false\n'
+            '"engine_kind": "rust-native"\n'
         ),
     )
     _write(
         root / "scripts" / "build_windows_release.ps1",
         (
-            "prepare_tauri_sidecar.ps1\n"
-            "compute_sidecar_fingerprint.py\n"
+            "npm ci\n"
+            "npm run build\n"
             "npm run tauri build\n"
             "bundle\n"
             '".msi", ".exe"\n'
-            "verify_installed_runtime.py\n"
         ),
     )
     shutil.copy2(SCRIPTS / "verify_release_acceptance.py", root / "scripts" / "verify_release_acceptance.py")
@@ -143,8 +133,6 @@ def _create_component_manifests_and_payloads(root: Path) -> None:
             "package_sha256": "",
             "files": ["payload.txt"],
         }
-        if component != "base-engine":
-            manifest["requires"] = {"base-engine": ">=1.5.0 <2.0.0"}
         _write_json(root / "runtime" / "manifests" / f"{component}.json", manifest)
         _write(root / "runtime" / "packages" / component / "payload.txt", component)
 

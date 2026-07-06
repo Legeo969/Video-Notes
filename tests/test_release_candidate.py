@@ -19,7 +19,6 @@ spec.loader.exec_module(candidate_builder)
 
 
 COMPONENTS = (
-    "base-engine",
     "download-tools",
     "ffmpeg-tools",
     "whisper-cpp-tools",
@@ -62,7 +61,7 @@ def test_create_windows_release_candidate_writes_vm_bundle(tmp_path: Path) -> No
 
     assert report.ok, report.to_dict()
     assert (out / "installer" / "Video Notes AI_1.5.0_x64-setup.exe").is_file()
-    assert (out / "components" / "base-engine-1.5.0.zip").is_file()
+    assert (out / "components" / "whisper-cpp-tools-1.5.0.zip").is_file()
     assert (out / "component-release-public.key").is_file()
     assert not (out / "component-release-private.key").exists()
     assert (out / "scripts" / "verify_clean_vm_runtime.ps1").is_file()

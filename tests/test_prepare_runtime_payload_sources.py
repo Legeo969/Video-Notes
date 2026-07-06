@@ -15,16 +15,6 @@ def test_prepare_runtime_payload_sources_script_contract() -> None:
 
     required = [
         "payload-source-map.json",
-        "python3.dll",
-        "python$($pythonInfo.version_nodot).dll",
-        "Copy-PythonStdlib",
-        "site-packages",
-        "requirements\\sidecar.txt",
-        "requirements\\transcription-cpu.txt",
-        "IncludeTranscriptionCpu",
-        "requirements\\cuda.txt",
-        "requirements\\ocr-cpu.txt",
-        "requirements\\ocr-gpu.txt",
         "yt-dlp.exe",
         "whisper-bin-x64.zip",
         "whisper-cli.exe",
@@ -36,7 +26,6 @@ def test_prepare_runtime_payload_sources_script_contract() -> None:
         "stage_runtime_payloads.py",
         "verify_runtime_payloads.py",
         "StagePayloads",
-        "componentsToStage",
         "componentArgs",
         "-SkipInstall",
         "-WhisperCppDir",
@@ -57,9 +46,6 @@ def test_runtime_payload_source_preparation_is_documented() -> None:
 def test_transcription_dependencies_are_not_in_base_runtime() -> None:
     base = (ROOT / "requirements" / "base.txt").read_text(encoding="utf-8")
     sidecar = (ROOT / "requirements" / "sidecar.txt").read_text(encoding="utf-8")
-    transcription = (ROOT / "requirements" / "transcription-cpu.txt").read_text(
-        encoding="utf-8"
-    )
 
     assert "faster-whisper" not in base
     assert "ctranslate2" not in base
@@ -67,5 +53,3 @@ def test_transcription_dependencies_are_not_in_base_runtime() -> None:
     assert "ctranslate2" not in sidecar
     assert "yt-dlp" not in base
     assert "yt-dlp" not in sidecar
-    assert "faster-whisper" in transcription
-    assert "ctranslate2" in transcription

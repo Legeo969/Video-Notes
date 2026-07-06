@@ -16,7 +16,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_COMPONENTS = (
-    "base-engine",
     "download-tools",
     "ffmpeg-tools",
     "whisper-cpp-tools",
@@ -226,7 +225,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_clean_vm_runtime.ps1 `
 
 5. Launch Video Notes AI from the Start Menu or Desktop shortcut.
 6. Open Settings and Diagnostics.
-7. Run one local media smoke task using bundled/base components.
+7. Run one local media smoke task using installed native components.
 8. Record the result next to `RELEASE-MANIFEST.json`.
 
 Repository tests do not replace this VM gate.

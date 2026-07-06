@@ -45,7 +45,6 @@ def _create_minimal_release_repo(root: Path) -> None:
             "bundle": {
                 "active": True,
                 "targets": ["nsis"],
-                "externalBin": ["binaries/python-engine"],
             },
         },
     )
@@ -60,37 +59,28 @@ def _create_minimal_release_repo(root: Path) -> None:
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "engine_manager.rs",
+        root / "desktop" / "src-tauri" / "src" / "native_engine.rs",
         (
-            'fn resolve_bundled_sidecar() { println!("--stdio"); }\n'
-            "fn production_engine_working_dir() {}\n"
-            "fn main() { if cfg!(debug_assertions) { println!(\"VIDEO_NOTES_ENGINE\"); } }\n"
+            "pub struct NativeEngine { default_export_dir: String }\n"
+            'fn call() { println!("\"system.ping\" \"settings.get\" \"process.start\" \"components.list\""); }\n'
         ),
     )
     _write(
-        root / "desktop" / "src-tauri" / "src" / "process_tree.rs",
-        "CreateJobObjectW AssignProcessToJobObject TerminateJobObject",
-    )
-    _write(
-        root / "scripts" / "prepare_tauri_sidecar.ps1",
+        root / "desktop" / "src-tauri" / "src" / "main.rs",
         (
-            "python -m venv\n"
-            "-m PyInstaller\n"
-            "--onefile\n"
-            "--exclude-module PySide6\n"
-            "python-engine-$TargetTriple.exe\n"
-            ".fingerprint\n"
+            "NativeEngine::new\n"
+            '"python_running": false\n'
+            '"engine_kind": "rust-native"\n'
         ),
     )
     _write(
         root / "scripts" / "build_windows_release.ps1",
         (
-            "prepare_tauri_sidecar.ps1\n"
-            "compute_sidecar_fingerprint.py\n"
+            "npm ci\n"
+            "npm run build\n"
             "npm run tauri build\n"
             "bundle\n"
             '".msi", ".exe"\n'
-            "verify_installed_runtime.py\n"
         ),
     )
     _write(
@@ -108,11 +98,9 @@ def _create_minimal_release_repo(root: Path) -> None:
         root / "scripts" / "verify_installed_runtime.py",
         (
             "def verify_installed_runtime(): pass\n"
-            "system.ping\n"
-            "Content-Length\n"
-            "PYTHONPATH\n"
-            "VIDEO_NOTES_ENGINE\n"
-            "python-engine*.exe\n"
+            "app_exe\n"
+            "installer\n"
+            "installer_extension\n"
         ),
     )
     _write(
@@ -129,12 +117,6 @@ def _create_minimal_release_repo(root: Path) -> None:
         root / "scripts" / "prepare_runtime_payload_sources.ps1",
         (
             "payload-source-map.json\n"
-            "python3.dll\n"
-            'python$($pythonInfo.version_nodot).dll\n'
-            "requirements\\sidecar.txt\n"
-            "requirements\\transcription-cpu.txt\n"
-            "requirements\\ocr-cpu.txt\n"
-            "requirements\\ocr-gpu.txt\n"
             "whisper-bin-x64.zip\n"
             "tesseract.exe\n"
             "stage_runtime_payloads.py\n"
@@ -145,13 +127,10 @@ def _create_minimal_release_repo(root: Path) -> None:
         root / "scripts" / "stage_runtime_payloads.py",
         (
             "def stage_runtime_payloads(): pass\n"
-            "base-engine\n"
             "download-tools\n"
             "ffmpeg-tools\n"
             "whisper-cpp-tools\n"
             "tesseract-ocr-tools\n"
-            "transcription-cpu\n"
-            "ocr-cpu\n"
             "--clean\n"
             "source-map\n"
         ),
@@ -189,11 +168,8 @@ def _create_minimal_release_repo(root: Path) -> None:
     _write(
         root / "scripts" / "verify_clean_vm_runtime.ps1",
         (
-            "Content-Length\n"
-            "system.ping\n"
-            "PYTHONPATH\n"
-            "VIDEO_NOTES_ENGINE\n"
-            "python-engine*.exe\n"
+            "Find-AppExe\n"
+            "installer_missing\n"
             "ConvertTo-Json\n"
         ),
     )
@@ -228,8 +204,6 @@ def _create_minimal_release_repo(root: Path) -> None:
             "engine_api": 1,
             "files": ["tool.exe"],
         }
-        if component != "base-engine":
-            manifest["requires"] = {"base-engine": ">=1.5.0 <2.0.0"}
         _write_json(root / "runtime" / "manifests" / f"{component}.json", manifest)
 
 
@@ -252,22 +226,22 @@ def test_release_gate_detects_product_version_drift(tmp_path: Path) -> None:
     assert "version_mismatch" in _codes(report)
 
 
-def test_release_gate_detects_missing_tauri_sidecar_bundle(tmp_path: Path) -> None:
+def test_release_gate_detects_tauri_python_sidecar_bundle(tmp_path: Path) -> None:
     _create_minimal_release_repo(tmp_path)
     tauri_path = tmp_path / "desktop" / "src-tauri" / "tauri.conf.json"
     tauri = json.loads(tauri_path.read_text(encoding="utf-8"))
-    tauri["bundle"]["externalBin"] = []
+    tauri["bundle"]["externalBin"] = ["binaries/python-engine"]
     _write_json(tauri_path, tauri)
 
     report = release_gate.verify_repository(tmp_path)
 
     assert not report.ok
-    assert "tauri_missing_sidecar" in _codes(report)
+    assert "tauri_python_sidecar_bundled" in _codes(report)
 
 
 def test_release_gate_detects_runtime_manifest_version_drift(tmp_path: Path) -> None:
     _create_minimal_release_repo(tmp_path)
-    manifest_path = tmp_path / "runtime" / "manifests" / "base-engine.json"
+    manifest_path = tmp_path / "runtime" / "manifests" / "download-tools.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["version"] = "1.2.0"
     _write_json(manifest_path, manifest)

@@ -7,9 +7,7 @@
   "sha256": "",
   "signature": "",
   "size_mb": 50,
-  "requires": {
-    "base-engine": ">=1.5.0 <2.0.0"
-  },
+  "requires": {},
   "provides": [
     "transcription-native"
   ],

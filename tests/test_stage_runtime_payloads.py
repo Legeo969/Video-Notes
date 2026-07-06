@@ -43,24 +43,6 @@ def _manifest(root: Path, component: str, files: list[str]) -> None:
     )
 
 
-def test_stage_runtime_payloads_copies_python_runtime_payload(tmp_path: Path) -> None:
-    _manifest(tmp_path, "base-engine", ["python.exe", "Lib/"])
-    python_root = tmp_path / "python-runtime"
-    _write(python_root / "python.exe")
-    _write(python_root / "Lib" / "os.py")
-
-    result = payload_stager.stage_runtime_payloads(
-        tmp_path,
-        components=["base-engine"],
-        python_root=python_root,
-    )
-
-    payload = tmp_path / "runtime" / "packages" / "base-engine"
-    assert result[0]["component"] == "base-engine"
-    assert (payload / "python.exe").is_file()
-    assert (payload / "Lib" / "os.py").is_file()
-
-
 def test_stage_runtime_payloads_copies_ffmpeg_payload(tmp_path: Path) -> None:
     _manifest(tmp_path, "ffmpeg-tools", ["ffmpeg.exe", "ffprobe.exe"])
     ffmpeg_dir = tmp_path / "ffmpeg-bin"
@@ -112,37 +94,18 @@ def test_stage_runtime_payloads_copies_tesseract_payload(tmp_path: Path) -> None
     assert (payload / "tessdata" / "eng.traineddata").is_file()
 
 
-def test_stage_runtime_payloads_copies_site_packages_payload(tmp_path: Path) -> None:
-    _manifest(tmp_path, "transcription-cpu", ["ctranslate2/", "faster_whisper/"])
-    site_packages = tmp_path / "site-packages"
-    _write(site_packages / "ctranslate2" / "__init__.py")
-    _write(site_packages / "faster_whisper" / "__init__.py")
-
-    payload_stager.stage_runtime_payloads(
-        tmp_path,
-        components=["transcription-cpu"],
-        site_packages=site_packages,
-    )
-
-    payload = tmp_path / "runtime" / "packages" / "transcription-cpu"
-    assert (payload / "ctranslate2" / "__init__.py").is_file()
-    assert (payload / "faster_whisper" / "__init__.py").is_file()
-
-
 def test_stage_runtime_payloads_uses_source_map(tmp_path: Path) -> None:
-    _manifest(tmp_path, "ocr-cpu", ["paddle/"])
-    source = tmp_path / "external-ocr"
-    _write(source / "paddle" / "__init__.py")
+    _manifest(tmp_path, "download-tools", ["yt-dlp.exe"])
+    source = tmp_path / "external-download-tools"
+    _write(source / "yt-dlp.exe")
 
     payload_stager.stage_runtime_payloads(
         tmp_path,
-        components=["ocr-cpu"],
-        source_map={"ocr-cpu": source},
+        components=["download-tools"],
+        source_map={"download-tools": source},
     )
 
-    assert (
-        tmp_path / "runtime" / "packages" / "ocr-cpu" / "paddle" / "__init__.py"
-    ).is_file()
+    assert (tmp_path / "runtime" / "packages" / "download-tools" / "yt-dlp.exe").is_file()
 
 
 def test_stage_runtime_payloads_refuses_to_overwrite_without_clean(tmp_path: Path) -> None:
@@ -202,12 +165,12 @@ def test_stage_runtime_payloads_cli_json(tmp_path: Path, capsys) -> None:
 
 
 def test_stage_runtime_payloads_accepts_bom_source_map(tmp_path: Path) -> None:
-    _manifest(tmp_path, "ocr-cpu", ["paddle/"])
-    source = tmp_path / "external-ocr"
-    _write(source / "paddle" / "__init__.py")
+    _manifest(tmp_path, "download-tools", ["yt-dlp.exe"])
+    source = tmp_path / "external-download-tools"
+    _write(source / "yt-dlp.exe")
     source_map = tmp_path / "source-map.json"
     source_map.write_text(
-        json.dumps({"ocr-cpu": str(source)}),
+        json.dumps({"download-tools": str(source)}),
         encoding="utf-8-sig",
     )
 
@@ -215,12 +178,10 @@ def test_stage_runtime_payloads_accepts_bom_source_map(tmp_path: Path) -> None:
         "--root",
         str(tmp_path),
         "--component",
-        "ocr-cpu",
+        "download-tools",
         "--source-map",
         str(source_map),
     ])
 
     assert exit_code == 0
-    assert (
-        tmp_path / "runtime" / "packages" / "ocr-cpu" / "paddle" / "__init__.py"
-    ).is_file()
+    assert (tmp_path / "runtime" / "packages" / "download-tools" / "yt-dlp.exe").is_file()

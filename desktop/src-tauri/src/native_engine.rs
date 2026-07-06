@@ -1,6 +1,8 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,6 +39,22 @@ struct NativeJob {
     transcript_path: Option<String>,
     frames_count: u32,
     can_resume: bool,
+}
+
+#[derive(Clone)]
+struct NoteEntry {
+    id: u32,
+    title: String,
+    path: PathBuf,
+    created_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct NativeProviderProfile {
+    base_url: String,
+    api_key: String,
+    model: String,
+    vision_model: String,
 }
 
 impl NativeEngine {
@@ -96,11 +114,8 @@ impl NativeEngine {
             "settings.providers.update" => self.providers_update(params),
             "settings.providers.delete" | "settings.providers.remove" => self.providers_delete(params),
             "settings.providers.set_active" => self.providers_set_active(params),
-            "settings.providers.test" => Ok(json!({
-                "success": false,
-                "message": "Native provider connectivity test is not migrated yet"
-            })),
-            "settings.providers.models" => Ok(json!([])),
+            "settings.providers.test" => self.provider_test(params),
+            "settings.providers.models" => self.provider_models(params),
             "settings.templates.list" => self.templates_list(),
             "settings.models.scan" | "settings.models.local" => self.local_models(),
             "settings.bindings.set" => self.bindings_set(params),
@@ -118,8 +133,25 @@ impl NativeEngine {
             "process.pause" | "process.cancel" | "process.resume" | "process.retry" => {
                 Err("Native task actions are not migrated yet".to_string())
             }
-            "notes.list" | "notes.search" => Ok(json!([])),
-            "collection.list" => Ok(json!([])),
+            "notes.list" => self.notes_list(None),
+            "notes.search" => self.notes_list(string_param(&params, "query")),
+            "notes.get" => self.notes_get(params),
+            "notes.get_by_path" => self.notes_get_by_path(params),
+            "notes.update" => self.notes_update(params),
+            "notes.delete" => self.notes_delete(params),
+            "notes.open" => self.notes_open(params),
+            "notes.reveal" => self.notes_reveal(params),
+            "collection.list" => self.collection_list(),
+            "collection.get" => self.collection_get(params),
+            "collection.create" => self.collection_create(params),
+            "collection.update" => self.collection_update(params),
+            "collection.delete" => self.collection_delete(params),
+            "collection.list_items" => self.collection_list_items(params),
+            "collection.add_items" => self.collection_add_items(params),
+            "collection.remove_items" => self.collection_remove_items(params),
+            "collection.import_folder" => self.collection_import_folder(params),
+            "collection.export" => self.collection_export(params),
+            "collection.batch_process" => self.collection_batch_process(params),
             _ => return None,
         };
         Some(result)
@@ -174,7 +206,7 @@ impl NativeEngine {
         let active_provider = string_value(&raw, "active_provider").unwrap_or_default();
         Ok(json!({
             "output_dir": string_value(&raw, "output_dir").unwrap_or_else(|| self.default_export_dir.to_string_lossy().to_string()),
-            "transcription_backend": string_value(&raw, "transcription_backend").unwrap_or_else(|| "whisper_cpp".to_string()),
+            "transcription_backend": "whisper_cpp",
             "whisper_model": string_value(&raw, "whisper_model").unwrap_or_else(|| "large-v3".to_string()),
             "whisper_model_dir": model_dir,
             "model_dir": model_dir,
@@ -185,7 +217,7 @@ impl NativeEngine {
             "frame_mode": string_value(&raw, "frame_mode").unwrap_or_else(|| "fixed".to_string()),
             "max_frames": raw.get("max_frames").and_then(Value::as_i64).unwrap_or(30),
             "ocr_enabled": raw.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false),
-            "ocr_backend": string_value(&raw, "ocr_backend").unwrap_or_else(|| "tesseract".to_string()),
+            "ocr_backend": "tesseract",
             "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
             "template_id": template,
@@ -256,6 +288,8 @@ impl NativeEngine {
         if let Some(value) = raw.get("whisper_model_dir").cloned() {
             raw.entry("model_dir".to_string()).or_insert(value);
         }
+        raw.insert("transcription_backend".to_string(), json!("whisper_cpp"));
+        raw.insert("ocr_backend".to_string(), json!("tesseract"));
         self.write_settings(raw)?;
         Ok(json!(true))
     }
@@ -418,6 +452,35 @@ impl NativeEngine {
         );
         self.write_settings(raw)?;
         Ok(json!(true))
+    }
+
+    fn provider_test(&self, params: Value) -> Result<Value, String> {
+        let raw = self.read_settings();
+        let profile = provider_profile_for_request(&raw, &params)?;
+        match fetch_provider_models(&profile) {
+            Ok(models) => Ok(json!({
+                "success": true,
+                "message": format!("服务可用，读取到 {} 个模型", models.len()),
+                "models": models,
+            })),
+            Err(error) => Ok(json!({
+                "success": false,
+                "message": error,
+            })),
+        }
+    }
+
+    fn provider_models(&self, params: Value) -> Result<Value, String> {
+        let raw = self.read_settings();
+        let profile = provider_profile_for_request(&raw, &params)?;
+        let models = match fetch_provider_models(&profile) {
+            Ok(models) => models,
+            Err(_) => clean_models(vec![
+                profile.model.clone(),
+                profile.vision_model.clone(),
+            ]),
+        };
+        Ok(json!(models))
     }
 
     fn bindings_set(&self, params: Value) -> Result<Value, String> {
@@ -698,6 +761,11 @@ impl NativeEngine {
         let runtime_dir = self.runtime_dir.clone();
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
         let whisper_model = string_value(&settings, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
+        let provider = active_provider_profile(&settings).ok();
+        let ocr_enabled = params
+            .get("ocr_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| settings.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false));
         std::thread::spawn(move || {
             run_native_job(
                 jobs,
@@ -709,6 +777,8 @@ impl NativeEngine {
                 runtime_dir,
                 model_dirs,
                 whisper_model,
+                provider,
+                ocr_enabled,
             );
         });
 
@@ -724,6 +794,393 @@ impl NativeEngine {
         let old_len = jobs.len();
         jobs.retain(|job| job.id != id);
         Ok(json!(jobs.len() != old_len))
+    }
+
+    fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
+        let query = query.unwrap_or_default().to_lowercase();
+        let notes = self
+            .note_entries()?
+            .into_iter()
+            .filter(|note| {
+                query.is_empty()
+                    || note.title.to_lowercase().contains(&query)
+                    || note.path.to_string_lossy().to_lowercase().contains(&query)
+            })
+            .map(|note| {
+                json!({
+                    "id": note.id,
+                    "title": note.title,
+                    "path": note.path.to_string_lossy(),
+                    "created_at": note.created_at,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!(notes))
+    }
+
+    fn notes_get(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("note_id")
+            .or_else(|| params.get("id"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "note_id is required".to_string())? as u32;
+        let note = self
+            .note_entries()?
+            .into_iter()
+            .find(|note| note.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))?;
+        note_detail(note)
+    }
+
+    fn notes_get_by_path(&self, params: Value) -> Result<Value, String> {
+        let path = required_string(&params, "path")?;
+        let path = PathBuf::from(path);
+        if !path.is_file() {
+            return Err(format!("Note not found: {}", path.display()));
+        }
+        note_detail(note_entry_from_path(path)?)
+    }
+
+    fn notes_update(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("id")
+            .or_else(|| params.get("note_id"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "id is required".to_string())? as u32;
+        let content = params
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "content is required".to_string())?;
+        let note = self
+            .note_entries()?
+            .into_iter()
+            .find(|note| note.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))?;
+        fs::write(&note.path, content).map_err(|error| error.to_string())?;
+        Ok(json!(true))
+    }
+
+    fn notes_delete(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("id")
+            .or_else(|| params.get("note_id"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "id is required".to_string())? as u32;
+        let note = self
+            .note_entries()?
+            .into_iter()
+            .find(|note| note.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))?;
+        fs::remove_file(&note.path).map_err(|error| error.to_string())?;
+        Ok(json!(true))
+    }
+
+    fn notes_open(&self, params: Value) -> Result<Value, String> {
+        let note = self.note_from_id_params(params)?;
+        open_path(&note.path)
+    }
+
+    fn notes_reveal(&self, params: Value) -> Result<Value, String> {
+        let note = self.note_from_id_params(params)?;
+        reveal_path(&note.path)
+    }
+
+    fn note_from_id_params(&self, params: Value) -> Result<NoteEntry, String> {
+        let id = params
+            .get("id")
+            .or_else(|| params.get("note_id"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "id is required".to_string())? as u32;
+        self.note_entries()?
+            .into_iter()
+            .find(|note| note.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))
+    }
+
+    fn note_entries(&self) -> Result<Vec<NoteEntry>, String> {
+        let settings = self.read_settings();
+        let mut roots = Vec::new();
+        roots.push(
+            string_value(&settings, "output_dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.default_export_dir.clone()),
+        );
+        if let Some(vault_path) = string_value(&settings, "vault_path") {
+            roots.push(PathBuf::from(vault_path).join("video-notes"));
+        }
+
+        let mut notes = Vec::new();
+        for root in roots {
+            collect_markdown_notes(&root, &mut notes, 0)?;
+        }
+        notes.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        Ok(notes)
+    }
+
+    fn collection_list(&self) -> Result<Value, String> {
+        let store = self.read_collection_store();
+        let collections = store
+            .get("collections")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|collection| {
+                let items = collection
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                json!({
+                    "id": collection.get("id").and_then(Value::as_u64).unwrap_or(0),
+                    "name": collection.get("name").and_then(Value::as_str).unwrap_or("Untitled"),
+                    "item_count": items,
+                    "status": collection.get("status").and_then(Value::as_str).unwrap_or("active"),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!(collections))
+    }
+
+    fn collection_get(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let store = self.read_collection_store();
+        let collection = find_collection(&store, id)
+            .cloned()
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        let items = collection
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "id": id,
+            "name": collection.get("name").and_then(Value::as_str).unwrap_or("Untitled"),
+            "status": collection.get("status").and_then(Value::as_str).unwrap_or("active"),
+            "item_count": items.len(),
+            "items": items,
+        }))
+    }
+
+    fn collection_create(&self, params: Value) -> Result<Value, String> {
+        let name = string_param(&params, "name")
+            .or_else(|| string_param(&params, "title"))
+            .ok_or_else(|| "name is required".to_string())?;
+        let mut store = self.read_collection_store();
+        let id = next_store_id(&mut store, "next_collection_id");
+        let items = params
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+            .filter(|item| !item.trim().is_empty())
+            .enumerate()
+            .map(|(index, input)| collection_item((index + 1) as u64, &input))
+            .collect::<Vec<_>>();
+        store
+            .entry("collections".to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| "collections must be an array".to_string())?
+            .push(json!({
+                "id": id,
+                "name": name,
+                "status": "active",
+                "created_at": Utc::now().to_rfc3339(),
+                "items": items,
+            }));
+        self.write_collection_store(store)?;
+        Ok(json!({ "id": id, "name": name }))
+    }
+
+    fn collection_update(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, id)
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        if let Some(name) = string_param(&params, "name").or_else(|| string_param(&params, "title")) {
+            collection["name"] = json!(name);
+        }
+        self.write_collection_store(store)?;
+        Ok(json!(true))
+    }
+
+    fn collection_delete(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let mut store = self.read_collection_store();
+        let collections = store
+            .entry("collections".to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| "collections must be an array".to_string())?;
+        let old_len = collections.len();
+        collections.retain(|collection| collection.get("id").and_then(Value::as_u64) != Some(id));
+        let removed = collections.len() != old_len;
+        self.write_collection_store(store)?;
+        Ok(json!(removed))
+    }
+
+    fn collection_list_items(&self, params: Value) -> Result<Value, String> {
+        let detail = self.collection_get(params)?;
+        Ok(detail.get("items").cloned().unwrap_or_else(|| json!([])))
+    }
+
+    fn collection_add_items(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let new_inputs = params
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "items must be a list".to_string())?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, id)
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        let collection = collection
+            .as_object_mut()
+            .ok_or_else(|| "collection must be an object".to_string())?;
+        let items = collection
+            .entry("items".to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| "items must be an array".to_string())?;
+        let mut next_id = items
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_u64))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        for input in new_inputs {
+            items.push(collection_item(next_id, &input));
+            next_id += 1;
+        }
+        let result = json!(items.clone());
+        self.write_collection_store(store)?;
+        Ok(result)
+    }
+
+    fn collection_remove_items(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let item_ids = params
+            .get("item_ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "item_ids must be a list".to_string())?
+            .iter()
+            .filter_map(Value::as_u64)
+            .collect::<Vec<_>>();
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, id)
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        let collection = collection
+            .as_object_mut()
+            .ok_or_else(|| "collection must be an object".to_string())?;
+        let items = collection
+            .entry("items".to_string())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| "items must be an array".to_string())?;
+        items.retain(|item| {
+            !item_ids.contains(&item.get("id").and_then(Value::as_u64).unwrap_or(0))
+        });
+        self.write_collection_store(store)?;
+        Ok(json!(true))
+    }
+
+    fn collection_import_folder(&self, params: Value) -> Result<Value, String> {
+        let path = PathBuf::from(required_string(&params, "path")?);
+        if !path.is_dir() {
+            return Err(format!("Folder not found: {}", path.display()));
+        }
+        let mut inputs = Vec::new();
+        collect_media_files(&path, &mut inputs, 0)?;
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Imported Folder")
+            .to_string();
+        self.collection_create(json!({ "name": name, "items": inputs }))
+    }
+
+    fn collection_export(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let detail = self.collection_get(json!({ "id": id }))?;
+        let name = detail.get("name").and_then(Value::as_str).unwrap_or("collection");
+        let settings = self.read_settings();
+        let output_dir = string_value(&settings, "output_dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.default_export_dir.clone());
+        fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
+        let path = output_dir.join(format!("collection-{}-{}.md", id, sanitize_filename(name)));
+        let mut body = format!("# {name}\n\n");
+        for item in detail
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let title = item.get("title").and_then(Value::as_str).unwrap_or("Untitled");
+            let input = item.get("input").and_then(Value::as_str).unwrap_or("");
+            let status = item.get("status").and_then(Value::as_str).unwrap_or("pending");
+            body.push_str(&format!("- [{status}] {title}: `{input}`\n"));
+        }
+        fs::write(&path, body).map_err(|error| error.to_string())?;
+        Ok(json!({ "path": path.to_string_lossy() }))
+    }
+
+    fn collection_batch_process(&self, params: Value) -> Result<Value, String> {
+        let id = required_u64(&params, "id")?;
+        let detail = self.collection_get(json!({ "id": id }))?;
+        let items = detail
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if items.is_empty() {
+            return Err("collection has no processable items".to_string());
+        }
+        let mut run_ids = Vec::new();
+        for item in items {
+            let input = item.get("input").and_then(Value::as_str).unwrap_or("");
+            if input.trim().is_empty() {
+                continue;
+            }
+            let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+            let result = self.process_start(json!({ "input": input, "title": title }))?;
+            if let Some(run_id) = result.get("job_id").and_then(Value::as_u64) {
+                run_ids.push(run_id);
+            }
+        }
+        Ok(json!({
+            "batch_job_id": format!("batch-{id}-{}", Utc::now().timestamp()),
+            "run_ids": run_ids,
+            "count": run_ids.len(),
+        }))
+    }
+
+    fn read_collection_store(&self) -> Map<String, Value> {
+        read_json_file(&self.collection_store_path())
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_else(|| {
+                let mut store = Map::new();
+                store.insert("next_collection_id".to_string(), json!(1));
+                store.insert("collections".to_string(), json!([]));
+                store
+            })
+    }
+
+    fn write_collection_store(&self, store: Map<String, Value>) -> Result<(), String> {
+        write_json_atomic(&self.collection_store_path(), &Value::Object(store))
+    }
+
+    fn collection_store_path(&self) -> PathBuf {
+        self.data_dir.join("state").join("collections.json")
     }
 
     fn read_manifest(&self, component: &str) -> Result<Value, String> {
@@ -781,6 +1238,8 @@ fn run_native_job(
     runtime_dir: PathBuf,
     model_dirs: Vec<PathBuf>,
     whisper_model: String,
+    provider: Option<NativeProviderProfile>,
+    ocr_enabled: bool,
 ) {
     update_job(
         &jobs,
@@ -889,7 +1348,7 @@ fn run_native_job(
         None,
     );
 
-    let transcript = match transcribe_with_whisper_cpp(
+    let mut transcript = match transcribe_with_whisper_cpp(
         &input_path,
         &output_dir,
         &file_stem,
@@ -905,6 +1364,33 @@ fn run_native_job(
             error
         ),
     };
+    if ocr_enabled {
+        update_job(
+            &jobs,
+            &app_handle,
+            id,
+            "running",
+            "extracting_frames",
+            55,
+            "使用 native Tesseract OCR",
+            None,
+            None,
+            None,
+        );
+        match extract_ocr_with_tesseract(&input_path, &output_dir, &file_stem, id, &runtime_dir) {
+            Ok(ocr_text) if !ocr_text.trim().is_empty() => {
+                transcript.push_str("\n\n## OCR\n\n");
+                transcript.push_str(&ocr_text);
+            }
+            Ok(_) => {
+                transcript.push_str("\n\n## OCR\n\nNo readable text detected in sampled frames.");
+            }
+            Err(error) => {
+                transcript.push_str("\n\n## OCR\n\nOCR unavailable: ");
+                transcript.push_str(&error);
+            }
+        }
+    }
     if let Err(error) = fs::write(&transcript_path, transcript) {
         update_job(
             &jobs,
@@ -934,18 +1420,35 @@ fn run_native_job(
         Some(transcript_path.to_string_lossy().to_string()),
     );
 
-    let transcript_preview = fs::read_to_string(&transcript_path)
-        .unwrap_or_default()
+    let transcript_text = fs::read_to_string(&transcript_path).unwrap_or_default();
+    let transcript_preview = transcript_text
         .chars()
         .take(6000)
         .collect::<String>();
-    let note = format!(
-        "# {base_title}\n\n- Source: `{}`\n- Engine: Rust native\n- Created: {}\n\n## Summary\n\nNative note generation is handled by the Rust engine. AI synthesis is the next migration stage; this note includes the native transcript output for now.\n\n## Transcript\n\n{}\n\nFull transcript: `{}`.\n",
-        input_path.display(),
-        Utc::now().to_rfc3339(),
-        transcript_preview,
-        transcript_path.display()
-    );
+    let generated_note = provider
+        .as_ref()
+        .and_then(|profile| {
+            synthesize_note_with_provider(profile, &base_title, &input_path, &transcript_text).ok()
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "# {base_title}\n\n- Source: `{}`\n- Engine: Rust native\n- Created: {}\n\n## Summary\n\nNative note generation is handled by the Rust engine. Configure an active OpenAI-compatible provider to synthesize structured notes; this fallback note includes the native transcript output.\n\n## Transcript\n\n{}\n\nFull transcript: `{}`.\n",
+                input_path.display(),
+                Utc::now().to_rfc3339(),
+                transcript_preview,
+                transcript_path.display()
+            )
+        });
+    let note = if generated_note.trim_start().starts_with('#') {
+        generated_note
+    } else {
+        format!(
+            "# {base_title}\n\n- Source: `{}`\n- Engine: Rust native\n- Created: {}\n\n{}",
+            input_path.display(),
+            Utc::now().to_rfc3339(),
+            generated_note
+        )
+    };
     if let Err(error) = fs::write(&note_path, note) {
         update_job(
             &jobs,
@@ -1111,6 +1614,18 @@ fn required_string(params: &Value, key: &str) -> Result<String, String> {
     string_param(params, key).ok_or_else(|| format!("{key} is required"))
 }
 
+fn required_u64(params: &Value, key: &str) -> Result<u64, String> {
+    params
+        .get(key)
+        .or_else(|| params.get("collection_id"))
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+        })
+        .ok_or_else(|| format!("{key} is required"))
+}
+
 fn normalise_provider_type(value: Option<&str>) -> String {
     match value.unwrap_or("openai_compat").trim() {
         "mimo" | "dashscope" | "openai" | "自定义" | "custom" => "openai_compat".to_string(),
@@ -1166,6 +1681,193 @@ fn provider_profiles(raw: &Map<String, Value>, active: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn provider_profile_for_request(
+    settings: &Map<String, Value>,
+    params: &Value,
+) -> Result<NativeProviderProfile, String> {
+    if let Some(name) = string_param(params, "name") {
+        if let Some(profile) = find_provider(settings, &name) {
+            return provider_from_value(profile, params);
+        }
+    }
+    let mut merged = Map::new();
+    for key in ["provider", "type", "base_url", "model", "vision_model", "api_key"] {
+        if let Some(value) = params.get(key) {
+            merged.insert(key.to_string(), value.clone());
+        }
+    }
+    if !merged.is_empty() {
+        return provider_from_map(&merged);
+    }
+    active_provider_profile(settings)
+}
+
+fn active_provider_profile(settings: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
+    let active = string_value(settings, "active_provider").ok_or_else(|| {
+        "No active provider configured. Set an AI provider in Settings.".to_string()
+    })?;
+    let profile = find_provider(settings, &active)
+        .ok_or_else(|| format!("Active provider '{active}' not found"))?;
+    provider_from_value(profile, &Value::Null)
+}
+
+fn provider_from_value(
+    profile: &Map<String, Value>,
+    override_params: &Value,
+) -> Result<NativeProviderProfile, String> {
+    let mut merged = profile.clone();
+    for key in ["provider", "type", "base_url", "model", "vision_model", "api_key"] {
+        if let Some(value) = override_params.get(key) {
+            if !value.is_null() {
+                merged.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    provider_from_map(&merged)
+}
+
+fn provider_from_map(profile: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
+    let provider_type = profile
+        .get("provider")
+        .or_else(|| profile.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("openai_compat")
+        .to_string();
+    let base_url = profile
+        .get("base_url")
+        .and_then(Value::as_str)
+        .unwrap_or("https://api.openai.com/v1")
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let model = profile
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let vision_model = profile
+        .get("vision_model")
+        .and_then(Value::as_str)
+        .unwrap_or(&model)
+        .trim()
+        .to_string();
+    let api_key = profile
+        .get("api_key")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if provider_type != "openai_compat" && provider_type != "openai" {
+        return Err(format!(
+            "Native provider '{}' is not migrated yet; use OpenAI Compatible.",
+            provider_type
+        ));
+    }
+    if model.is_empty() {
+        return Err("model is required".to_string());
+    }
+    if api_key.is_empty() {
+        return Err("api_key is required".to_string());
+    }
+    Ok(NativeProviderProfile {
+        base_url: if base_url.is_empty() {
+            "https://api.openai.com/v1".to_string()
+        } else {
+            base_url
+        },
+        api_key,
+        model,
+        vision_model,
+    })
+}
+
+fn fetch_provider_models(profile: &NativeProviderProfile) -> Result<Vec<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/models", profile.base_url.trim_end_matches('/'));
+    let response = client
+        .get(url)
+        .bearer_auth(&profile.api_key)
+        .send()
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("models endpoint returned {}", response.status()));
+    }
+    let payload: Value = response.json().map_err(|error| error.to_string())?;
+    let models = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if models.is_empty() {
+        Err("models endpoint returned no model ids".to_string())
+    } else {
+        Ok(models)
+    }
+}
+
+fn synthesize_note_with_provider(
+    profile: &NativeProviderProfile,
+    title: &str,
+    source: &Path,
+    transcript: &str,
+) -> Result<String, String> {
+    let clipped = transcript.chars().take(24_000).collect::<String>();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", profile.base_url.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .bearer_auth(&profile.api_key)
+        .json(&json!({
+            "model": profile.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You generate concise, structured Chinese Markdown study notes from video transcripts. Return Markdown only."
+                },
+                {
+                    "role": "user",
+                    "content": format!(
+                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，包含摘要、关键概念、步骤/论证、行动项和原始转写要点。\n\n转写：\n{}",
+                        title,
+                        source.display(),
+                        clipped
+                    )
+                }
+            ],
+            "temperature": 0.2
+        }))
+        .send()
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("chat completion returned {}", response.status()));
+    }
+    let payload: Value = response.json().map_err(|error| error.to_string())?;
+    payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "chat completion returned no content".to_string())
+}
+
 fn find_provider<'a>(raw: &'a Map<String, Value>, name: &str) -> Option<&'a Map<String, Value>> {
     raw.get("providers")?
         .as_array()?
@@ -1203,6 +1905,57 @@ fn find_provider_mut<'a>(
         }
     }
     Err(format!("Provider '{name}' not found"))
+}
+
+fn next_store_id(store: &mut Map<String, Value>, key: &str) -> u64 {
+    let next = store.get(key).and_then(Value::as_u64).unwrap_or(1);
+    store.insert(key.to_string(), json!(next + 1));
+    next
+}
+
+fn find_collection<'a>(store: &'a Map<String, Value>, id: u64) -> Option<&'a Value> {
+    store
+        .get("collections")?
+        .as_array()?
+        .iter()
+        .find(|collection| collection.get("id").and_then(Value::as_u64) == Some(id))
+}
+
+fn find_collection_mut(store: &mut Map<String, Value>, id: u64) -> Option<&mut Value> {
+    store
+        .get_mut("collections")?
+        .as_array_mut()?
+        .iter_mut()
+        .find(|collection| collection.get("id").and_then(Value::as_u64) == Some(id))
+}
+
+fn collection_item(id: u64, input: &str) -> Value {
+    json!({
+        "id": id,
+        "input": input,
+        "status": "pending",
+        "title": source_title(input),
+        "progress": 0,
+    })
+}
+
+fn source_title(input: &str) -> String {
+    let value = input.trim();
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return value
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|part| !part.is_empty())
+            .unwrap_or(value)
+            .to_string();
+    }
+    Path::new(value)
+        .file_stem()
+        .and_then(|part| part.to_str())
+        .filter(|part| !part.is_empty())
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn tool_exists(name: &str, components: &[&str], runtime_dir: &Path) -> bool {
@@ -1384,6 +2137,68 @@ fn download_with_ytdlp(
     })
 }
 
+fn extract_ocr_with_tesseract(
+    input_path: &Path,
+    output_dir: &Path,
+    file_stem: &str,
+    id: u64,
+    runtime_dir: &Path,
+) -> Result<String, String> {
+    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir)
+        .ok_or_else(|| "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string())?;
+    let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
+        .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
+    let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
+    fs::create_dir_all(&frame_dir).map_err(|error| error.to_string())?;
+    let pattern = frame_dir.join("frame-%03d.png");
+    let ffmpeg_output = Command::new(&ffmpeg)
+        .args([
+            "-y",
+            "-i",
+            &input_path.to_string_lossy(),
+            "-vf",
+            "fps=1/60",
+            "-frames:v",
+            "8",
+            &pattern.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|error| format!("failed to run ffmpeg for frames: {error}"))?;
+    if !ffmpeg_output.status.success() {
+        return Err(format!(
+            "ffmpeg frame extraction failed: {}",
+            String::from_utf8_lossy(&ffmpeg_output.stderr).trim()
+        ));
+    }
+
+    let mut frames = fs::read_dir(&frame_dir)
+        .map_err(|error| error.to_string())?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
+        .collect::<Vec<_>>();
+    frames.sort();
+    let mut output = String::new();
+    for frame in frames {
+        let result = Command::new(&tesseract)
+            .arg(&frame)
+            .arg("stdout")
+            .output()
+            .map_err(|error| format!("failed to run tesseract: {error}"))?;
+        if result.status.success() {
+            let text = String::from_utf8_lossy(&result.stdout).trim().to_string();
+            if !text.is_empty() {
+                output.push_str(&format!(
+                    "### {}\n\n{}\n\n",
+                    frame.file_name().and_then(|value| value.to_str()).unwrap_or("frame"),
+                    text
+                ));
+            }
+        }
+    }
+    Ok(output)
+}
+
 fn newest_file(dir: &Path) -> Option<PathBuf> {
     fs::read_dir(dir)
         .ok()?
@@ -1398,6 +2213,143 @@ fn newest_file(dir: &Path) -> Option<PathBuf> {
         })
         .max_by_key(|(_, modified)| *modified)
         .map(|(path, _)| path)
+}
+
+fn collect_markdown_notes(
+    root: &Path,
+    notes: &mut Vec<NoteEntry>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 8 || !root.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_markdown_notes(&path, notes, depth + 1)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        if let Ok(note) = note_entry_from_path(path) {
+            notes.push(note);
+        }
+    }
+    Ok(())
+}
+
+fn collect_media_files(root: &Path, result: &mut Vec<String>, depth: usize) -> Result<(), String> {
+    if depth > 3 || !root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_media_files(&path, result, depth + 1)?;
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if matches!(
+            ext.as_str(),
+            "mp4" | "mkv" | "mov" | "avi" | "webm" | "mp3" | "wav" | "m4a" | "flac"
+        ) {
+            result.push(path.to_string_lossy().to_string());
+        }
+    }
+    result.sort();
+    Ok(())
+}
+
+fn note_entry_from_path(path: PathBuf) -> Result<NoteEntry, String> {
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339();
+    let title = note_title(&path);
+    Ok(NoteEntry {
+        id: note_id(&path),
+        title,
+        path,
+        created_at: modified,
+    })
+}
+
+fn note_detail(note: NoteEntry) -> Result<Value, String> {
+    let content = fs::read_to_string(&note.path).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content": content,
+        "path": note.path.to_string_lossy(),
+    }))
+}
+
+fn note_title(path: &Path) -> String {
+    if let Ok(content) = fs::read_to_string(path) {
+        for line in content.lines().take(40) {
+            let trimmed = line.trim();
+            if let Some(title) = trimmed.strip_prefix("# ") {
+                let title = title.trim();
+                if !title.is_empty() {
+                    return title.to_string();
+                }
+            }
+        }
+    }
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Untitled")
+        .to_string()
+}
+
+fn note_id(path: &Path) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().to_lowercase().hash(&mut hasher);
+    let id = (hasher.finish() & 0x7fff_ffff) as u32;
+    if id == 0 { 1 } else { id }
+}
+
+fn open_path(path: &Path) -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", &path.to_string_lossy()])
+        .spawn();
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(path).spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(path).spawn();
+
+    result.map_err(|error| error.to_string())?;
+    Ok(json!(true))
+}
+
+fn reveal_path(path: &Path) -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer")
+        .arg(format!("/select,{}", path.to_string_lossy()))
+        .spawn();
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").args(["-R", &path.to_string_lossy()]).spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open")
+        .arg(path.parent().unwrap_or_else(|| Path::new(".")))
+        .spawn();
+
+    result.map_err(|error| error.to_string())?;
+    Ok(json!(true))
 }
 
 fn check_item(name: &str, ok: bool, detail: &str) -> Value {
@@ -1671,6 +2623,106 @@ mod tests {
         assert!(output_path.is_file());
         assert!(transcript_path.is_file());
         assert_eq!(job["progress"], 100);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn notes_rpc_scans_updates_and_deletes_markdown() {
+        let (engine, root) = temp_engine();
+        fs::create_dir_all(root.join("exports")).unwrap();
+        let note_path = root.join("exports").join("lesson.md");
+        fs::write(&note_path, "# Lesson Title\n\nOriginal content").unwrap();
+
+        let notes = engine
+            .call("notes.list", json!({}))
+            .expect("method handled")
+            .expect("list succeeds");
+        let note = notes.as_array().unwrap().first().cloned().expect("note exists");
+        assert_eq!(note["title"], "Lesson Title");
+
+        let id = note["id"].as_u64().unwrap();
+        let detail = engine
+            .call("notes.get", json!({ "note_id": id }))
+            .expect("method handled")
+            .expect("get succeeds");
+        assert!(detail["content"].as_str().unwrap().contains("Original content"));
+
+        let searched = engine
+            .call("notes.search", json!({ "query": "lesson" }))
+            .expect("method handled")
+            .expect("search succeeds");
+        assert_eq!(searched.as_array().unwrap().len(), 1);
+
+        engine
+            .call("notes.update", json!({ "id": id, "content": "# Updated" }))
+            .expect("method handled")
+            .expect("update succeeds");
+        assert_eq!(fs::read_to_string(&note_path).unwrap(), "# Updated");
+
+        engine
+            .call("notes.delete", json!({ "id": id }))
+            .expect("method handled")
+            .expect("delete succeeds");
+        assert!(!note_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collection_rpc_persists_items_and_exports() {
+        let (engine, root) = temp_engine();
+        let created = engine
+            .call(
+                "collection.create",
+                json!({ "name": "Course", "items": ["a.mp4", "b.mp4"] }),
+            )
+            .expect("method handled")
+            .expect("create succeeds");
+        let id = created["id"].as_u64().unwrap();
+
+        let list = engine
+            .call("collection.list", json!({}))
+            .expect("method handled")
+            .expect("list succeeds");
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["item_count"], 2);
+
+        engine
+            .call("collection.add_items", json!({ "id": id, "items": ["c.mp4"] }))
+            .expect("method handled")
+            .expect("add succeeds");
+        let detail = engine
+            .call("collection.get", json!({ "id": id }))
+            .expect("method handled")
+            .expect("get succeeds");
+        assert_eq!(detail["item_count"], 3);
+
+        engine
+            .call("collection.remove_items", json!({ "id": id, "item_ids": [2] }))
+            .expect("method handled")
+            .expect("remove succeeds");
+        let detail = engine
+            .call("collection.get", json!({ "id": id }))
+            .expect("method handled")
+            .expect("get succeeds");
+        assert_eq!(detail["item_count"], 2);
+
+        let exported = engine
+            .call("collection.export", json!({ "id": id }))
+            .expect("method handled")
+            .expect("export succeeds");
+        assert!(PathBuf::from(exported["path"].as_str().unwrap()).is_file());
+
+        engine
+            .call("collection.delete", json!({ "id": id }))
+            .expect("method handled")
+            .expect("delete succeeds");
+        let list = engine
+            .call("collection.list", json!({}))
+            .expect("method handled")
+            .expect("list succeeds");
+        assert_eq!(list.as_array().unwrap().len(), 0);
 
         let _ = fs::remove_dir_all(root);
     }

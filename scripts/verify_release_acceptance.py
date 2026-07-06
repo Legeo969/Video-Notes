@@ -41,9 +41,6 @@ def verify_release_acceptance(
     installer: str | Path | None = None,
     app_dir: str | Path | None = None,
     app_exe: str | Path | None = None,
-    sidecar: str | Path | None = None,
-    sidecar_command: list[str] | None = None,
-    timeout: float = 15.0,
     skip_payloads: bool = False,
     skip_installer: bool = False,
     skip_installed_runtime: bool = False,
@@ -105,15 +102,12 @@ def verify_release_acceptance(
     if skip_installed_runtime:
         checks.append(_skipped("installed_runtime_smoke"))
     else:
-        should_run = any(value is not None for value in (app_dir, app_exe, sidecar, sidecar_command))
+        should_run = app_dir is not None or app_exe is not None
         if should_run:
             installed = verify_installed_runtime(
                 app_dir=app_dir,
                 app_exe=app_exe,
                 installer=resolved_installer,
-                sidecar=sidecar,
-                sidecar_command=sidecar_command,
-                timeout=timeout,
             )
             checks.append(AcceptanceCheck(
                 name="installed_runtime_smoke",
@@ -127,7 +121,7 @@ def verify_release_acceptance(
                 ok=False,
                 skipped=True,
                 details={
-                    "reason": "pass --app-dir, --app-exe or --sidecar after installing/unpacking the release",
+                    "reason": "pass --app-dir or --app-exe after installing/unpacking the release",
                 },
             ))
 
@@ -196,9 +190,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer", type=Path)
     parser.add_argument("--app-dir", type=Path)
     parser.add_argument("--app-exe", type=Path)
-    parser.add_argument("--sidecar", type=Path)
-    parser.add_argument("--sidecar-command", nargs="+")
-    parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--skip-payloads", action="store_true")
     parser.add_argument("--skip-installer", action="store_true")
     parser.add_argument("--skip-installed-runtime", action="store_true")
@@ -212,9 +203,6 @@ def main(argv: list[str] | None = None) -> int:
         installer=args.installer,
         app_dir=args.app_dir,
         app_exe=args.app_exe,
-        sidecar=args.sidecar,
-        sidecar_command=args.sidecar_command,
-        timeout=args.timeout,
         skip_payloads=args.skip_payloads,
         skip_installer=args.skip_installer,
         skip_installed_runtime=args.skip_installed_runtime,
