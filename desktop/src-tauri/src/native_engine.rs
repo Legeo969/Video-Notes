@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+const OCR_TEST_IMAGE_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
 #[derive(Clone)]
 pub struct NativeEngine {
@@ -131,6 +133,7 @@ impl NativeEngine {
             "settings.providers.set_active" => self.providers_set_active(params),
             "settings.providers.test" => self.provider_test(params),
             "settings.providers.models" => self.provider_models(params),
+            "settings.ocr.test" => self.ocr_test(params),
             "settings.templates.list" => self.templates_list(),
             "settings.models.scan" | "settings.models.local" => self.local_models(),
             "settings.bindings.set" => self.bindings_set(params),
@@ -533,6 +536,76 @@ impl NativeEngine {
             Err(_) => clean_models(vec![profile.model.clone(), profile.vision_model.clone()]),
         };
         Ok(json!(models))
+    }
+
+    fn ocr_test(&self, params: Value) -> Result<Value, String> {
+        let settings = self.read_settings();
+        let backend = string_param(&params, "ocr_backend")
+            .or_else(|| string_value(&settings, "ocr_backend"))
+            .filter(|value| {
+                matches!(
+                    value.as_str(),
+                    "tesseract" | "paddleocr_http" | "custom_http"
+                )
+            })
+            .unwrap_or_else(|| "tesseract".to_string());
+
+        if backend == "tesseract" {
+            let success = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
+            return Ok(json!({
+                "success": success,
+                "message": if success {
+                    "Tesseract 可用"
+                } else {
+                    "未找到 tesseract.exe，请先安装 OCR 插件或把 Tesseract 加入 PATH"
+                },
+            }));
+        }
+
+        let endpoint = string_param(&params, "ocr_http_endpoint")
+            .or_else(|| string_value(&settings, "ocr_http_endpoint"))
+            .or_else(|| string_value(&settings, "ocr_api_url"))
+            .unwrap_or_default();
+        if endpoint.trim().is_empty() {
+            return Ok(json!({
+                "success": false,
+                "message": "OCR HTTP Endpoint 不能为空",
+            }));
+        }
+
+        let api_key = string_param(&params, "ocr_http_api_key")
+            .or_else(|| string_value(&settings, "ocr_http_api_key"))
+            .or_else(|| string_value(&settings, "ocr_api_key"))
+            .unwrap_or_default();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        match ocr_http_json_with_image(
+            &client,
+            endpoint.trim(),
+            &api_key,
+            OCR_TEST_IMAGE_BASE64,
+            "ocr-test.png",
+        ) {
+            Ok(value) => {
+                let text_count = extract_text_from_ocr_json(&value).len();
+                Ok(json!({
+                    "success": true,
+                    "message": if text_count > 0 {
+                        format!("OCR 服务可用，返回 JSON，并解析到 {} 段文本", text_count)
+                    } else {
+                        "OCR 服务可用，返回 JSON；测试图未识别到文字属于正常情况".to_string()
+                    },
+                    "text_count": text_count,
+                }))
+            }
+            Err(error) => Ok(json!({
+                "success": false,
+                "message": error,
+            })),
+        }
     }
 
     fn bindings_set(&self, params: Value) -> Result<Value, String> {
@@ -2411,8 +2484,20 @@ fn ocr_frame_with_http(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("frame.png");
+    let value = ocr_http_json_with_image(client, endpoint, api_key, &image, filename)?;
+    let text = extract_text_from_ocr_json(&value).join("\n");
+    Ok(text)
+}
+
+fn ocr_http_json_with_image(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    api_key: &str,
+    image_base64: &str,
+    filename: &str,
+) -> Result<Value, String> {
     let mut request = client.post(endpoint).json(&json!({
-        "image": image,
+        "image": image_base64,
         "filename": filename,
     }));
     if !api_key.trim().is_empty() {
@@ -2427,11 +2512,9 @@ fn ocr_frame_with_http(
             response.status()
         ));
     }
-    let value = response
+    response
         .json::<Value>()
-        .map_err(|error| format!("OCR HTTP response is not JSON: {error}"))?;
-    let text = extract_text_from_ocr_json(&value).join("\n");
-    Ok(text)
+        .map_err(|error| format!("OCR HTTP response is not JSON: {error}"))
 }
 
 fn extract_text_from_ocr_json(value: &Value) -> Vec<String> {
@@ -3196,6 +3279,27 @@ mod tests {
         assert!(text.iter().any(|item| item == "第一行"));
         assert!(text.iter().any(|item| item == "第二行"));
         assert!(text.iter().any(|item| item == "第三行"));
+    }
+
+    #[test]
+    fn ocr_test_reports_missing_http_endpoint() {
+        let (engine, root) = temp_engine();
+
+        let result = engine
+            .call(
+                "settings.ocr.test",
+                json!({ "ocr_backend": "paddleocr_http" }),
+            )
+            .expect("method handled")
+            .expect("test succeeds");
+
+        assert_eq!(result["success"], false);
+        assert!(result["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Endpoint"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

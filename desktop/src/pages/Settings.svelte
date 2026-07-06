@@ -165,6 +165,7 @@
   let saving = $state(false);
   let scanning = $state(false);
   let testingProvider = $state<string | null>(null);
+  let testingOcr = $state(false);
   let doctorRunning = $state(false);
   let bundlingDiagnostics = $state(false);
   let storageLoading = $state(false);
@@ -430,6 +431,22 @@
       showToast(result?.success ? `连接成功：${result.message ?? "服务可用"}` : `连接失败：${result?.message ?? "未知错误"}`, result?.success ? "success" : "error");
     } catch (e: any) { showToast(`测试连接异常：${e?.message ?? e}`, "error"); }
     finally { testingProvider = null; }
+  }
+
+  async function testOcrConnection() {
+    testingOcr = true;
+    try {
+      const result: any = await engineCall("settings.ocr.test", {
+        ocr_backend: settings.ocr_backend,
+        ocr_http_endpoint: settings.ocr_http_endpoint,
+        ocr_http_api_key: settings.ocr_http_api_key,
+      });
+      showToast(result?.success ? `OCR 连接成功：${result.message ?? "服务可用"}` : `OCR 连接失败：${result?.message ?? "未知错误"}`, result?.success ? "success" : "error");
+    } catch (e: any) {
+      showToast(`OCR 测试异常：${e?.message ?? e}`, "error");
+    } finally {
+      testingOcr = false;
+    }
   }
 
   async function runDoctor() {
@@ -719,6 +736,17 @@
                     <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={markDirty} placeholder="Bearer token，可留空" /></div>
                   </div>
                 {/if}
+                <div class="field ocr-test-field">
+                  <span class="field-label">OCR 连接测试</span>
+                  <button
+                    type="button"
+                    class="btn btn-secondary ocr-test-btn"
+                    onclick={testOcrConnection}
+                    disabled={testingOcr || ((settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http") && !settings.ocr_http_endpoint.trim())}
+                  >
+                    <Icon name="activity" size={15} />{testingOcr ? "测试中" : "测试 OCR"}
+                  </button>
+                </div>
               </div>
               <div class="enhancement-explain"><Icon name="info" size={14} />OCR 是本地能力；视觉理解会调用当前活动 AI 供应商。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
             </div>
@@ -1349,6 +1377,8 @@
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   @media (max-width: 1180px) { .interactive-model-cards { grid-template-columns: repeat(2, minmax(0,1fr)); } }
   .runtime-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .ocr-test-field { justify-content: end; }
+  .ocr-test-btn { width: fit-content; min-width: 118px; }
   .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
   .plugin-card { display: flex; min-width: 0; flex-direction: column; gap: 13px; padding: 15px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
   .plugin-card.installed { border-color: color-mix(in srgb, var(--success-color) 28%, var(--border-color)); }

@@ -263,6 +263,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     return true;
   },
   "settings.providers.test": () => ({ success: true, message: "Mock 连接成功" }),
+  "settings.ocr.test": () => ({ success: true, message: "Mock OCR 连接成功", text_count: 0 }),
   "settings.providers.models": () => ["qwen-plus", "qwen-max", "qwen-vl-max", "gpt-4o"],
   "settings.secret.set": (params: any) => {
     const profile = mockProviders.find(p => p.name === params.provider);
