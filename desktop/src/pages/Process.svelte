@@ -21,7 +21,7 @@
   let whisperModel = $state("large-v3");
   let transcriptionBackend = $state<"whisper_cpp">("whisper_cpp");
   let ocrEnabled = $state(false);
-  let ocrBackend = $state<"tesseract">("tesseract");
+  let ocrBackend = $state<"tesseract" | "paddleocr_http" | "custom_http">("tesseract");
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
@@ -74,7 +74,7 @@
         ? preferred
         : normalizedModels[0]?.id || preferred;
       ocrEnabled = Boolean(settings.ocr_enabled);
-      ocrBackend = "tesseract";
+      ocrBackend = (["tesseract", "paddleocr_http", "custom_http"].includes(String(settings.ocr_backend)) ? String(settings.ocr_backend) : "tesseract") as "tesseract" | "paddleocr_http" | "custom_http";
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
@@ -373,9 +373,11 @@
 
           <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
             <div class="enhance-icon"><Icon name="scan" size={20} /></div>
-            <div class="enhance-copy"><strong>OCR 后端</strong><span>native executable</span></div>
+            <div class="enhance-copy"><strong>OCR 后端</strong><span>{ocrBackend === "tesseract" ? "native executable" : "HTTP API"}</span></div>
             <select bind:value={ocrBackend} disabled={!ocrEnabled}>
               <option value="tesseract">Tesseract native</option>
+              <option value="paddleocr_http">PaddleOCR HTTP</option>
+              <option value="custom_http">Custom HTTP OCR</option>
             </select>
           </label>
 

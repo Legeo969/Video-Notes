@@ -143,6 +143,8 @@ let mockSettings: any = {
   max_frames: 30,
   ocr_enabled: false,
   ocr_backend: "tesseract",
+  ocr_http_endpoint: "",
+  ocr_http_api_key: "",
   vision_enabled: false,
   template: "default",
   template_id: "default",

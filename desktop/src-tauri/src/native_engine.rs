@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
 use std::collections::hash_map::DefaultHasher;
@@ -59,6 +60,14 @@ struct NativeProviderProfile {
     api_key: String,
     model: String,
     vision_model: String,
+}
+
+#[derive(Clone, Debug)]
+struct OcrRuntimeConfig {
+    enabled: bool,
+    backend: String,
+    endpoint: String,
+    api_key: String,
 }
 
 impl NativeEngine {
@@ -186,13 +195,19 @@ impl NativeEngine {
     }
 
     fn system_capabilities(&self) -> Result<Value, String> {
+        let settings = self.read_settings();
         Ok(json!({
             "has_ffmpeg": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_ytdlp": tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir),
             "has_whisper": false,
             "has_whisper_cpp": tool_exists("whisper-cli", &["whisper-cpp-tools"], &self.runtime_dir)
                 || tool_exists("main", &["whisper-cpp-tools"], &self.runtime_dir),
-            "has_ocr": tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir),
+            "has_ocr": tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir)
+                || !string_value(&settings, "ocr_http_endpoint")
+                    .or_else(|| string_value(&settings, "ocr_api_url"))
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty(),
             "has_cuda": false,
             "has_vision": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_gui": true,
@@ -221,7 +236,13 @@ impl NativeEngine {
             "frame_mode": string_value(&raw, "frame_mode").unwrap_or_else(|| "fixed".to_string()),
             "max_frames": raw.get("max_frames").and_then(Value::as_i64).unwrap_or(30),
             "ocr_enabled": raw.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false),
-            "ocr_backend": "tesseract",
+            "ocr_backend": string_value(&raw, "ocr_backend").unwrap_or_else(|| "tesseract".to_string()),
+            "ocr_http_endpoint": string_value(&raw, "ocr_http_endpoint")
+                .or_else(|| string_value(&raw, "ocr_api_url"))
+                .unwrap_or_default(),
+            "ocr_http_api_key": string_value(&raw, "ocr_http_api_key")
+                .or_else(|| string_value(&raw, "ocr_api_key"))
+                .unwrap_or_default(),
             "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
             "template_id": template,
@@ -264,6 +285,10 @@ impl NativeEngine {
             "max_frames",
             "ocr_enabled",
             "ocr_backend",
+            "ocr_http_endpoint",
+            "ocr_http_api_key",
+            "ocr_api_url",
+            "ocr_api_key",
             "vision_enabled",
             "template",
             "template_id",
@@ -293,7 +318,15 @@ impl NativeEngine {
             raw.entry("model_dir".to_string()).or_insert(value);
         }
         raw.insert("transcription_backend".to_string(), json!("whisper_cpp"));
-        raw.insert("ocr_backend".to_string(), json!("tesseract"));
+        let backend = string_value(&raw, "ocr_backend")
+            .filter(|value| {
+                matches!(
+                    value.as_str(),
+                    "tesseract" | "paddleocr_http" | "custom_http"
+                )
+            })
+            .unwrap_or_else(|| "tesseract".to_string());
+        raw.insert("ocr_backend".to_string(), json!(backend));
         self.write_settings(raw)?;
         Ok(json!(true))
     }
@@ -566,17 +599,27 @@ impl NativeEngine {
     }
 
     fn doctor_run(&self) -> Result<Value, String> {
+        let settings = self.read_settings();
         let ffmpeg = tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir);
         let ytdlp = tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir);
         let whisper_cpp = tool_exists("whisper-cli", &["whisper-cpp-tools"], &self.runtime_dir)
             || tool_exists("main", &["whisper-cpp-tools"], &self.runtime_dir);
         let tesseract = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
+        let http_ocr = !string_value(&settings, "ocr_http_endpoint")
+            .or_else(|| string_value(&settings, "ocr_api_url"))
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
         Ok(json!([
             check_item("Rust native engine", true, "in-process"),
             check_item("FFmpeg", ffmpeg, "system PATH or ffmpeg-tools"),
             check_item("yt-dlp", ytdlp, "download-tools"),
             check_item("whisper.cpp", whisper_cpp, "whisper-cpp-tools"),
-            check_item("Tesseract OCR", tesseract, "tesseract-ocr-tools")
+            check_item(
+                "OCR provider",
+                tesseract || http_ocr,
+                "tesseract-ocr-tools or OCR HTTP endpoint"
+            )
         ]))
     }
 
@@ -808,6 +851,27 @@ impl NativeEngine {
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             });
+        let ocr_backend = string_param(&params, "ocr_backend")
+            .or_else(|| string_value(&settings, "ocr_backend"))
+            .filter(|value| {
+                matches!(
+                    value.as_str(),
+                    "tesseract" | "paddleocr_http" | "custom_http"
+                )
+            })
+            .unwrap_or_else(|| "tesseract".to_string());
+        let ocr_config = OcrRuntimeConfig {
+            enabled: ocr_enabled,
+            backend: ocr_backend,
+            endpoint: string_param(&params, "ocr_http_endpoint")
+                .or_else(|| string_value(&settings, "ocr_http_endpoint"))
+                .or_else(|| string_value(&settings, "ocr_api_url"))
+                .unwrap_or_default(),
+            api_key: string_param(&params, "ocr_http_api_key")
+                .or_else(|| string_value(&settings, "ocr_http_api_key"))
+                .or_else(|| string_value(&settings, "ocr_api_key"))
+                .unwrap_or_default(),
+        };
         std::thread::spawn(move || {
             run_native_job(
                 jobs,
@@ -820,7 +884,7 @@ impl NativeEngine {
                 model_dirs,
                 whisper_model,
                 provider,
-                ocr_enabled,
+                ocr_config,
             );
         });
 
@@ -1294,7 +1358,7 @@ fn run_native_job(
     model_dirs: Vec<PathBuf>,
     whisper_model: String,
     provider: Option<NativeProviderProfile>,
-    ocr_enabled: bool,
+    ocr_config: OcrRuntimeConfig,
 ) {
     update_job(
         &jobs,
@@ -1419,7 +1483,7 @@ fn run_native_job(
             error
         ),
     };
-    if ocr_enabled {
+    if ocr_config.enabled {
         update_job(
             &jobs,
             &app_handle,
@@ -1427,12 +1491,23 @@ fn run_native_job(
             "running",
             "extracting_frames",
             55,
-            "使用 native Tesseract OCR",
+            &format!("使用 {} OCR", ocr_config.backend),
             None,
             None,
             None,
         );
-        match extract_ocr_with_tesseract(&input_path, &output_dir, &file_stem, id, &runtime_dir) {
+        let ocr_result = match ocr_config.backend.as_str() {
+            "paddleocr_http" | "custom_http" => extract_ocr_with_http(
+                &input_path,
+                &output_dir,
+                &file_stem,
+                id,
+                &runtime_dir,
+                &ocr_config,
+            ),
+            _ => extract_ocr_with_tesseract(&input_path, &output_dir, &file_stem, id, &runtime_dir),
+        };
+        match ocr_result {
             Ok(ocr_text) if !ocr_text.trim().is_empty() => {
                 transcript.push_str("\n\n## OCR\n\n");
                 transcript.push_str(&ocr_text);
@@ -2212,11 +2287,78 @@ fn extract_ocr_with_tesseract(
     id: u64,
     runtime_dir: &Path,
 ) -> Result<String, String> {
+    let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
+        .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
+    let mut output = String::new();
+    for frame in extract_sample_frames(input_path, output_dir, file_stem, id, runtime_dir)? {
+        let result = Command::new(&tesseract)
+            .arg(&frame)
+            .arg("stdout")
+            .output()
+            .map_err(|error| format!("failed to run tesseract: {error}"))?;
+        if result.status.success() {
+            let text = String::from_utf8_lossy(&result.stdout).trim().to_string();
+            if !text.is_empty() {
+                output.push_str(&format!(
+                    "### {}\n\n{}\n\n",
+                    frame
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("frame"),
+                    text
+                ));
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn extract_ocr_with_http(
+    input_path: &Path,
+    output_dir: &Path,
+    file_stem: &str,
+    id: u64,
+    runtime_dir: &Path,
+    config: &OcrRuntimeConfig,
+) -> Result<String, String> {
+    let endpoint = config.endpoint.trim();
+    if endpoint.is_empty() {
+        return Err(
+            "OCR HTTP endpoint is empty. Set PaddleOCR / Custom OCR endpoint in Settings."
+                .to_string(),
+        );
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut output = String::new();
+    for frame in extract_sample_frames(input_path, output_dir, file_stem, id, runtime_dir)? {
+        let text = ocr_frame_with_http(&client, &frame, endpoint, &config.api_key)?;
+        if !text.trim().is_empty() {
+            output.push_str(&format!(
+                "### {}\n\n{}\n\n",
+                frame
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("frame"),
+                text.trim()
+            ));
+        }
+    }
+    Ok(output)
+}
+
+fn extract_sample_frames(
+    input_path: &Path,
+    output_dir: &Path,
+    file_stem: &str,
+    id: u64,
+    runtime_dir: &Path,
+) -> Result<Vec<PathBuf>, String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
         "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
     })?;
-    let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
-        .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
     let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
     fs::create_dir_all(&frame_dir).map_err(|error| error.to_string())?;
     let pattern = frame_dir.join("frame-%03d.png");
@@ -2239,7 +2381,6 @@ fn extract_ocr_with_tesseract(
             String::from_utf8_lossy(&ffmpeg_output.stderr).trim()
         ));
     }
-
     let mut frames = fs::read_dir(&frame_dir)
         .map_err(|error| error.to_string())?
         .flatten()
@@ -2247,28 +2388,86 @@ fn extract_ocr_with_tesseract(
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
         .collect::<Vec<_>>();
     frames.sort();
-    let mut output = String::new();
-    for frame in frames {
-        let result = Command::new(&tesseract)
-            .arg(&frame)
-            .arg("stdout")
-            .output()
-            .map_err(|error| format!("failed to run tesseract: {error}"))?;
-        if result.status.success() {
-            let text = String::from_utf8_lossy(&result.stdout).trim().to_string();
-            if !text.is_empty() {
-                output.push_str(&format!(
-                    "### {}\n\n{}\n\n",
-                    frame
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("frame"),
-                    text
-                ));
+    Ok(frames)
+}
+
+fn ocr_frame_with_http(
+    client: &reqwest::blocking::Client,
+    frame: &Path,
+    endpoint: &str,
+    api_key: &str,
+) -> Result<String, String> {
+    let bytes = fs::read(frame).map_err(|error| error.to_string())?;
+    let image = general_purpose::STANDARD.encode(bytes);
+    let filename = frame
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("frame.png");
+    let mut request = client.post(endpoint).json(&json!({
+        "image": image,
+        "filename": filename,
+    }));
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key.trim());
+    }
+    let response = request
+        .send()
+        .map_err(|error| format!("OCR HTTP request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OCR HTTP request failed: HTTP {}",
+            response.status()
+        ));
+    }
+    let value = response
+        .json::<Value>()
+        .map_err(|error| format!("OCR HTTP response is not JSON: {error}"))?;
+    let text = extract_text_from_ocr_json(&value).join("\n");
+    Ok(text)
+}
+
+fn extract_text_from_ocr_json(value: &Value) -> Vec<String> {
+    let mut result = Vec::new();
+    collect_ocr_text(value, None, &mut result);
+    result.dedup();
+    result
+}
+
+fn collect_ocr_text(value: &Value, key: Option<&str>, result: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let key = key.unwrap_or("");
+            if matches!(
+                key,
+                "text"
+                    | "ocr_text"
+                    | "rec_text"
+                    | "rec_texts"
+                    | "recognized_text"
+                    | "transcription"
+                    | "label"
+                    | "word"
+                    | "words"
+                    | "data"
+                    | "result"
+                    | "results"
+            ) && !text.trim().is_empty()
+            {
+                result.push(text.trim().to_string());
             }
         }
+        Value::Array(items) => {
+            for item in items {
+                collect_ocr_text(item, key, result);
+            }
+        }
+        Value::Object(map) => {
+            for (child_key, child) in map {
+                collect_ocr_text(child, Some(child_key.as_str()), result);
+            }
+        }
+        _ => {}
     }
-    Ok(output)
 }
 
 fn newest_file(dir: &Path) -> Option<PathBuf> {
@@ -2740,7 +2939,9 @@ mod tests {
                     "patches": {
                         "whisper_model": "base",
                         "transcription_backend": "whisper_cpp",
-                        "ocr_backend": "tesseract",
+                        "ocr_backend": "paddleocr_http",
+                        "ocr_http_endpoint": "http://127.0.0.1:8868/ocr",
+                        "ocr_http_api_key": "local-token",
                         "template": "summary"
                     }
                 }),
@@ -2755,7 +2956,9 @@ mod tests {
             .expect("get succeeds");
         assert_eq!(settings["whisper_model"], "base");
         assert_eq!(settings["transcription_backend"], "whisper_cpp");
-        assert_eq!(settings["ocr_backend"], "tesseract");
+        assert_eq!(settings["ocr_backend"], "paddleocr_http");
+        assert_eq!(settings["ocr_http_endpoint"], "http://127.0.0.1:8868/ocr");
+        assert_eq!(settings["ocr_http_api_key"], "local-token");
         assert_eq!(settings["template"], "summary");
 
         let _ = fs::remove_dir_all(root);
@@ -2831,6 +3034,22 @@ mod tests {
         assert_eq!(note_title(&note), "lesson-name");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ocr_http_json_parser_collects_common_text_fields() {
+        let value = json!({
+            "data": {
+                "rec_texts": ["第一行", "第二行"],
+                "items": [{ "text": "第三行" }]
+            }
+        });
+
+        let text = extract_text_from_ocr_json(&value);
+        assert_eq!(text.len(), 3);
+        assert!(text.iter().any(|item| item == "第一行"));
+        assert!(text.iter().any(|item| item == "第二行"));
+        assert!(text.iter().any(|item| item == "第三行"));
     }
 
     #[test]

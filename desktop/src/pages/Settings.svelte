@@ -68,6 +68,8 @@
     whisper_compute_type: string;
     ocr_enabled: boolean;
     ocr_backend: string;
+    ocr_http_endpoint: string;
+    ocr_http_api_key: string;
     vision_enabled: boolean;
     template: string;
     active_provider: string;
@@ -148,6 +150,8 @@
     whisper_compute_type: "auto",
     ocr_enabled: false,
     ocr_backend: "tesseract",
+    ocr_http_endpoint: "",
+    ocr_http_api_key: "",
     vision_enabled: false,
     template: "default",
     active_provider: "",
@@ -209,7 +213,15 @@
         engineCall<TemplateInfo[]>("settings.templates.list"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local").catch(() => []),
       ]);
-      settings = { ...s, vault_path: s.vault_path ?? "", transcription_backend: "whisper_cpp", ocr_backend: "tesseract", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
+      settings = {
+        ...s,
+        vault_path: s.vault_path ?? "",
+        transcription_backend: "whisper_cpp",
+        ocr_backend: s.ocr_backend || "tesseract",
+        ocr_http_endpoint: s.ocr_http_endpoint ?? "",
+        ocr_http_api_key: s.ocr_http_api_key ?? "",
+        whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3",
+      };
       providers = provs;
       templates = tmpls;
       localWhisperModels = normalizeLocalWhisperModels(localModels);
@@ -264,7 +276,9 @@
           whisper_device: settings.whisper_device,
           whisper_compute_type: settings.whisper_compute_type,
           ocr_enabled: settings.ocr_enabled,
-          ocr_backend: "tesseract",
+          ocr_backend: settings.ocr_backend,
+          ocr_http_endpoint: settings.ocr_http_endpoint,
+          ocr_http_api_key: settings.ocr_http_api_key,
           vision_enabled: settings.vision_enabled,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
@@ -696,8 +710,20 @@
                   <label class="field-label" for="ocr_backend">OCR 后端</label>
                   <select id="ocr_backend" bind:value={settings.ocr_backend} onchange={markDirty}>
                     <option value="tesseract">Tesseract native executable</option>
+                    <option value="paddleocr_http">PaddleOCR HTTP service</option>
+                    <option value="custom_http">Custom OCR HTTP API</option>
                   </select>
                 </div>
+                {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
+                  <div class="field">
+                    <label class="field-label" for="ocr_http_endpoint">OCR HTTP Endpoint <small>本地或远程</small></label>
+                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={markDirty} placeholder="http://127.0.0.1:8868/ocr" /></div>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ocr_http_api_key">OCR API Key <small>可选</small></label>
+                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={markDirty} placeholder="Bearer token，可留空" /></div>
+                  </div>
+                {/if}
               </div>
               <div class="enhancement-explain"><Icon name="info" size={14} />OCR 是本地能力；视觉理解会调用当前活动 AI 供应商。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
             </div>
