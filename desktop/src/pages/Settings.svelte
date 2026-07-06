@@ -729,11 +729,11 @@
                 {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
                   <div class="field">
                     <label class="field-label" for="ocr_http_endpoint">OCR HTTP Endpoint <small>本地或远程</small></label>
-                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={markDirty} placeholder="http://127.0.0.1:8868/ocr" /></div>
+                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={markDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs" : "http://127.0.0.1:8868/ocr"} /></div>
                   </div>
                   <div class="field">
                     <label class="field-label" for="ocr_http_api_key">OCR API Key <small>可选</small></label>
-                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={markDirty} placeholder="Bearer token，可留空" /></div>
+                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={markDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "填官方 TOKEN，不用写 bearer" : "Bearer token，可留空"} /></div>
                   </div>
                 {/if}
                 <div class="field ocr-test-field">

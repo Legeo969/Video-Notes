@@ -16,6 +16,8 @@ const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 const OCR_TEST_IMAGE_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const PADDLEOCR_DEFAULT_MODEL: &str = "PaddleOCR-VL-1.6";
+const PADDLEOCR_JOBS_PATH: &str = "/api/v2/ocr/jobs";
 const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
     (
         "download-tools",
@@ -599,6 +601,34 @@ impl NativeEngine {
             .timeout(Duration::from_secs(20))
             .build()
             .map_err(|error| error.to_string())?;
+
+        if backend == "paddleocr_http" {
+            if bearer_token(&api_key).is_empty() {
+                return Ok(json!({
+                    "success": false,
+                    "message": "PaddleOCR API Key 不能为空",
+                }));
+            }
+            let endpoint = normalise_paddleocr_jobs_endpoint(endpoint.trim());
+            let test_pdf = simple_pdf_bytes("OCR TEST");
+            return match submit_paddleocr_job(
+                &client,
+                &endpoint,
+                &api_key,
+                test_pdf,
+                "ocr-test.pdf",
+            ) {
+                Ok(job_id) => Ok(json!({
+                    "success": true,
+                    "message": format!("PaddleOCR 服务可用，jobId: {job_id}"),
+                    "job_id": job_id,
+                })),
+                Err(error) => Ok(json!({
+                    "success": false,
+                    "message": error,
+                })),
+            };
+        }
 
         match ocr_http_json_with_image(
             &client,
@@ -1893,6 +1923,19 @@ fn required_string(params: &Value, key: &str) -> Result<String, String> {
     string_param(params, key).ok_or_else(|| format!("{key} is required"))
 }
 
+fn bearer_token(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed
+        .get(..7)
+        .map(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+        .unwrap_or(false)
+    {
+        trimmed[7..].trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn required_u64(params: &Value, key: &str) -> Result<u64, String> {
     params
         .get(key)
@@ -2479,12 +2522,21 @@ fn extract_ocr_with_http(
         );
     }
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
     let mut output = String::new();
+    let endpoint = if config.backend == "paddleocr_http" {
+        normalise_paddleocr_jobs_endpoint(endpoint)
+    } else {
+        endpoint.to_string()
+    };
     for frame in extract_sample_frames(input_path, output_dir, file_stem, id, runtime_dir)? {
-        let text = ocr_frame_with_http(&client, &frame, endpoint, &config.api_key)?;
+        let text = if config.backend == "paddleocr_http" {
+            ocr_frame_with_paddleocr(&client, &frame, &endpoint, &config.api_key)?
+        } else {
+            ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key)?
+        };
         if !text.trim().is_empty() {
             output.push_str(&format!(
                 "### {}\n\n{}\n\n",
@@ -2541,6 +2593,194 @@ fn extract_sample_frames(
     Ok(frames)
 }
 
+fn ocr_frame_with_paddleocr(
+    client: &reqwest::blocking::Client,
+    frame: &Path,
+    endpoint: &str,
+    api_key: &str,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("PaddleOCR API Key is empty".to_string());
+    }
+    let bytes = fs::read(frame).map_err(|error| error.to_string())?;
+    let filename = frame
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("frame.png");
+    let job_id = submit_paddleocr_job(client, endpoint, api_key, bytes, filename)?;
+    let json_url = poll_paddleocr_job(client, endpoint, api_key, &job_id)?;
+    fetch_paddleocr_jsonl_text(client, &json_url)
+}
+
+fn normalise_paddleocr_jobs_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim().trim_end_matches('/');
+    if let Some(index) = trimmed.find(PADDLEOCR_JOBS_PATH) {
+        return trimmed[..index + PADDLEOCR_JOBS_PATH.len()].to_string();
+    }
+    if trimmed.contains("paddleocr.aistudio-app.com") {
+        return "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs".to_string();
+    }
+    format!("{trimmed}{PADDLEOCR_JOBS_PATH}")
+}
+
+fn submit_paddleocr_job(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    api_key: &str,
+    bytes: Vec<u8>,
+    filename: &str,
+) -> Result<String, String> {
+    let optional_payload = json!({
+        "useDocOrientationClassify": false,
+        "useDocUnwarping": false,
+        "useChartRecognition": false,
+    });
+    let file_part =
+        reqwest::blocking::multipart::Part::bytes(bytes).file_name(filename.to_string());
+    let form = reqwest::blocking::multipart::Form::new()
+        .text("model", PADDLEOCR_DEFAULT_MODEL.to_string())
+        .text("optionalPayload", optional_payload.to_string())
+        .part("file", file_part);
+    let response = client
+        .post(endpoint)
+        .bearer_auth(bearer_token(api_key))
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("PaddleOCR job submit failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("PaddleOCR job response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "PaddleOCR job submit failed: HTTP {status}: {text}"
+        ));
+    }
+    let value = serde_json::from_str::<Value>(&text)
+        .map_err(|error| format!("PaddleOCR job response is not JSON: {error}; body: {text}"))?;
+    value
+        .get("data")
+        .and_then(|data| data.get("jobId"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("PaddleOCR job response missing data.jobId: {value}"))
+}
+
+fn poll_paddleocr_job(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    api_key: &str,
+    job_id: &str,
+) -> Result<String, String> {
+    let job_url = format!("{}/{}", endpoint.trim_end_matches('/'), job_id);
+    for _ in 0..60 {
+        let response = client
+            .get(&job_url)
+            .bearer_auth(bearer_token(api_key))
+            .send()
+            .map_err(|error| format!("PaddleOCR job poll failed: {error}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .map_err(|error| format!("PaddleOCR job poll response read failed: {error}"))?;
+        if !status.is_success() {
+            return Err(format!("PaddleOCR job poll failed: HTTP {status}: {text}"));
+        }
+        let value = serde_json::from_str::<Value>(&text).map_err(|error| {
+            format!("PaddleOCR job poll response is not JSON: {error}; body: {text}")
+        })?;
+        let data = value
+            .get("data")
+            .ok_or_else(|| format!("PaddleOCR job poll response missing data: {value}"))?;
+        let state = data.get("state").and_then(Value::as_str).unwrap_or("");
+        match state {
+            "done" => {
+                return data
+                    .get("resultUrl")
+                    .and_then(|result_url| result_url.get("jsonUrl"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| format!("PaddleOCR job done but jsonUrl is missing: {value}"));
+            }
+            "failed" => {
+                let error = data
+                    .get("errorMsg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error");
+                return Err(format!("PaddleOCR job failed: {error}"));
+            }
+            "pending" | "running" | "" => std::thread::sleep(Duration::from_secs(5)),
+            other => return Err(format!("PaddleOCR job returned unknown state: {other}")),
+        }
+    }
+    Err("PaddleOCR job timed out after 300 seconds".to_string())
+}
+
+fn fetch_paddleocr_jsonl_text(
+    client: &reqwest::blocking::Client,
+    json_url: &str,
+) -> Result<String, String> {
+    let response = client
+        .get(json_url)
+        .send()
+        .map_err(|error| format!("PaddleOCR result download failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("PaddleOCR result read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "PaddleOCR result download failed: HTTP {status}: {text}"
+        ));
+    }
+    let mut output = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let value = serde_json::from_str::<Value>(line)
+            .map_err(|error| format!("PaddleOCR jsonl line is invalid JSON: {error}"))?;
+        output.extend(extract_text_from_ocr_json(&value));
+    }
+    output.dedup();
+    Ok(output.join("\n"))
+}
+
+fn simple_pdf_bytes(text: &str) -> Vec<u8> {
+    let content = format!("BT /F1 24 Tf 20 40 Td ({}) Tj ET", escape_pdf_text(text));
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 90] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut bytes = b"%PDF-1.4\n".to_vec();
+    let mut offsets = vec![0usize];
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", index + 1, object).as_bytes());
+    }
+    let xref_offset = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+    bytes.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            offsets.len(),
+            xref_offset
+        )
+        .as_bytes(),
+    );
+    bytes
+}
+
+fn escape_pdf_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
+}
+
 fn ocr_frame_with_http(
     client: &reqwest::blocking::Client,
     frame: &Path,
@@ -2570,7 +2810,7 @@ fn ocr_http_json_with_image(
         "filename": filename,
     }));
     if !api_key.trim().is_empty() {
-        request = request.bearer_auth(api_key.trim());
+        request = request.bearer_auth(bearer_token(api_key));
     }
     let response = request
         .send()
@@ -3633,6 +3873,27 @@ mod tests {
             .contains("Endpoint"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn paddleocr_endpoint_is_normalised_to_jobs_url() {
+        assert_eq!(
+            normalise_paddleocr_jobs_endpoint("https://paddleocr.aistudio-app.com"),
+            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        );
+        assert_eq!(
+            normalise_paddleocr_jobs_endpoint(
+                "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/abc"
+            ),
+            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        );
+    }
+
+    #[test]
+    fn bearer_token_strips_existing_scheme() {
+        assert_eq!(bearer_token("bearer abc123"), "abc123");
+        assert_eq!(bearer_token("Bearer abc123"), "abc123");
+        assert_eq!(bearer_token("abc123"), "abc123");
     }
 
     #[test]
