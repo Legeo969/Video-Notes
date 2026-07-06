@@ -259,11 +259,6 @@
 
   async function handleSave() {
     settings.whisper_model = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
-    if (!selectedWhisperAvailable) {
-      showToast("当前 Whisper 模型没有在本地检测到，请先扫描并选择一个可用模型。", "error");
-      activeTab = "general";
-      return;
-    }
     saving = true;
     try {
       await engineCall("settings.update", {
@@ -285,7 +280,7 @@
         },
       });
       dirty = false;
-      showToast("设置已保存并将在后续任务中生效", "success");
+      showToast(selectedWhisperAvailable ? "设置已保存并将在后续任务中生效" : "设置已保存；当前 Whisper 模型未检测到，运行任务前请安装或重新扫描模型。", selectedWhisperAvailable ? "success" : "info");
     } catch (e: any) { showToast(`保存失败：${e?.message ?? e}`, "error"); }
     finally { saving = false; }
   }

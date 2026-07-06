@@ -718,8 +718,16 @@ impl NativeEngine {
                 install_ffmpeg_tools_from_path(&target)?;
                 return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
             }
+            if component == "whisper-cpp-tools" {
+                install_whisper_cpp_tools_from_path(&target)?;
+                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
+            }
+            if component == "tesseract-ocr-tools" {
+                install_tesseract_tools_from_path(&target)?;
+                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
+            }
             return Err(format!(
-                "Missing local package: {}. Put the component package there, then install again.",
+                "Missing local package: {}. Install the tool on system PATH or put the component package there, then install again.",
                 source.display()
             ));
         }
@@ -2775,24 +2783,9 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
     let temp = parent.join(format!("{}.download", Uuid::new_v4()));
     fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
     let result = (|| -> Result<(), String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| error.to_string())?;
-        let response = client
-            .get(YTDLP_DOWNLOAD_URL)
-            .send()
-            .map_err(|error| format!("Failed to download yt-dlp: {error}"))?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "Failed to download yt-dlp: HTTP {}",
-                response.status()
-            ));
-        }
-        let bytes = response
-            .bytes()
-            .map_err(|error| format!("Failed to read yt-dlp download: {error}"))?;
-        fs::write(temp.join("yt-dlp.exe"), bytes).map_err(|error| error.to_string())?;
+        let exe = temp.join("yt-dlp.exe");
+        download_file_with_fallback(YTDLP_DOWNLOAD_URL, &exe)?;
+        ensure_non_empty_file(&exe, "yt-dlp.exe")?;
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
@@ -2803,6 +2796,68 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
         let _ = fs::remove_dir_all(&temp);
     }
     result
+}
+
+fn download_file_with_fallback(url: &str, target: &Path) -> Result<(), String> {
+    match download_file_with_reqwest(url, target) {
+        Ok(()) => Ok(()),
+        Err(primary_error) => match download_file_with_curl(url, target) {
+            Ok(()) => Ok(()),
+            Err(fallback_error) => Err(format!(
+                "reqwest download failed: {primary_error}; curl fallback failed: {fallback_error}"
+            )),
+        },
+    }
+}
+
+fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(url)
+        .header("User-Agent", "Video Notes AI")
+        .send()
+        .map_err(|error| format!("failed to download: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("failed to read response body: {error}"))?;
+    fs::write(target, bytes).map_err(|error| error.to_string())
+}
+
+fn download_file_with_curl(url: &str, target: &Path) -> Result<(), String> {
+    let output = Command::new("curl.exe")
+        .args([
+            "-L",
+            "--fail",
+            "--retry",
+            "2",
+            "--output",
+            &target.to_string_lossy(),
+            url,
+        ])
+        .output()
+        .map_err(|error| format!("failed to run curl.exe: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn ensure_non_empty_file(path: &Path, label: &str) -> Result<(), String> {
+    let len = fs::metadata(path)
+        .map_err(|error| format!("{label} was not created: {error}"))?
+        .len();
+    if len == 0 {
+        Err(format!("{label} download produced an empty file"))
+    } else {
+        Ok(())
+    }
 }
 
 fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
@@ -2833,6 +2888,97 @@ fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
         let _ = fs::remove_dir_all(&temp);
     }
     result
+}
+
+fn install_whisper_cpp_tools_from_path(target: &Path) -> Result<(), String> {
+    let whisper = system_executable_path("whisper-cli")
+        .or_else(|| system_executable_path("main"))
+        .ok_or_else(|| {
+            "Missing local package and whisper-cli was not found on PATH. Install whisper.cpp CLI or put a component package in runtime\\packages\\whisper-cpp-tools.".to_string()
+        })?;
+    let source_dir = whisper
+        .parent()
+        .ok_or_else(|| format!("Invalid whisper executable path: {}", whisper.display()))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = parent.join(format!("{}.install", Uuid::new_v4()));
+    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        fs::copy(&whisper, temp.join(executable_name("whisper-cli")))
+            .map_err(|error| error.to_string())?;
+        for entry in fs::read_dir(source_dir)
+            .map_err(|error| error.to_string())?
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) == Some("dll") {
+                fs::copy(&path, temp.join(entry.file_name())).map_err(|error| error.to_string())?;
+            }
+        }
+        if target.exists() {
+            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result
+}
+
+fn install_tesseract_tools_from_path(target: &Path) -> Result<(), String> {
+    let tesseract = system_executable_path("tesseract").ok_or_else(|| {
+        "Missing local package and tesseract was not found on PATH. Install Tesseract OCR or put a component package in runtime\\packages\\tesseract-ocr-tools.".to_string()
+    })?;
+    let source_dir = tesseract
+        .parent()
+        .ok_or_else(|| format!("Invalid tesseract executable path: {}", tesseract.display()))?;
+    let tessdata = find_tessdata_dir(source_dir).ok_or_else(|| {
+        "Tesseract was found, but tessdata was not found. Set TESSDATA_PREFIX or put tessdata next to tesseract.exe.".to_string()
+    })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = parent.join(format!("{}.install", Uuid::new_v4()));
+    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        fs::copy(&tesseract, temp.join(executable_name("tesseract")))
+            .map_err(|error| error.to_string())?;
+        copy_dir_recursive(&tessdata, &temp.join("tessdata"))?;
+        if target.exists() {
+            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result
+}
+
+fn find_tessdata_dir(tesseract_dir: &Path) -> Option<PathBuf> {
+    let sibling = tesseract_dir.join("tessdata");
+    if sibling.is_dir() {
+        return Some(sibling);
+    }
+    if let Ok(prefix) = std::env::var("TESSDATA_PREFIX") {
+        let candidate = PathBuf::from(prefix);
+        if candidate.is_dir()
+            && candidate.file_name().and_then(|value| value.to_str()) == Some("tessdata")
+        {
+            return Some(candidate);
+        }
+        let nested = candidate.join("tessdata");
+        if nested.is_dir() {
+            return Some(nested);
+        }
+    }
+    None
 }
 
 fn system_executable_path(name: &str) -> Option<PathBuf> {
