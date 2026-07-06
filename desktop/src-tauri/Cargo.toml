@@ -1,6 +1,6 @@
 [package]
 name = "video-notes-ai"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 description = "Video Notes AI — AI-powered video transcription and note generation"
 authors = ["Video Notes AI Team"]
@@ -12,8 +12,8 @@ license = "MIT"
 [package.metadata.tauri-winres]
 "OriginalFilename" = "Video Notes AI.exe"
 "ProductName" = "Video Notes AI"
-"FileVersion" = "1.5.0"
-"ProductVersion" = "1.5.0"
+"FileVersion" = "1.5.1"
+"ProductVersion" = "1.5.1"
 "FileDescription" = "Video Notes AI"
 
 [dependencies]

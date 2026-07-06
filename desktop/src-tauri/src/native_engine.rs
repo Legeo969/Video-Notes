@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -16,6 +16,24 @@ const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 const OCR_TEST_IMAGE_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
+    (
+        "download-tools",
+        include_str!("../../../runtime/manifests/download-tools.json"),
+    ),
+    (
+        "ffmpeg-tools",
+        include_str!("../../../runtime/manifests/ffmpeg-tools.json"),
+    ),
+    (
+        "whisper-cpp-tools",
+        include_str!("../../../runtime/manifests/whisper-cpp-tools.json"),
+    ),
+    (
+        "tesseract-ocr-tools",
+        include_str!("../../../runtime/manifests/tesseract-ocr-tools.json"),
+    ),
+];
 
 #[derive(Clone)]
 pub struct NativeEngine {
@@ -717,17 +735,7 @@ impl NativeEngine {
 
     fn components_list(&self) -> Result<Value, String> {
         let mut result = Vec::new();
-        if !self.manifests_dir.is_dir() {
-            return Ok(json!(result));
-        }
-        for entry in fs::read_dir(&self.manifests_dir).map_err(|error| error.to_string())? {
-            let path = entry.map_err(|error| error.to_string())?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(manifest) = read_json_file(&path) else {
-                continue;
-            };
+        for manifest in self.component_manifests()? {
             let Some(component) = manifest.get("component").and_then(Value::as_str) else {
                 continue;
             };
@@ -779,30 +787,50 @@ impl NativeEngine {
 
     fn components_install(&self, params: Value) -> Result<Value, String> {
         let component = required_string(&params, "component")?;
-        let _manifest = self.read_manifest(&component)?;
+        let manifest = self.read_manifest(&component)?;
         let source = self.runtime_dir.join("packages").join(&component);
         let target = self.runtime_dir.join("components").join(&component);
         if !source.is_dir() {
-            if component == "download-tools" {
-                install_download_tools(&target)?;
-                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
+            let download_error = if manifest_string(&manifest, "download_url").is_some() {
+                match install_component_from_download(&manifest, &target) {
+                    Ok(()) => {
+                        return Ok(
+                            json!({ "ok": true, "component": component, "status": "installed" }),
+                        );
+                    }
+                    Err(error) => Some(error),
+                }
+            } else {
+                None
+            };
+            let path_result = match component.as_str() {
+                "download-tools" => install_download_tools(&target),
+                "ffmpeg-tools" => install_ffmpeg_tools_from_path(&target),
+                "whisper-cpp-tools" => install_whisper_cpp_tools_from_path(&target),
+                "tesseract-ocr-tools" => install_tesseract_tools_from_path(&target),
+                _ => Err(format!(
+                    "Missing local package: {}. Put the component package there, then install again.",
+                    source.display()
+                )),
+            };
+            match path_result {
+                Ok(()) => {
+                    return Ok(json!({
+                        "ok": true,
+                        "component": component,
+                        "status": "installed"
+                    }));
+                }
+                Err(path_error) => {
+                    return if let Some(download_error) = download_error {
+                        Err(format!(
+                            "Download install failed: {download_error}; PATH/local import failed: {path_error}"
+                        ))
+                    } else {
+                        Err(path_error)
+                    };
+                }
             }
-            if component == "ffmpeg-tools" {
-                install_ffmpeg_tools_from_path(&target)?;
-                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
-            }
-            if component == "whisper-cpp-tools" {
-                install_whisper_cpp_tools_from_path(&target)?;
-                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
-            }
-            if component == "tesseract-ocr-tools" {
-                install_tesseract_tools_from_path(&target)?;
-                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
-            }
-            return Err(format!(
-                "Missing local package: {}. Install the tool on system PATH or put the component package there, then install again.",
-                source.display()
-            ));
         }
         if target.exists() {
             fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
@@ -1385,7 +1413,48 @@ impl NativeEngine {
 
     fn read_manifest(&self, component: &str) -> Result<Value, String> {
         read_json_file(&self.manifests_dir.join(format!("{component}.json")))
+            .or_else(|_| {
+                default_component_manifest(component)
+                    .ok_or_else(|| format!("manifest '{component}' not found in bundled defaults"))
+            })
             .map_err(|error| format!("manifest '{component}' not found or invalid: {error}"))
+    }
+
+    fn component_manifests(&self) -> Result<Vec<Value>, String> {
+        let mut manifests = Vec::new();
+        let mut seen = HashSet::new();
+        if self.manifests_dir.is_dir() {
+            for entry in fs::read_dir(&self.manifests_dir).map_err(|error| error.to_string())? {
+                let path = entry.map_err(|error| error.to_string())?.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let Ok(manifest) = read_json_file(&path) else {
+                    continue;
+                };
+                if let Some(component) = manifest.get("component").and_then(Value::as_str) {
+                    seen.insert(component.to_string());
+                    manifests.push(manifest);
+                }
+            }
+        }
+        for (component, manifest) in DEFAULT_COMPONENT_MANIFESTS {
+            if seen.contains(*component) {
+                continue;
+            }
+            manifests.push(
+                serde_json::from_str::<Value>(manifest).map_err(|error| {
+                    format!("bundled manifest '{component}' is invalid: {error}")
+                })?,
+            );
+        }
+        manifests.sort_by(|left, right| {
+            left.get("component")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(right.get("component").and_then(Value::as_str).unwrap_or(""))
+        });
+        Ok(manifests)
     }
 
     fn read_settings(&self) -> Map<String, Value> {
@@ -2858,6 +2927,71 @@ fn missing_files(component_path: &Path, files: &[Value]) -> Vec<String> {
         .collect()
 }
 
+fn default_component_manifest(component: &str) -> Option<Value> {
+    DEFAULT_COMPONENT_MANIFESTS
+        .iter()
+        .find(|(name, _)| *name == component)
+        .and_then(|(_, manifest)| serde_json::from_str::<Value>(manifest).ok())
+}
+
+fn install_component_from_download(manifest: &Value, target: &Path) -> Result<(), String> {
+    let url = manifest_string(manifest, "download_url")
+        .ok_or_else(|| "manifest has no download_url".to_string())?;
+    let files = manifest
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return Err("manifest has no files".to_string());
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = parent.join(format!("{}.download", Uuid::new_v4()));
+    let stage = temp.join("stage");
+    fs::create_dir_all(&stage).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        let package_path = temp.join(download_filename(&url));
+        download_file_with_fallback(&url, &package_path)?;
+        ensure_non_empty_file(&package_path, "component package")?;
+        let archive_type =
+            manifest_string(manifest, "archive_type").unwrap_or_else(|| infer_archive_type(&url));
+        match archive_type.as_str() {
+            "exe" => {
+                let first = files
+                    .first()
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "manifest has no executable target".to_string())?;
+                fs::copy(&package_path, stage.join(first.trim_end_matches('/')))
+                    .map_err(|error| error.to_string())?;
+            }
+            "zip" => {
+                let extracted = temp.join("extracted");
+                fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
+                extract_zip_archive(&package_path, &extracted)?;
+                stage_component_files(&extracted, &stage, &files)?;
+            }
+            other => return Err(format!("unsupported archive_type '{other}'")),
+        }
+        let missing = missing_files(&stage, &files);
+        if !missing.is_empty() {
+            return Err(format!(
+                "downloaded package is missing required files: {}",
+                missing.join(", ")
+            ));
+        }
+        if target.exists() {
+            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&stage, target).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temp);
+    result
+}
+
 fn install_download_tools(target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
@@ -2886,9 +3020,12 @@ fn download_file_with_fallback(url: &str, target: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(primary_error) => match download_file_with_curl(url, target) {
             Ok(()) => Ok(()),
-            Err(fallback_error) => Err(format!(
-                "reqwest download failed: {primary_error}; curl fallback failed: {fallback_error}"
-            )),
+            Err(curl_error) => match download_file_with_powershell(url, target) {
+                Ok(()) => Ok(()),
+                Err(powershell_error) => Err(format!(
+                    "reqwest download failed: {primary_error}; curl fallback failed: {curl_error}; PowerShell fallback failed: {powershell_error}"
+                )),
+            },
         },
     }
 }
@@ -2932,6 +3069,29 @@ fn download_file_with_curl(url: &str, target: &Path) -> Result<(), String> {
     }
 }
 
+fn download_file_with_powershell(url: &str, target: &Path) -> Result<(), String> {
+    let script = format!(
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri '{}' -OutFile '{}'",
+        powershell_quote(url),
+        powershell_quote(&target.to_string_lossy())
+    );
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|error| format!("failed to run powershell.exe: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 fn ensure_non_empty_file(path: &Path, label: &str) -> Result<(), String> {
     let len = fs::metadata(path)
         .map_err(|error| format!("{label} was not created: {error}"))?
@@ -2941,6 +3101,156 @@ fn ensure_non_empty_file(path: &Path, label: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn manifest_string(manifest: &Value, key: &str) -> Option<String> {
+    manifest
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn download_filename(url: &str) -> String {
+    url.split('/')
+        .next_back()
+        .and_then(|part| part.split('?').next())
+        .filter(|part| !part.is_empty())
+        .unwrap_or("component-package")
+        .to_string()
+}
+
+fn infer_archive_type(url: &str) -> String {
+    let path = url.split('?').next().unwrap_or(url).to_lowercase();
+    if path.ends_with(".zip") {
+        "zip".to_string()
+    } else if path.ends_with(".exe") {
+        "exe".to_string()
+    } else {
+        "zip".to_string()
+    }
+}
+
+fn extract_zip_archive(archive: &Path, target: &Path) -> Result<(), String> {
+    let script = format!(
+        "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+        powershell_quote(&archive.to_string_lossy()),
+        powershell_quote(&target.to_string_lossy())
+    );
+    let powershell = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|error| format!("failed to run powershell.exe: {error}"))?;
+    if powershell.status.success() {
+        return Ok(());
+    }
+    let tar = Command::new("tar.exe")
+        .args([
+            "-xf",
+            &archive.to_string_lossy(),
+            "-C",
+            &target.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|error| format!("failed to run tar.exe after PowerShell unzip failed: {error}"))?;
+    if tar.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "PowerShell unzip failed: {}; tar fallback failed: {}",
+            String::from_utf8_lossy(&powershell.stderr).trim(),
+            String::from_utf8_lossy(&tar.stderr).trim()
+        ))
+    }
+}
+
+fn powershell_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn stage_component_files(source_root: &Path, stage: &Path, files: &[Value]) -> Result<(), String> {
+    fs::create_dir_all(stage).map_err(|error| error.to_string())?;
+    for file in files.iter().filter_map(Value::as_str) {
+        let trimmed = file.trim_end_matches('/');
+        if file.ends_with('/') {
+            let source = source_root
+                .join(trimmed)
+                .is_dir()
+                .then(|| source_root.join(trimmed))
+                .or_else(|| find_dir_recursive(source_root, path_leaf(trimmed)))
+                .ok_or_else(|| format!("required directory '{file}' not found in package"))?;
+            copy_dir_recursive(&source, &stage.join(trimmed))?;
+        } else {
+            let source = source_root
+                .join(trimmed)
+                .is_file()
+                .then(|| source_root.join(trimmed))
+                .or_else(|| find_file_recursive(source_root, path_leaf(trimmed)))
+                .ok_or_else(|| format!("required file '{file}' not found in package"))?;
+            if let Some(parent) = stage.join(trimmed).parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            fs::copy(&source, stage.join(trimmed)).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn path_leaf(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(path)
+}
+
+fn find_file_recursive(root: &Path, file_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case(file_name))
+                .unwrap_or(false)
+        {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_file_recursive(&path, file_name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn find_dir_recursive(root: &Path, dir_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case(dir_name))
+                .unwrap_or(false)
+            {
+                return Some(path);
+            }
+            if let Some(found) = find_dir_recursive(&path, dir_name) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
@@ -3233,6 +3543,29 @@ mod tests {
         assert_eq!(first["installed"], true);
         assert_eq!(first["status"], "ok");
         assert_eq!(first["missing_files"].as_array().unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn components_list_uses_bundled_manifests_without_runtime_manifest_dir() {
+        let (engine, root) = temp_engine();
+
+        let components = engine
+            .call("components.list", json!({}))
+            .expect("method handled")
+            .expect("list succeeds");
+        let names = components
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("component").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"download-tools"));
+        assert!(names.contains(&"ffmpeg-tools"));
+        assert!(names.contains(&"whisper-cpp-tools"));
+        assert!(names.contains(&"tesseract-ocr-tools"));
 
         let _ = fs::remove_dir_all(root);
     }
