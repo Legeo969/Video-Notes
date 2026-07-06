@@ -1,0 +1,25 @@
+{
+  "component": "whisper-cpp-cuda-tools",
+  "version": "1.5.6",
+  "platform": "windows-x86_64",
+  "engine_api": 1,
+  "description": "whisper.cpp CUDA 12.4 native CLI transcription tools",
+  "download_url": "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-cublas-12.4.0-bin-x64.zip",
+  "archive_type": "zip",
+  "copy_payload_dir": true,
+  "sha256": "",
+  "signature": "",
+  "size_mb": 678,
+  "requires": {
+    "nvidia_driver": true
+  },
+  "provides": [
+    "transcription-native",
+    "transcription-gpu",
+    "cuda"
+  ],
+  "files": [
+    "whisper-cli.exe"
+  ],
+  "package_sha256": ""
+}

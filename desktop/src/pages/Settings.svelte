@@ -130,6 +130,7 @@
   providerTypeLabels.mimo = "OpenAI Compatible";
   providerTypeLabels.dashscope = "OpenAI Compatible";
   providerTypeLabels.openai = "OpenAI Compatible";
+  const whisperModelDownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
 
   const tabs = [
     { id: "general", label: "通用与转录", icon: "settings", hint: "目录、模型和 OCR" },
@@ -196,7 +197,7 @@
   let selectedWhisperModel = $derived(whisperCatalog.find((model) => model.id === normalizeWhisperModelId(settings.whisper_model)));
   let selectedWhisperAvailable = $derived(Boolean(selectedWhisperModel?.installed));
   let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
-  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || (item.provides ?? []).includes("transcription-native")));
+  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || item.component === "whisper-cpp-cuda-tools" || (item.provides ?? []).includes("transcription-native")));
   let ocrComponents = $derived(runtimeComponents.filter((item) => item.component === "tesseract-ocr-tools" || (item.provides ?? []).includes("ocr-native")));
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
@@ -510,6 +511,14 @@
     return "";
   }
 
+  async function openExternalUrl(url: string) {
+    try {
+      await engineCall("system.open_url", { url });
+    } catch (e: any) {
+      showToast(`打开链接失败：${e?.message ?? e}`, "error");
+    }
+  }
+
   async function refreshComponents() {
     componentsLoading = true;
     try {
@@ -642,7 +651,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head with-action"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>默认 Whisper 模型</h3><p>选择新任务默认使用的语音转录模型。</p></div><button class="btn btn-secondary btn-sm" onclick={scanModels} disabled={scanning}><Icon name="refresh" size={13} />{scanning ? "扫描中" : "扫描本地模型"}</button></div>
+              <div class="group-head with-action"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>默认 Whisper 模型</h3><p>选择新任务默认使用的语音转录模型。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={() => openExternalUrl(whisperModelDownloadUrl)}><Icon name="external" size={13} />模型下载页</button><button class="btn btn-secondary btn-sm" onclick={scanModels} disabled={scanning}><Icon name="refresh" size={13} />{scanning ? "扫描中" : "扫描本地模型"}</button></div>
               {#if scanning}
                 <div class="model-scan-state"><span class="loading-ring compact"></span><div><strong>正在扫描本地模型</strong><small>检查配置目录和应用默认模型目录…</small></div></div>
               {:else if localWhisperModels.length === 0}
@@ -690,7 +699,7 @@
                 </div>
                 <div class="field">
                   <label class="field-label" for="whisper_device">Whisper 运行设备</label>
-                  <select id="whisper_device" bind:value={settings.whisper_device} onchange={markDirty} disabled={settings.transcription_backend === "whisper_cpp"}>
+                  <select id="whisper_device" bind:value={settings.whisper_device} onchange={markDirty}>
                     <option value="auto">自动：优先 CUDA，可降级 CPU</option>
                     <option value="cuda">CUDA / GPU：不可用时报错</option>
                     <option value="cpu">CPU</option>
@@ -889,7 +898,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>使用 whisper.cpp native executable。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>whisper.cpp CPU / CUDA 组件按需安装；模型文件单独放在模型目录。</p></div></div>
               {#if componentsLoading && transcriptionComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if transcriptionComponents.length === 0}
@@ -966,7 +975,7 @@
                         {:else}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
                           {#if componentHelpUrl(component)}
-                            <a class="btn btn-secondary" href={componentHelpUrl(component)} target="_blank" rel="noreferrer"><Icon name="external" size={14} />下载页</a>
+                            <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />下载页</button>
                           {/if}
                         {/if}
                       </div>

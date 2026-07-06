@@ -32,6 +32,10 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
         include_str!("../../../runtime/manifests/whisper-cpp-tools.json"),
     ),
     (
+        "whisper-cpp-cuda-tools",
+        include_str!("../../../runtime/manifests/whisper-cpp-cuda-tools.json"),
+    ),
+    (
         "tesseract-ocr-tools",
         include_str!("../../../runtime/manifests/tesseract-ocr-tools.json"),
     ),
@@ -139,6 +143,7 @@ impl NativeEngine {
             "system.info" => self.system_info(),
             "system.snapshot" => self.system_snapshot(),
             "system.capabilities" => self.system_capabilities(),
+            "system.open_url" => self.system_open_url(params),
             "system.shutdown" => Ok(json!(true)),
             "settings.get" => self.settings_get(),
             "settings.update" => self.settings_update(params),
@@ -208,6 +213,11 @@ impl NativeEngine {
         }))
     }
 
+    fn system_open_url(&self, params: Value) -> Result<Value, String> {
+        let url = required_string(&params, "url")?;
+        open_url(&url)
+    }
+
     fn system_snapshot(&self) -> Result<Value, String> {
         Ok(json!({
             "engine_version": env!("CARGO_PKG_VERSION"),
@@ -223,15 +233,15 @@ impl NativeEngine {
             "has_ffmpeg": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_ytdlp": tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir),
             "has_whisper": false,
-            "has_whisper_cpp": tool_exists("whisper-cli", &["whisper-cpp-tools"], &self.runtime_dir)
-                || tool_exists("main", &["whisper-cpp-tools"], &self.runtime_dir),
+            "has_whisper_cpp": tool_exists("whisper-cli", &["whisper-cpp-cuda-tools", "whisper-cpp-tools"], &self.runtime_dir)
+                || tool_exists("main", &["whisper-cpp-cuda-tools", "whisper-cpp-tools"], &self.runtime_dir),
             "has_ocr": tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir)
                 || !string_value(&settings, "ocr_http_endpoint")
                     .or_else(|| string_value(&settings, "ocr_api_url"))
                     .unwrap_or_default()
                     .trim()
                     .is_empty(),
-            "has_cuda": false,
+            "has_cuda": tool_exists("whisper-cli", &["whisper-cpp-cuda-tools"], &self.runtime_dir),
             "has_vision": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_gui": true,
         }))
@@ -723,8 +733,15 @@ impl NativeEngine {
         let settings = self.read_settings();
         let ffmpeg = tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir);
         let ytdlp = tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir);
-        let whisper_cpp = tool_exists("whisper-cli", &["whisper-cpp-tools"], &self.runtime_dir)
-            || tool_exists("main", &["whisper-cpp-tools"], &self.runtime_dir);
+        let whisper_cpp = tool_exists(
+            "whisper-cli",
+            &["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
+            &self.runtime_dir,
+        ) || tool_exists(
+            "main",
+            &["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
+            &self.runtime_dir,
+        );
         let tesseract = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
         let http_ocr = !string_value(&settings, "ocr_http_endpoint")
             .or_else(|| string_value(&settings, "ocr_api_url"))
@@ -838,6 +855,7 @@ impl NativeEngine {
                 "download-tools" => install_download_tools(&target),
                 "ffmpeg-tools" => install_ffmpeg_tools_from_path(&target),
                 "whisper-cpp-tools" => install_whisper_cpp_tools_from_path(&target),
+                "whisper-cpp-cuda-tools" => install_whisper_cpp_tools_from_path(&target),
                 "tesseract-ocr-tools" => install_tesseract_tools_from_path(&target),
                 _ => Err(format!(
                     "Missing local package: {}. Put the component package there, then install again.",
@@ -981,6 +999,9 @@ impl NativeEngine {
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
         let whisper_model =
             string_value(&settings, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
+        let whisper_device = string_param(&params, "whisper_device")
+            .or_else(|| string_value(&settings, "whisper_device"))
+            .unwrap_or_else(|| "auto".to_string());
         let provider = active_provider_profile(&settings).ok();
         let ocr_enabled = params
             .get("ocr_enabled")
@@ -1023,6 +1044,7 @@ impl NativeEngine {
                 runtime_dir,
                 model_dirs,
                 whisper_model,
+                whisper_device,
                 provider,
                 ocr_config,
             );
@@ -1538,6 +1560,7 @@ fn run_native_job(
     runtime_dir: PathBuf,
     model_dirs: Vec<PathBuf>,
     whisper_model: String,
+    whisper_device: String,
     provider: Option<NativeProviderProfile>,
     ocr_config: OcrRuntimeConfig,
 ) {
@@ -1656,6 +1679,7 @@ fn run_native_job(
         &runtime_dir,
         &model_dirs,
         &whisper_model,
+        &whisper_device,
     ) {
         Ok(text) => text,
         Err(error) => format!(
@@ -2374,6 +2398,14 @@ fn resolve_whisper_model(model_dirs: &[PathBuf], model_id: &str) -> Option<PathB
     None
 }
 
+fn whisper_components_for_device(device: &str) -> Vec<&'static str> {
+    match device {
+        "cuda" => vec!["whisper-cpp-cuda-tools"],
+        "cpu" => vec!["whisper-cpp-tools"],
+        _ => vec!["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
+    }
+}
+
 fn transcribe_with_whisper_cpp(
     input_path: &Path,
     output_dir: &Path,
@@ -2382,13 +2414,21 @@ fn transcribe_with_whisper_cpp(
     runtime_dir: &Path,
     model_dirs: &[PathBuf],
     whisper_model: &str,
+    whisper_device: &str,
 ) -> Result<String, String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
         "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
     })?;
-    let whisper = resolve_tool_path("whisper-cli", &["whisper-cpp-tools"], runtime_dir)
-        .or_else(|| resolve_tool_path("main", &["whisper-cpp-tools"], runtime_dir))
-        .ok_or_else(|| "whisper.cpp executable not found; install whisper-cpp-tools".to_string())?;
+    let whisper_components = whisper_components_for_device(whisper_device);
+    let whisper = resolve_tool_path("whisper-cli", &whisper_components, runtime_dir)
+        .or_else(|| resolve_tool_path("main", &whisper_components, runtime_dir))
+        .ok_or_else(|| {
+            if whisper_device == "cuda" {
+                "whisper.cpp CUDA executable not found; install whisper-cpp-cuda-tools".to_string()
+            } else {
+                "whisper.cpp executable not found; install whisper-cpp-tools".to_string()
+            }
+        })?;
     let model = resolve_whisper_model(model_dirs, whisper_model).ok_or_else(|| {
         format!("Whisper model '{whisper_model}' not found; configure whisper_model_dir")
     })?;
@@ -3071,6 +3111,27 @@ fn open_path(path: &Path) -> Result<Value, String> {
     Ok(json!(true))
 }
 
+fn open_url(url: &str) -> Result<Value, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("url must start with http:// or https://".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", trimmed])
+        .spawn();
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(trimmed).spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(trimmed).spawn();
+
+    result.map_err(|error| error.to_string())?;
+    Ok(json!(true))
+}
+
 fn reveal_path(path: &Path) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
     let result = Command::new("explorer")
@@ -3212,7 +3273,15 @@ fn install_component_from_download(manifest: &Value, target: &Path) -> Result<()
                 let extracted = temp.join("extracted");
                 fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
                 extract_zip_archive(&package_path, &extracted)?;
-                stage_component_files(&extracted, &stage, &files)?;
+                if manifest
+                    .get("copy_payload_dir")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    stage_component_payload_dir(&extracted, &stage, &files)?;
+                } else {
+                    stage_component_files(&extracted, &stage, &files)?;
+                }
             }
             other => return Err(format!("unsupported archive_type '{other}'")),
         }
@@ -3473,6 +3542,24 @@ fn stage_component_files(source_root: &Path, stage: &Path, files: &[Value]) -> R
         }
     }
     Ok(())
+}
+
+fn stage_component_payload_dir(
+    source_root: &Path,
+    stage: &Path,
+    files: &[Value],
+) -> Result<(), String> {
+    let first_file = files
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|file| !file.ends_with('/'))
+        .ok_or_else(|| "manifest has no payload file".to_string())?;
+    let payload_file = find_file_recursive(source_root, path_leaf(first_file))
+        .ok_or_else(|| format!("required file '{first_file}' not found in package"))?;
+    let payload_dir = payload_file
+        .parent()
+        .ok_or_else(|| format!("invalid payload file path: {}", payload_file.display()))?;
+    copy_dir_recursive(payload_dir, stage)
 }
 
 fn path_leaf(path: &str) -> &str {
@@ -3837,6 +3924,7 @@ mod tests {
         assert!(names.contains(&"download-tools"));
         assert!(names.contains(&"ffmpeg-tools"));
         assert!(names.contains(&"whisper-cpp-tools"));
+        assert!(names.contains(&"whisper-cpp-cuda-tools"));
         assert!(names.contains(&"tesseract-ocr-tools"));
 
         let _ = fs::remove_dir_all(root);

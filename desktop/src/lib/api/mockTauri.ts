@@ -223,6 +223,10 @@ const mockResponses: Record<string, (params: any) => any> = {
     console.log(`[mock] reveal note ${params.id} in file explorer`);
     return { success: true };
   },
+  "system.open_url": (params: any) => {
+    console.log(`[mock] open url ${params.url}`);
+    return true;
+  },
   "collection.list": () => mockCollections,
   "collection.get": (params: { id: number }) => mockCollections.find(c => c.id === params.id) || null,
   "settings.get": () => ({ ...mockSettings, providers: mockProviders }),
@@ -317,7 +321,7 @@ const mockResponses: Record<string, (params: any) => any> = {
   "components.list": () => [
     {
       component: "download-tools",
-      version: "1.5.4",
+      version: "1.5.6",
       description: "yt-dlp standalone executable",
       installed: false,
       installed_version: null,
@@ -330,7 +334,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "ffmpeg-tools",
-      version: "1.5.4",
+      version: "1.5.6",
       description: "FFmpeg + FFprobe tools",
       installed: false,
       installed_version: null,
@@ -343,7 +347,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "whisper-cpp-tools",
-      version: "1.5.4",
+      version: "1.5.6",
       description: "whisper.cpp native CLI transcription tools",
       installed: false,
       installed_version: null,
@@ -355,8 +359,21 @@ const mockResponses: Record<string, (params: any) => any> = {
       downloadable: true,
     },
     {
+      component: "whisper-cpp-cuda-tools",
+      version: "1.5.6",
+      description: "whisper.cpp CUDA 12.4 native CLI transcription tools",
+      installed: false,
+      installed_version: null,
+      status: "not_installed",
+      size_mb: 678,
+      component_path: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\runtime\\components\\whisper-cpp-cuda-tools",
+      provides: ["transcription-native", "transcription-gpu", "cuda"],
+      missing_files: ["whisper-cli.exe"],
+      downloadable: true,
+    },
+    {
       component: "tesseract-ocr-tools",
-      version: "1.5.4",
+      version: "1.5.6",
       description: "Tesseract native executable OCR tools",
       installed: false,
       installed_version: null,
