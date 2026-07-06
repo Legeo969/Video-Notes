@@ -43,6 +43,12 @@
     vault_path: string;
     sizes: Record<string, number>;
     counts: Record<string, { dirs: number; files: number }>;
+    tasks?: {
+      total: number;
+      running: number;
+      completed: number;
+      failed: number;
+    };
   }
 
   interface RuntimeComponent {
@@ -66,7 +72,6 @@
     whisper_model: string;
     whisper_model_dir: string;
     whisper_device: string;
-    whisper_compute_type: string;
     ocr_enabled: boolean;
     ocr_backend: string;
     ocr_http_endpoint: string;
@@ -149,7 +154,6 @@
     whisper_model: "large-v3",
     whisper_model_dir: "",
     whisper_device: "auto",
-    whisper_compute_type: "auto",
     ocr_enabled: false,
     ocr_backend: "tesseract",
     ocr_http_endpoint: "",
@@ -272,7 +276,6 @@
           whisper_model: settings.whisper_model,
           whisper_model_dir: settings.whisper_model_dir,
           whisper_device: settings.whisper_device,
-          whisper_compute_type: settings.whisper_compute_type,
           ocr_enabled: settings.ocr_enabled,
           ocr_backend: settings.ocr_backend,
           ocr_http_endpoint: settings.ocr_http_endpoint,
@@ -472,6 +475,7 @@
   }
 
   function formatBytes(bytes = 0) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
     if (bytes < 1024) return `${bytes} B`;
     const units = ["KB", "MB", "GB", "TB"];
     let value = bytes / 1024;
@@ -703,16 +707,6 @@
                     <option value="auto">自动：优先 CUDA，可降级 CPU</option>
                     <option value="cuda">CUDA / GPU：不可用时报错</option>
                     <option value="cpu">CPU</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label class="field-label" for="whisper_compute_type">计算精度</label>
-                  <select id="whisper_compute_type" bind:value={settings.whisper_compute_type} onchange={markDirty} disabled={settings.transcription_backend === "whisper_cpp"}>
-                    <option value="auto">自动：CUDA=float16，CPU=int8</option>
-                    <option value="float16">float16（CUDA 推荐）</option>
-                    <option value="int8_float16">int8_float16（CUDA 低显存）</option>
-                    <option value="int8">int8（CPU 推荐）</option>
-                    <option value="float32">float32</option>
                   </select>
                 </div>
               </div>
@@ -989,17 +983,19 @@
         {:else if activeTab === "storage"}
           <section class="settings-pane">
             <div class="pane-head actions-head">
-              <div><span>STORAGE</span><h2>存储管理</h2><p>查看 AppData 状态、任务缓存、数据库和用户可见导出目录。</p></div>
+              <div><span>STORAGE</span><h2>存储管理</h2><p>查看 AppData 状态、任务记录、数据库和用户可见导出目录。</p></div>
               <button class="btn btn-secondary" type="button" onclick={refreshStorageStatus} disabled={storageLoading}><Icon name="refresh" size={15} />{storageLoading ? "刷新中" : "刷新"}</button>
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="database" size={18} /></div><div><h3>本机存储概览</h3><p>应用内部状态保存在 AppData；导出目录只保存最终笔记、转录、字幕和帧图。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="database" size={18} /></div><div><h3>本机存储概览</h3><p>任务中心显示的是当前 Native 任务记录；工作区缓存只是可清理的临时目录。</p></div></div>
               {#if storageStatus}
                 <div class="storage-grid">
-                  <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.export_bytes)}</strong><small>{storageStatus.export_dir}</small></div>
-                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db_bytes)}</strong><small>{storageStatus.db_path}</small></div>
-                  <div><span>任务缓存</span><strong>{formatBytes(storageStatus.sizes.jobs_bytes + storageStatus.sizes.legacy_jobs_bytes)}</strong><small>{storageStatus.jobs_root}</small></div>
+                  <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.exports)}</strong><small>{storageStatus.export_dir}</small></div>
+                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db)}</strong><small>{storageStatus.db_path}</small></div>
+                  <div><span>任务记录</span><strong>{storageStatus.tasks?.total ?? 0} 个</strong><small>运行中 {storageStatus.tasks?.running ?? 0} · 已完成 {storageStatus.tasks?.completed ?? 0} · 异常 {storageStatus.tasks?.failed ?? 0}</small></div>
+                  <div><span>工作区缓存</span><strong>{formatBytes((storageStatus.sizes.jobs ?? 0) + (storageStatus.sizes.legacy_jobs ?? 0))}</strong><small>{storageStatus.jobs_root}</small></div>
+                  <div><span>运行时组件</span><strong>{formatBytes(storageStatus.sizes.runtime)}</strong><small>插件、外部工具和已安装组件</small></div>
                   <div><span>Obsidian Vault</span><strong>{storageStatus.vault_path ? "已配置" : "未配置"}</strong><small>{storageStatus.vault_path || "未配置"}</small></div>
                 </div>
               {:else}
@@ -1008,7 +1004,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="trash" size={18} /></div><div><h3>缓存清理</h3><p>只清理任务工作区缓存，不会删除已经导出的笔记文件。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="trash" size={18} /></div><div><h3>工作区缓存清理</h3><p>只清理 AppData 中的临时工作区，不会删除任务中心记录或已经导出的笔记文件。</p></div></div>
               <div class="storage-actions">
                 <button class="btn btn-secondary" type="button" onclick={cleanupOrphanWorkspaces} disabled={storageLoading}><Icon name="trash" size={14} />清理孤儿任务缓存</button>
                 <button class="btn btn-secondary" type="button" onclick={cleanupCompletedWorkspaces} disabled={storageLoading}><Icon name="check" size={14} />清理已完成任务缓存</button>
@@ -1397,16 +1393,15 @@
   .model-selection-summary.warning { border-color: color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); background: var(--warning-soft); }
   .model-selection-summary.warning .selection-status { color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 12%, transparent); }
   .installed-count { flex: 0 0 auto; padding: 5px 8px; border-radius: 99px; color: var(--success-color); background: var(--success-soft); font-size: 11px; font-weight: 750; }
-  .interactive-model-cards { grid-template-columns: repeat(3, minmax(0,1fr)); padding: 0; border: 0; background: transparent; }
-  .interactive-model-cards .model-card { position: relative; min-height: 132px; padding: 15px; border: 1px solid var(--border-color); background: var(--bg-card); }
+  .interactive-model-cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); padding: 0; border: 0; background: transparent; }
+  .interactive-model-cards .model-card { position: relative; min-height: 118px; padding: 15px; border: 1px solid var(--border-color); background: var(--bg-card); }
   .interactive-model-cards .model-card:hover:not(:disabled) { border-color: var(--accent-color); background: var(--accent-faint); }
   .interactive-model-cards .model-card.selected { border-color: var(--accent-color); background: var(--accent-faint); box-shadow: 0 0 0 3px var(--accent-glow); }
-  .interactive-model-cards .model-card.unavailable { opacity: .46; cursor: not-allowed; }
+  .interactive-model-cards .model-card.unavailable { opacity: .58; cursor: not-allowed; }
   .model-availability { position: absolute; top: 12px; right: 12px; padding: 3px 7px; border-radius: 99px; color: var(--text-tertiary); background: var(--bg-muted); font-size: 10px; font-weight: 750; }
   .model-availability.installed { color: var(--success-color); background: var(--success-soft); }
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-  @media (max-width: 1180px) { .interactive-model-cards { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-  .runtime-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
   .ocr-test-field { justify-content: end; }
   .ocr-test-btn { width: fit-content; min-width: 118px; }
   .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }

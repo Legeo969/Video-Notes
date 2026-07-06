@@ -25,7 +25,6 @@
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
-  let whisperComputeType = $state("auto");
   let submitting = $state(false);
   let errorMessage = $state("");
   let startedJobId = $state<number | null>(null);
@@ -62,7 +61,6 @@
           vision_enabled?: boolean;
           active_provider?: string;
           whisper_device?: string;
-          whisper_compute_type?: string;
         }>("settings.get"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local"),
       ]);
@@ -78,7 +76,6 @@
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
-      whisperComputeType = String(settings.whisper_compute_type || "auto");
       if (visionEnabled && !activeProvider) {
         visionEnabled = false;
         modelScanError = "默认开启了视觉理解，但尚未配置活动 AI 供应商。本次任务已先关闭视觉理解。";
@@ -179,7 +176,6 @@
         ocr_backend: ocrBackend,
         vision_enabled: visionEnabled,
         whisper_device: whisperDevice,
-        whisper_compute_type: whisperComputeType,
       });
       startedJobId = result.job_id;
       await refreshJobs();
@@ -342,20 +338,10 @@
             </div>
             <div class="field">
               <label class="field-label" for="task-whisper-device">运行设备</label>
-              <select id="task-whisper-device" bind:value={whisperDevice} disabled={transcriptionBackend === "whisper_cpp"}>
+              <select id="task-whisper-device" bind:value={whisperDevice}>
                 <option value="auto">自动：优先 CUDA，可降级 CPU</option>
                 <option value="cuda">CUDA / GPU：不可用时报错</option>
                 <option value="cpu">CPU</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="task-whisper-compute">计算精度</label>
-              <select id="task-whisper-compute" bind:value={whisperComputeType} disabled={transcriptionBackend === "whisper_cpp"}>
-                <option value="auto">自动：CUDA=float16，CPU=int8</option>
-                <option value="float16">float16（CUDA 推荐）</option>
-                <option value="int8_float16">int8_float16（CUDA 低显存）</option>
-                <option value="int8">int8（CPU 推荐）</option>
-                <option value="float32">float32</option>
               </select>
             </div>
           </div>
@@ -415,7 +401,7 @@
       <div class="submit-bar">
         <div class="submit-summary">
           <span class="summary-icon"><Icon name="sparkles" size={16} /></span>
-          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : !modelReady ? "请先选择可用转录模型" : "已准备好创建任务"}</strong><small>{selectedWhisperModel?.label || whisperModel} · {whisperDevice === "cuda" ? "CUDA" : whisperDevice === "cpu" ? "CPU" : "自动设备"} · {whisperComputeType === "auto" ? "自动精度" : whisperComputeType} · {ocrEnabled ? "OCR 开启" : "OCR 关闭"} · {visionEnabled ? "视觉理解开启" : "视觉理解关闭"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
+          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : !modelReady ? "请先选择可用转录模型" : "已准备好创建任务"}</strong><small>{selectedWhisperModel?.label || whisperModel} · {whisperDevice === "cuda" ? "CUDA" : whisperDevice === "cpu" ? "CPU" : "自动设备"} · {ocrEnabled ? "OCR 开启" : "OCR 关闭"} · {visionEnabled ? "视觉理解开启" : "视觉理解关闭"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
         </div>
         <div class="submit-actions">
           {#if startedJobId !== null}<button class="btn btn-secondary" type="button" onclick={resetForm}>新建另一个</button>{/if}
@@ -689,7 +675,7 @@
   @media (max-width: 900px) { .model-picker-control { grid-template-columns: 1fr; } }
 .url-input { width: 100%; min-width: 0; }
   .link-source-card { align-items: start; }
-  .whisper-runtime-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
+  .whisper-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
   @media (max-width: 980px) { .enhancement-grid { grid-template-columns: 1fr; } .ocr-backend-card select { width: 100%; } }
   @media (max-width: 760px) { .whisper-runtime-grid { grid-template-columns: 1fr; } }
 </style>

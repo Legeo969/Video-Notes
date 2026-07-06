@@ -10,6 +10,7 @@
     { id: "notes", label: "笔记库", icon: "note" },
     { id: "collections", label: "合集", icon: "folder" },
   ];
+  const appVersion = __APP_VERSION__;
   let darkMode = $state(false);
   function applyTheme(isDark: boolean) { darkMode = isDark; document.documentElement.classList.toggle("dark", isDark); localStorage.setItem("video-notes-theme", isDark ? "dark" : "light"); }
   onMount(() => { const saved = localStorage.getItem("video-notes-theme"); const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches; applyTheme(saved ? saved === "dark" : Boolean(prefersDark)); });
@@ -35,7 +36,7 @@
     <div class="engine-row"><span class="engine-symbol"><Icon name="activity" size={15} /></span><div><strong>{engineOnline ? "Native 引擎正常" : "处理引擎离线"}</strong><small>{engineOnline ? "设置和插件管理可用" : "查看页面顶部诊断"}</small></div><span class="engine-status-dot"></span></div>
     {#if activeJobCount > 0}<div class="engine-progress"><span style={`width:${Math.min(100, 28 + activeJobCount * 14)}%`}></span></div>{/if}
   </section>
-  <footer><button class="theme-button" onclick={() => applyTheme(!darkMode)}><Icon name={darkMode ? "sun" : "moon"} size={15} /><span>{darkMode ? "浅色外观" : "深色外观"}</span></button><span class="version">1.5.0</span></footer>
+  <footer><button class="theme-button" onclick={() => applyTheme(!darkMode)}><Icon name={darkMode ? "sun" : "moon"} size={15} /><span>{darkMode ? "浅色外观" : "深色外观"}</span></button><span class="version">{appVersion}</span></footer>
 </aside>
 
 <style>

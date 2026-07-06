@@ -304,16 +304,24 @@ const mockResponses: Record<string, (params: any) => any> = {
     legacy_jobs_root: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\.jobs",
     vault_path: mockSettings.vault_path,
     sizes: {
-      export_bytes: 12582912,
-      state_bytes: 524288,
-      jobs_bytes: 3145728,
-      legacy_jobs_bytes: 0,
-      db_bytes: 262144,
-      vault_bytes: 0,
+      exports: 12582912,
+      state: 524288,
+      db: 262144,
+      jobs: 3145728,
+      legacy_jobs: 0,
+      runtime: 734003200,
     },
     counts: {
+      exports: { dirs: 1, files: 8 },
       jobs: { dirs: 2, files: 6 },
       legacy_jobs: { dirs: 0, files: 0 },
+      runtime: { dirs: 5, files: 12 },
+    },
+    tasks: {
+      total: 3,
+      running: 1,
+      completed: 1,
+      failed: 1,
     },
   }),
   "storage.cleanup_orphans": () => ({ removed: 0, current: 0, legacy: 0 }),
@@ -321,7 +329,7 @@ const mockResponses: Record<string, (params: any) => any> = {
   "components.list": () => [
     {
       component: "download-tools",
-      version: "1.5.6",
+      version: "1.5.7",
       description: "yt-dlp standalone executable",
       installed: false,
       installed_version: null,
@@ -334,7 +342,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "ffmpeg-tools",
-      version: "1.5.6",
+      version: "1.5.7",
       description: "FFmpeg + FFprobe tools",
       installed: false,
       installed_version: null,
@@ -347,7 +355,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "whisper-cpp-tools",
-      version: "1.5.6",
+      version: "1.5.7",
       description: "whisper.cpp native CLI transcription tools",
       installed: false,
       installed_version: null,
@@ -360,7 +368,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "whisper-cpp-cuda-tools",
-      version: "1.5.6",
+      version: "1.5.7",
       description: "whisper.cpp CUDA 12.4 native CLI transcription tools",
       installed: false,
       installed_version: null,
@@ -373,7 +381,7 @@ const mockResponses: Record<string, (params: any) => any> = {
     },
     {
       component: "tesseract-ocr-tools",
-      version: "1.5.6",
+      version: "1.5.7",
       description: "Tesseract native executable OCR tools",
       installed: false,
       installed_version: null,

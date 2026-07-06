@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -11,6 +12,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
@@ -173,6 +180,8 @@ impl NativeEngine {
             "process.list" => self.process_list(params),
             "process.start" => self.process_start(params),
             "process.delete" => self.process_delete(params),
+            "process.open_output" => self.process_output_action(params, false),
+            "process.reveal_output" => self.process_output_action(params, true),
             "process.pause" | "process.cancel" | "process.resume" | "process.retry" => {
                 Err("Native task actions are not migrated yet".to_string())
             }
@@ -263,7 +272,6 @@ impl NativeEngine {
             "whisper_model_dir": model_dir,
             "model_dir": model_dir,
             "whisper_device": string_value(&raw, "whisper_device").unwrap_or_else(|| "auto".to_string()),
-            "whisper_compute_type": string_value(&raw, "whisper_compute_type").unwrap_or_else(|| "auto".to_string()),
             "language": string_value(&raw, "language").unwrap_or_default(),
             "frame_interval": raw.get("frame_interval").and_then(Value::as_i64).unwrap_or(30),
             "frame_mode": string_value(&raw, "frame_mode").unwrap_or_else(|| "fixed".to_string()),
@@ -311,7 +319,6 @@ impl NativeEngine {
             "whisper_model_dir",
             "model_dir",
             "whisper_device",
-            "whisper_compute_type",
             "language",
             "frame_interval",
             "frame_mode",
@@ -899,14 +906,31 @@ impl NativeEngine {
 
     fn storage_status(&self) -> Result<Value, String> {
         let raw = self.read_settings();
-        let export_dir = string_value(&raw, "output_dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_export_dir.clone());
+        let export_dir = effective_note_output_dir(&raw, &self.default_export_dir);
         let state_dir = self.data_dir.join("state");
         let jobs_root = self.data_dir.join("jobs");
         let legacy_jobs_root = self.data_dir.join(".jobs");
         let db_path = state_dir.join("video_notes.db");
         let vault_path = string_value(&raw, "vault_path").unwrap_or_default();
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?;
+        let total_tasks = jobs.len();
+        let running_tasks = jobs
+            .iter()
+            .filter(|job| {
+                matches!(
+                    job.status.as_str(),
+                    "pending" | "running" | "pausing" | "cancelling"
+                )
+            })
+            .count();
+        let completed_tasks = jobs.iter().filter(|job| job.status == "completed").count();
+        let failed_tasks = jobs
+            .iter()
+            .filter(|job| matches!(job.status.as_str(), "failed" | "interrupted" | "cancelled"))
+            .count();
         Ok(json!({
             "export_dir": export_dir.to_string_lossy(),
             "state_dir": state_dir.to_string_lossy(),
@@ -917,6 +941,7 @@ impl NativeEngine {
             "sizes": {
                 "exports": dir_size(&export_dir),
                 "state": dir_size(&state_dir),
+                "db": file_size(&db_path),
                 "jobs": dir_size(&jobs_root),
                 "legacy_jobs": dir_size(&legacy_jobs_root),
                 "runtime": dir_size(&self.runtime_dir),
@@ -926,6 +951,12 @@ impl NativeEngine {
                 "jobs": dir_counts(&jobs_root),
                 "legacy_jobs": dir_counts(&legacy_jobs_root),
                 "runtime": dir_counts(&self.runtime_dir),
+            },
+            "tasks": {
+                "total": total_tasks,
+                "running": running_tasks,
+                "completed": completed_tasks,
+                "failed": failed_tasks,
             }
         }))
     }
@@ -992,9 +1023,7 @@ impl NativeEngine {
         let jobs = self.jobs.clone();
         let app_handle = self.app_handle.clone();
         let settings = self.read_settings();
-        let output_dir = string_value(&settings, "output_dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.default_export_dir.clone());
+        let output_dir = effective_note_output_dir(&settings, &self.default_export_dir);
         let runtime_dir = self.runtime_dir.clone();
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
         let whisper_model =
@@ -1065,6 +1094,29 @@ impl NativeEngine {
         let old_len = jobs.len();
         jobs.retain(|job| job.id != id);
         Ok(json!(jobs.len() != old_len))
+    }
+
+    fn process_output_action(&self, params: Value, reveal: bool) -> Result<Value, String> {
+        let id = params
+            .get("job_id")
+            .or_else(|| params.get("id"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "job_id is required".to_string())?;
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?;
+        let path = jobs
+            .iter()
+            .find(|job| job.id == id)
+            .and_then(|job| job.output_path.as_ref())
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("Job {id} has no note output yet"))?;
+        if reveal {
+            reveal_path(&path)
+        } else {
+            open_path(&path)
+        }
     }
 
     fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
@@ -1171,13 +1223,15 @@ impl NativeEngine {
     fn note_entries(&self) -> Result<Vec<NoteEntry>, String> {
         let settings = self.read_settings();
         let mut roots = Vec::new();
-        roots.push(
-            string_value(&settings, "output_dir")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.default_export_dir.clone()),
-        );
-        if let Some(vault_path) = string_value(&settings, "vault_path") {
-            roots.push(PathBuf::from(vault_path).join("video-notes"));
+        roots.push(effective_note_output_dir(
+            &settings,
+            &self.default_export_dir,
+        ));
+        let legacy_export_dir = string_value(&settings, "output_dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.default_export_dir.clone());
+        if !roots.iter().any(|root| root == &legacy_export_dir) {
+            roots.push(legacy_export_dir);
         }
 
         let mut notes = Vec::new();
@@ -1757,10 +1811,23 @@ fn run_native_job(
 
     let transcript_text = fs::read_to_string(&transcript_path).unwrap_or_default();
     let transcript_preview = transcript_text.chars().take(6000).collect::<String>();
+    let image_context = if ocr_config.enabled {
+        let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
+        markdown_image_context(&note_path, &frame_dir, &transcript_text, 8)
+    } else {
+        String::new()
+    };
     let generated_note = provider
         .as_ref()
         .and_then(|profile| {
-            synthesize_note_with_provider(profile, &base_title, &input_path, &transcript_text).ok()
+            synthesize_note_with_provider(
+                profile,
+                &base_title,
+                &input_path,
+                &transcript_text,
+                &image_context,
+            )
+            .ok()
         })
         .unwrap_or_else(|| {
             format!(
@@ -1897,6 +1964,17 @@ fn default_export_dir(app_handle: &AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
         .join("Video Notes AI")
         .join("exports")
+}
+
+fn effective_note_output_dir(settings: &Map<String, Value>, default_export_dir: &Path) -> PathBuf {
+    if let Some(vault_path) = string_value(settings, "vault_path") {
+        if !vault_path.trim().is_empty() {
+            return PathBuf::from(vault_path).join("video-notes");
+        }
+    }
+    string_value(settings, "output_dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_export_dir.to_path_buf())
 }
 
 fn project_root() -> Option<PathBuf> {
@@ -2181,6 +2259,7 @@ fn synthesize_note_with_provider(
     title: &str,
     source: &Path,
     transcript: &str,
+    image_context: &str,
 ) -> Result<String, String> {
     let clipped = transcript.chars().take(24_000).collect::<String>();
     let client = reqwest::blocking::Client::builder()
@@ -2199,14 +2278,15 @@ fn synthesize_note_with_provider(
             "messages": [
                 {
                     "role": "system",
-                    "content": "You generate concise, structured Chinese Markdown study notes from video transcripts. Return Markdown only."
+                    "content": "You generate concise, structured Chinese Markdown study notes from video transcripts. Return Markdown only. If image assets are provided, insert only clearly relevant Markdown image links next to the related concepts, steps, or examples. If no image is clearly relevant, do not insert an image. Do not place images in a final gallery. Use only the provided relative image paths."
                 },
                 {
                     "role": "user",
                     "content": format!(
-                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，包含摘要、关键概念、步骤/论证、行动项和原始转写要点。\n\n转写：\n{}",
+                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，包含摘要、关键概念、步骤/论证、行动项和原始转写要点。\n\n图片素材：\n{}\n\n要求：\n- 只有图片与当前段落内容明确相关时，才在对应段落附近插入图片；没有相关图片就不插。\n- 图片语法必须使用素材中给出的 Markdown，例如 ![frame-001](xxx/frame-001.png)。\n- 不要把图片集中放在文末，也不要编造图片路径。\n\n转写：\n{}",
                         title,
                         source.display(),
+                        if image_context.trim().is_empty() { "无" } else { image_context },
                         clipped
                     )
                 }
@@ -2334,11 +2414,20 @@ fn tool_exists(name: &str, components: &[&str], runtime_dir: &Path) -> bool {
             return true;
         }
     }
-    Command::new(&exe)
+    hidden_command(&exe)
         .arg("--version")
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 fn executable_name(name: &str) -> String {
@@ -2358,7 +2447,7 @@ fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Opt
         }
     }
     Some(PathBuf::from(exe)).filter(|candidate| {
-        Command::new(candidate)
+        hidden_command(candidate)
             .arg("--version")
             .output()
             .map(|output| output.status.success())
@@ -2434,7 +2523,7 @@ fn transcribe_with_whisper_cpp(
     })?;
 
     let audio_path = output_dir.join(format!("{file_stem}-{id}.wav"));
-    let ffmpeg_output = Command::new(&ffmpeg)
+    let ffmpeg_output = hidden_command(&ffmpeg)
         .args([
             "-y",
             "-i",
@@ -2458,7 +2547,7 @@ fn transcribe_with_whisper_cpp(
     }
 
     let out_prefix = output_dir.join(format!("{file_stem}-{id}-whisper"));
-    let whisper_output = Command::new(&whisper)
+    let whisper_output = hidden_command(&whisper)
         .args([
             "-m",
             &model.to_string_lossy(),
@@ -2496,7 +2585,7 @@ fn download_with_ytdlp(
     let download_dir = output_dir.join(format!("download-{id}"));
     fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
     let template = download_dir.join("%(title).180s.%(ext)s");
-    let output = Command::new(&ytdlp)
+    let output = hidden_command(&ytdlp)
         .args(["--no-playlist", "-o", &template.to_string_lossy(), url])
         .output()
         .map_err(|error| format!("failed to run yt-dlp: {error}"))?;
@@ -2525,7 +2614,7 @@ fn extract_ocr_with_tesseract(
         .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
     let mut output = String::new();
     for frame in extract_sample_frames(input_path, output_dir, file_stem, id, runtime_dir)? {
-        let result = Command::new(&tesseract)
+        let result = hidden_command(&tesseract)
             .arg(&frame)
             .arg("stdout")
             .output()
@@ -2605,7 +2694,7 @@ fn extract_sample_frames(
     let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
     fs::create_dir_all(&frame_dir).map_err(|error| error.to_string())?;
     let pattern = frame_dir.join("frame-%03d.png");
-    let ffmpeg_output = Command::new(&ffmpeg)
+    let ffmpeg_output = hidden_command(&ffmpeg)
         .args([
             "-y",
             "-i",
@@ -2632,6 +2721,90 @@ fn extract_sample_frames(
         .collect::<Vec<_>>();
     frames.sort();
     Ok(frames)
+}
+
+fn markdown_image_context(
+    note_path: &Path,
+    frame_dir: &Path,
+    transcript: &str,
+    limit: usize,
+) -> String {
+    let mut frames = fs::read_dir(frame_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp"
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    frames.sort();
+    if frames.is_empty() {
+        return String::new();
+    }
+
+    let note_dir = note_path.parent().unwrap_or_else(|| Path::new("."));
+    let ocr_by_frame = ocr_text_by_frame(transcript);
+    let mut context = String::new();
+    for frame in frames.into_iter().take(limit) {
+        let rel = frame.strip_prefix(note_dir).unwrap_or(&frame);
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let label = frame
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("frame");
+        let file_name = frame
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(label);
+        let ocr = ocr_by_frame
+            .get(file_name)
+            .map(|value| value.chars().take(260).collect::<String>())
+            .unwrap_or_default();
+        context.push_str(&format!(
+            "- {}: ![{}]({})\n  OCR: {}\n",
+            file_name,
+            label,
+            rel,
+            if ocr.trim().is_empty() {
+                "无可用文字"
+            } else {
+                ocr.trim()
+            }
+        ));
+    }
+    context
+}
+
+fn ocr_text_by_frame(transcript: &str) -> HashMap<String, String> {
+    let mut by_frame = HashMap::new();
+    let mut current: Option<String> = None;
+    let mut buffer = String::new();
+    for line in transcript.lines() {
+        if let Some(name) = line.trim().strip_prefix("### ") {
+            if let Some(frame) = current.take() {
+                by_frame.insert(frame, buffer.trim().to_string());
+                buffer.clear();
+            }
+            current = Some(name.trim().to_string());
+        } else if current.is_some() {
+            buffer.push_str(line);
+            buffer.push('\n');
+        }
+    }
+    if let Some(frame) = current {
+        by_frame.insert(frame, buffer.trim().to_string());
+    }
+    by_frame
 }
 
 fn ocr_frame_with_paddleocr(
@@ -3097,15 +3270,15 @@ fn note_id(path: &Path) -> u32 {
 
 fn open_path(path: &Path) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
+    let result = hidden_command("cmd")
         .args(["/C", "start", "", &path.to_string_lossy()])
         .spawn();
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("open").arg(path).spawn();
+    let result = hidden_command("open").arg(path).spawn();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("xdg-open").arg(path).spawn();
+    let result = hidden_command("xdg-open").arg(path).spawn();
 
     result.map_err(|error| error.to_string())?;
     Ok(json!(true))
@@ -3118,15 +3291,15 @@ fn open_url(url: &str) -> Result<Value, String> {
     }
 
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
+    let result = hidden_command("cmd")
         .args(["/C", "start", "", trimmed])
         .spawn();
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("open").arg(trimmed).spawn();
+    let result = hidden_command("open").arg(trimmed).spawn();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("xdg-open").arg(trimmed).spawn();
+    let result = hidden_command("xdg-open").arg(trimmed).spawn();
 
     result.map_err(|error| error.to_string())?;
     Ok(json!(true))
@@ -3134,17 +3307,17 @@ fn open_url(url: &str) -> Result<Value, String> {
 
 fn reveal_path(path: &Path) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
-    let result = Command::new("explorer")
+    let result = hidden_command("explorer")
         .arg(format!("/select,{}", path.to_string_lossy()))
         .spawn();
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("open")
+    let result = hidden_command("open")
         .args(["-R", &path.to_string_lossy()])
         .spawn();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("xdg-open")
+    let result = hidden_command("xdg-open")
         .arg(path.parent().unwrap_or_else(|| Path::new(".")))
         .spawn();
 
@@ -3485,7 +3658,7 @@ fn extract_zip_archive(archive: &Path, target: &Path) -> Result<(), String> {
 fn command_output(name: &str, args: &[String]) -> Result<Output, String> {
     let mut errors = Vec::new();
     for candidate in executable_candidates(name) {
-        match Command::new(&candidate).args(args).output() {
+        match hidden_command(&candidate).args(args).output() {
             Ok(output) => return Ok(output),
             Err(error) => errors.push(format!("{}: {error}", candidate.display())),
         }
@@ -3736,9 +3909,9 @@ fn find_tessdata_dir(tesseract_dir: &Path) -> Option<PathBuf> {
 fn system_executable_path(name: &str) -> Option<PathBuf> {
     let exe = executable_name(name);
     let output = if cfg!(target_os = "windows") {
-        Command::new("where").arg(&exe).output().ok()?
+        hidden_command("where").arg(&exe).output().ok()?
     } else {
-        Command::new("which").arg(&exe).output().ok()?
+        hidden_command("which").arg(&exe).output().ok()?
     };
     if !output.status.success() {
         return None;
@@ -3781,6 +3954,10 @@ fn dir_size(path: &Path) -> u64 {
             }
         })
         .sum()
+}
+
+fn file_size(path: &Path) -> u64 {
+    path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
 }
 
 fn dir_counts(path: &Path) -> Value {
@@ -3884,7 +4061,7 @@ mod tests {
             &engine.manifests_dir.join("download-tools.json"),
             &json!({
                 "component": "download-tools",
-                "version": "1.5.0",
+                "version": "1.5.7",
                 "description": "yt-dlp standalone executable",
                 "size_mb": 20,
                 "provides": ["download"],

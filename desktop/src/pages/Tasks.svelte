@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { engineCall } from "../lib/api";
   import { deleteJob, jobs, jobsError, jobsLoading, refreshJobs, runJobAction } from "../lib/stores/jobs";
   import type { JobInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
@@ -117,6 +118,26 @@
       actionJobId = null;
     }
   }
+
+  function toggleDetails(job: JobInfo) {
+    selectedJobId = selectedJobId === job.id ? null : job.id;
+  }
+
+  async function openOutput(job: JobInfo, reveal = false) {
+    if (!job.output_path) {
+      localError = "该任务还没有生成笔记产物。";
+      return;
+    }
+    actionJobId = job.id;
+    localError = "";
+    try {
+      await engineCall(reveal ? "process.reveal_output" : "process.open_output", { job_id: job.id });
+    } catch (error) {
+      localError = error instanceof Error ? error.message : String(error);
+    } finally {
+      actionJobId = null;
+    }
+  }
 </script>
 
 <div class="page tasks-page">
@@ -191,7 +212,7 @@
           {:else}
             {#each filteredJobs as job (job.id)}
               <article class="task-row" class:selected={selectedJobId === job.id}>
-                <button class="task-main" onclick={() => selectedJobId = job.id} aria-label={`查看任务 ${titleOf(job)}`}>
+                <button class="task-main" onclick={() => toggleDetails(job)} aria-label={`查看任务 ${titleOf(job)}`}>
                   <span class="media-icon"><Icon name={sourceKind(job.input)} size={18} /></span>
                   <span class="task-identity"><strong>{titleOf(job)}</strong><small>#{job.id} · {job.input}</small></span>
                   <span class="stage-cell">
@@ -215,7 +236,7 @@
                   {:else if job.status === "cancelled"}
                     <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />重新运行</button>
                   {:else}
-                    <button class="icon-btn" title="查看详情" onclick={() => selectedJobId = job.id}><Icon name="chevron-right" size={16} /></button>
+                    <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
                   {/if}
                   {#if canDelete(job)}
                     <button class="icon-btn danger-action" title="删除任务" aria-label={`删除任务 ${titleOf(job)}`} disabled={actionJobId === job.id} onclick={() => removeJob(job)}><Icon name="trash" size={15} /></button>
@@ -249,6 +270,10 @@
             {/if}
             {#if canDelete(selectedJob)}
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>
+            {/if}
+            {#if selectedJob.output_path}
+              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => openOutput(selectedJob)}><Icon name="external" size={13} />打开笔记</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => openOutput(selectedJob, true)}><Icon name="folder-open" size={13} />定位文件</button>
             {/if}
           </div>
 
