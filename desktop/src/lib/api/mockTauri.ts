@@ -2,7 +2,7 @@
  * mockTauri.ts — 前端独立开发模式
  *
  * 当在浏览器中开发（非 Tauri 环境）时，使用此 mock 替换 @tauri-apps/api。
- * 让前端可以在没有 Rust/Python 后端的情况下独立开发和测试 UI。
+ * 让前端可以在没有 Tauri 后端的情况下独立开发和测试 UI。
  *
  * 用法：
  *   import { invoke, listen } from "./mockTauri";
@@ -73,7 +73,7 @@ $$PE(pos, 2i) = sin(pos/10000^{2i/d_{model}})$$
 
 PPO 通过剪切概率比来约束策略更新。
 
-\`\`\`python
+\`\`\`text
 def ppo_update(states, actions, old_log_probs, rewards):
     # 计算新策略概率
     log_probs = policy(states).log_prob(actions)
@@ -156,7 +156,6 @@ const mockResponses: Record<string, (params: any) => any> = {
     shell_version: "1.2.0",
     engine_version: "1.2.0",
     protocol_version: 1,
-    python_version: "3.10",
     cuda_available: true,
     ffmpeg_available: true,
   }),
@@ -282,12 +281,11 @@ const mockResponses: Record<string, (params: any) => any> = {
   "settings.templates.list": () => mockTemplates,
   "settings.models.scan": () => ["small", "medium", "large-v3"],
   "settings.models.local": () => [
-    { id: "small", path: "D:/models/faster-whisper-small", source: "configured" },
-    { id: "medium", path: "D:/models/faster-whisper-medium", source: "configured" },
-    { id: "large-v3-turbo", path: "D:/models/faster-whisper-large-v3-turbo", source: "configured" },
+    { id: "small", path: "D:/models/ggml-small.bin", source: "configured" },
+    { id: "medium", path: "D:/models/ggml-medium.bin", source: "configured" },
+    { id: "large-v3-turbo", path: "D:/models/ggml-large-v3-turbo.gguf", source: "configured" },
   ],
   "doctor.run": () => [
-    { name: "Python", status: "pass", detail: "3.13 (mock)" },
     { name: "FFmpeg", status: "pass", detail: "mock" },
   ],
   "diagnostics.bundle": () => "./output/diagnostics/mock.json",

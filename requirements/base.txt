@@ -1,6 +1,0 @@
-# requirements/base.txt — 核心依赖（CLI 模式 / 无 GUI）
-# pip install -r requirements/base.txt
-curl_cffi>=0.14,<0.15
-openai==2.37.0
-httpx==0.28.1
-python-dotenv==1.2.2

@@ -1,8 +1,4 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+# Build artifacts
 dist/
 build/
 .build/
@@ -10,7 +6,6 @@ build/
 # Environment
 .env
 .venv/
-.python313/
 cookies.txt
 bilibili_cookies.txt
 yt-dlp.conf
@@ -31,7 +26,6 @@ output/
 *.db
 *.db-wal
 *.db-shm
-pytest_output.txt
 
 # Diagnostics
 issue_bundle_*.zip
@@ -60,7 +54,6 @@ temp/
 .codex/
 .comet/
 .opencode/
-.pytest_cache/
 .worktrees/
 .workbuddy/
 docs/superpowers/

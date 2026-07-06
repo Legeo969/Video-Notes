@@ -40,6 +40,41 @@ function Copy-RequiredItem {
   Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
+function Copy-PayloadComponent {
+  param(
+    [Parameter(Mandatory = $true)][string]$Component,
+    [Parameter(Mandatory = $true)][string]$Source
+  )
+  $manifestPath = Join-Path $Root "runtime\manifests\$Component.json"
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    throw "Runtime manifest is missing: $manifestPath"
+  }
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  $target = Join-Path $Root "runtime\packages\$Component"
+  if (Test-Path -LiteralPath $target) {
+    Remove-Item -LiteralPath $target -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force $target | Out-Null
+  foreach ($file in $manifest.files) {
+    $relative = [string]$file
+    if (-not $relative.Trim() -or [IO.Path]::IsPathRooted($relative) -or $relative.Contains("..")) {
+      throw "Invalid component file path in $manifestPath: $relative"
+    }
+    $clean = $relative.TrimEnd([char[]]@('\', '/'))
+    $sourcePath = Join-Path $Source $clean
+    $targetPath = Join-Path $target $clean
+    if (-not (Test-Path -LiteralPath $sourcePath)) {
+      throw "Component source file is missing: $sourcePath"
+    }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $targetPath) | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Recurse -Force
+    if (-not (Test-Path -LiteralPath $targetPath)) {
+      throw "Component payload copy failed: $targetPath"
+    }
+  }
+  Write-Host "Staged runtime payload: $Component -> $target" -ForegroundColor Green
+}
+
 function Resolve-FfmpegTools {
   if ($FfmpegDir.Trim()) {
     return Resolve-PathStrict $FfmpegDir
@@ -158,12 +193,7 @@ $sourceMap | ConvertTo-Json -Depth 3 | Set-Content -Path $mapPath -Encoding utf8
 Write-Host "Runtime payload source map: $mapPath" -ForegroundColor Green
 
 if ($StagePayloads) {
-  $componentArgs = @()
   foreach ($component in $sourceMap.Keys) {
-    $componentArgs += @("--component", $component)
+    Copy-PayloadComponent $component $sourceMap[$component]
   }
-  & python "$PSScriptRoot\stage_runtime_payloads.py" --source-map $mapPath --clean @componentArgs
-  Assert-NativeSuccess "runtime payload staging"
-  & python "$PSScriptRoot\verify_runtime_payloads.py" @componentArgs
-  Assert-NativeSuccess "runtime payload readiness"
 }

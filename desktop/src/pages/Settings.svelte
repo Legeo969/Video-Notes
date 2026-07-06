@@ -616,7 +616,7 @@
               {:else if localWhisperModels.length === 0}
                 <div class="model-empty-state">
                   <span class="model-empty-icon"><Icon name="database" size={22} /></span>
-                  <div><strong>尚未检测到可用模型</strong><p>模型目录中需要存在名为 <code>faster-whisper-模型ID</code> 的文件夹。</p></div>
+                  <div><strong>尚未检测到可用模型</strong><p>模型目录中需要存在 <code>ggml-模型ID.bin</code> 或 <code>ggml-模型ID.gguf</code> 文件。</p></div>
                   <button class="btn btn-secondary btn-sm" type="button" onclick={scanModels}><Icon name="refresh" size={13} />重新扫描</button>
                 </div>
               {:else}
@@ -793,7 +793,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="download" size={18} /></div><div><h3>外部工具</h3><p>yt-dlp 和 FFmpeg 以 standalone executable 运行，不依赖 Python package。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="download" size={18} /></div><div><h3>外部工具</h3><p>yt-dlp 和 FFmpeg 以 standalone executable 运行。</p></div></div>
               {#if componentsLoading && toolComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if toolComponents.length === 0}
@@ -831,7 +831,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>使用 whisper.cpp native executable，不依赖 Python runtime。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>使用 whisper.cpp native executable。</p></div></div>
               {#if componentsLoading && transcriptionComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if transcriptionComponents.length === 0}
@@ -869,7 +869,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>使用 Tesseract native executable，不依赖 Python runtime。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>使用 Tesseract native executable。</p></div></div>
               {#if componentsLoading && ocrComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if ocrComponents.length === 0}

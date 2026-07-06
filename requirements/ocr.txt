@@ -1,9 +1,0 @@
-# requirements/ocr.txt — PaddleOCR 公共依赖（不安装 Paddle 核心）
-# 仅安装本文件不会切换 CPU/GPU Paddle。请选择：
-#   CPU: pip install -r requirements/ocr-cpu.txt
-#   GPU: pip install -r requirements/ocr-gpu.txt
-numpy>=1.24,<2.4
-paddleocr>=3.0.0
-paddlex[ocr]>=3.0.0
-pandas>=2.0,<3.0
-setuptools>=68,<81

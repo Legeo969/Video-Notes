@@ -1,1 +1,0 @@
-"""Transcription and subtitle operations."""

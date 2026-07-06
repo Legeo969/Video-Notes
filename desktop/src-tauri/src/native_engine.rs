@@ -112,7 +112,9 @@ impl NativeEngine {
             "settings.providers.list" => self.providers_list(),
             "settings.providers.create" | "settings.providers.add" => self.providers_create(params),
             "settings.providers.update" => self.providers_update(params),
-            "settings.providers.delete" | "settings.providers.remove" => self.providers_delete(params),
+            "settings.providers.delete" | "settings.providers.remove" => {
+                self.providers_delete(params)
+            }
             "settings.providers.set_active" => self.providers_set_active(params),
             "settings.providers.test" => self.provider_test(params),
             "settings.providers.models" => self.provider_models(params),
@@ -163,7 +165,6 @@ impl NativeEngine {
             "engine_version": env!("CARGO_PKG_VERSION"),
             "protocol_version": 1,
             "engine_kind": "rust-native",
-            "python_version": null,
             "cuda_available": false,
             "cuda_device_count": 0,
             "cuda_compute_types": [],
@@ -176,7 +177,6 @@ impl NativeEngine {
             "engine_version": env!("CARGO_PKG_VERSION"),
             "protocol_version": 1,
             "engine_kind": "rust-native",
-            "python_version": null,
             "timestamp": Utc::now().to_rfc3339(),
         }))
     }
@@ -362,9 +362,15 @@ impl NativeEngine {
             .as_array_mut()
             .ok_or_else(|| "providers must be an array".to_string())?;
         providers.push(Value::Object(entry));
-        if string_value(&raw, "active_provider").unwrap_or_default().is_empty() {
+        if string_value(&raw, "active_provider")
+            .unwrap_or_default()
+            .is_empty()
+        {
             raw.insert("active_provider".to_string(), json!(name));
-            raw.insert("bindings".to_string(), json!({ "llm": { "provider": name, "model": model } }));
+            raw.insert(
+                "bindings".to_string(),
+                json!({ "llm": { "provider": name, "model": model } }),
+            );
         }
         self.write_settings(raw)?;
         Ok(json!(true))
@@ -374,8 +380,13 @@ impl NativeEngine {
         let name = required_string(&params, "name")?;
         let mut raw = self.read_settings();
         let profile = find_provider_mut(&mut raw, &name)?;
-        if let Some(provider_type) = string_param(&params, "provider").or_else(|| string_param(&params, "type")) {
-            profile.insert("type".to_string(), json!(normalise_provider_type(Some(&provider_type))));
+        if let Some(provider_type) =
+            string_param(&params, "provider").or_else(|| string_param(&params, "type"))
+        {
+            profile.insert(
+                "type".to_string(),
+                json!(normalise_provider_type(Some(&provider_type))),
+            );
         }
         if let Some(base_url) = string_param(&params, "base_url") {
             profile.insert("base_url".to_string(), json!(base_url));
@@ -386,13 +397,20 @@ impl NativeEngine {
         if let Some(vision_model) = string_param(&params, "vision_model") {
             profile.insert("vision_model".to_string(), json!(vision_model));
         }
-        let model = profile.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        let model = profile
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let vision_model = profile
             .get("vision_model")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        profile.insert("models".to_string(), json!(clean_models(vec![model, vision_model])));
+        profile.insert(
+            "models".to_string(),
+            json!(clean_models(vec![model, vision_model])),
+        );
         self.write_settings(raw)?;
         Ok(json!(true))
     }
@@ -475,10 +493,7 @@ impl NativeEngine {
         let profile = provider_profile_for_request(&raw, &params)?;
         let models = match fetch_provider_models(&profile) {
             Ok(models) => models,
-            Err(_) => clean_models(vec![
-                profile.model.clone(),
-                profile.vision_model.clone(),
-            ]),
+            Err(_) => clean_models(vec![profile.model.clone(), profile.vision_model.clone()]),
         };
         Ok(json!(models))
     }
@@ -530,8 +545,8 @@ impl NativeEngine {
     fn local_models(&self) -> Result<Value, String> {
         let raw = self.read_settings();
         let mut dirs = Vec::new();
-        if let Some(model_dir) = string_value(&raw, "whisper_model_dir")
-            .or_else(|| string_value(&raw, "model_dir"))
+        if let Some(model_dir) =
+            string_value(&raw, "whisper_model_dir").or_else(|| string_value(&raw, "model_dir"))
         {
             if !model_dir.trim().is_empty() {
                 dirs.push(PathBuf::from(model_dir));
@@ -554,7 +569,6 @@ impl NativeEngine {
         let tesseract = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
         Ok(json!([
             check_item("Rust native engine", true, "in-process"),
-            check_item("Python", false, "not used by native engine"),
             check_item("FFmpeg", ffmpeg, "system PATH or ffmpeg-tools"),
             check_item("yt-dlp", ytdlp, "download-tools"),
             check_item("whisper.cpp", whisper_cpp, "whisper-cpp-tools"),
@@ -565,7 +579,10 @@ impl NativeEngine {
     fn diagnostics_bundle(&self) -> Result<Value, String> {
         let dir = self.data_dir.join("diagnostics");
         fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        let path = dir.join(format!("diagnostics-{}.json", Utc::now().format("%Y%m%d-%H%M%S")));
+        let path = dir.join(format!(
+            "diagnostics-{}.json",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        ));
         let payload = json!({
             "engine_kind": "rust-native",
             "version": env!("CARGO_PKG_VERSION"),
@@ -701,7 +718,10 @@ impl NativeEngine {
 
     fn process_list(&self, params: Value) -> Result<Value, String> {
         let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
-        let jobs = self.jobs.lock().map_err(|_| "jobs lock poisoned".to_string())?;
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?;
         let mut values: Vec<Value> = jobs.iter().map(NativeJob::to_value).collect();
         values.sort_by(|left, right| {
             right["id"]
@@ -748,7 +768,10 @@ impl NativeEngine {
             can_resume: false,
         };
         {
-            let mut jobs = self.jobs.lock().map_err(|_| "jobs lock poisoned".to_string())?;
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "jobs lock poisoned".to_string())?;
             jobs.push(job);
         }
 
@@ -760,12 +783,18 @@ impl NativeEngine {
             .unwrap_or_else(|| self.default_export_dir.clone());
         let runtime_dir = self.runtime_dir.clone();
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
-        let whisper_model = string_value(&settings, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
+        let whisper_model =
+            string_value(&settings, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
         let provider = active_provider_profile(&settings).ok();
         let ocr_enabled = params
             .get("ocr_enabled")
             .and_then(Value::as_bool)
-            .unwrap_or_else(|| settings.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false));
+            .unwrap_or_else(|| {
+                settings
+                    .get("ocr_enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
         std::thread::spawn(move || {
             run_native_job(
                 jobs,
@@ -790,7 +819,10 @@ impl NativeEngine {
             .get("job_id")
             .and_then(Value::as_u64)
             .ok_or_else(|| "job_id is required".to_string())?;
-        let mut jobs = self.jobs.lock().map_err(|_| "jobs lock poisoned".to_string())?;
+        let mut jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?;
         let old_len = jobs.len();
         jobs.retain(|job| job.id != id);
         Ok(json!(jobs.len() != old_len))
@@ -1000,7 +1032,8 @@ impl NativeEngine {
         let mut store = self.read_collection_store();
         let collection = find_collection_mut(&mut store, id)
             .ok_or_else(|| format!("Collection {id} not found"))?;
-        if let Some(name) = string_param(&params, "name").or_else(|| string_param(&params, "title")) {
+        if let Some(name) = string_param(&params, "name").or_else(|| string_param(&params, "title"))
+        {
             collection["name"] = json!(name);
         }
         self.write_collection_store(store)?;
@@ -1110,7 +1143,10 @@ impl NativeEngine {
     fn collection_export(&self, params: Value) -> Result<Value, String> {
         let id = required_u64(&params, "id")?;
         let detail = self.collection_get(json!({ "id": id }))?;
-        let name = detail.get("name").and_then(Value::as_str).unwrap_or("collection");
+        let name = detail
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("collection");
         let settings = self.read_settings();
         let output_dir = string_value(&settings, "output_dir")
             .map(PathBuf::from)
@@ -1124,9 +1160,15 @@ impl NativeEngine {
             .cloned()
             .unwrap_or_default()
         {
-            let title = item.get("title").and_then(Value::as_str).unwrap_or("Untitled");
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled");
             let input = item.get("input").and_then(Value::as_str).unwrap_or("");
-            let status = item.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
             body.push_str(&format!("- [{status}] {title}: `{input}`\n"));
         }
         fs::write(&path, body).map_err(|error| error.to_string())?;
@@ -1359,7 +1401,7 @@ fn run_native_job(
     ) {
         Ok(text) => text,
         Err(error) => format!(
-            "Native transcript unavailable\n\nSource: {}\n\nReason: {}\n\nThis task ran without Python.",
+            "Native transcript unavailable\n\nSource: {}\n\nReason: {}",
             input_path.display(),
             error
         ),
@@ -1421,10 +1463,7 @@ fn run_native_job(
     );
 
     let transcript_text = fs::read_to_string(&transcript_path).unwrap_or_default();
-    let transcript_preview = transcript_text
-        .chars()
-        .take(6000)
-        .collect::<String>();
+    let transcript_preview = transcript_text.chars().take(6000).collect::<String>();
     let generated_note = provider
         .as_ref()
         .and_then(|profile| {
@@ -1539,7 +1578,9 @@ fn local_app_data_dir(app_handle: &AppHandle) -> PathBuf {
 
 fn persistent_settings_path(app_handle: &AppHandle, data_dir: &Path) -> PathBuf {
     if let Some(base) = std::env::var_os("APPDATA") {
-        return PathBuf::from(base).join("Video Notes AI").join("settings.json");
+        return PathBuf::from(base)
+            .join("Video Notes AI")
+            .join("settings.json");
     }
     app_handle
         .path()
@@ -1691,7 +1732,14 @@ fn provider_profile_for_request(
         }
     }
     let mut merged = Map::new();
-    for key in ["provider", "type", "base_url", "model", "vision_model", "api_key"] {
+    for key in [
+        "provider",
+        "type",
+        "base_url",
+        "model",
+        "vision_model",
+        "api_key",
+    ] {
         if let Some(value) = params.get(key) {
             merged.insert(key.to_string(), value.clone());
         }
@@ -1716,7 +1764,14 @@ fn provider_from_value(
     override_params: &Value,
 ) -> Result<NativeProviderProfile, String> {
     let mut merged = profile.clone();
-    for key in ["provider", "type", "base_url", "model", "vision_model", "api_key"] {
+    for key in [
+        "provider",
+        "type",
+        "base_url",
+        "model",
+        "vision_model",
+        "api_key",
+    ] {
         if let Some(value) = override_params.get(key) {
             if !value.is_null() {
                 merged.insert(key.to_string(), value.clone());
@@ -1826,7 +1881,10 @@ fn synthesize_note_with_provider(
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|error| error.to_string())?;
-    let url = format!("{}/chat/completions", profile.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        profile.base_url.trim_end_matches('/')
+    );
     let response = client
         .post(url)
         .bearer_auth(&profile.api_key)
@@ -2004,8 +2062,8 @@ fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Opt
 
 fn whisper_model_dirs(settings: &Map<String, Value>, data_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(model_dir) = string_value(settings, "whisper_model_dir")
-        .or_else(|| string_value(settings, "model_dir"))
+    if let Some(model_dir) =
+        string_value(settings, "whisper_model_dir").or_else(|| string_value(settings, "model_dir"))
     {
         if !model_dir.trim().is_empty() {
             dirs.push(PathBuf::from(model_dir));
@@ -2043,8 +2101,9 @@ fn transcribe_with_whisper_cpp(
     model_dirs: &[PathBuf],
     whisper_model: &str,
 ) -> Result<String, String> {
-    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir)
-        .ok_or_else(|| "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string())?;
+    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
+        "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
+    })?;
     let whisper = resolve_tool_path("whisper-cli", &["whisper-cpp-tools"], runtime_dir)
         .or_else(|| resolve_tool_path("main", &["whisper-cpp-tools"], runtime_dir))
         .ok_or_else(|| "whisper.cpp executable not found; install whisper-cpp-tools".to_string())?;
@@ -2109,18 +2168,14 @@ fn download_with_ytdlp(
     id: u64,
     runtime_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let ytdlp = resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir)
-        .ok_or_else(|| "yt-dlp not found; install download-tools or add yt-dlp to PATH".to_string())?;
+    let ytdlp = resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir).ok_or_else(|| {
+        "yt-dlp not found; install download-tools or add yt-dlp to PATH".to_string()
+    })?;
     let download_dir = output_dir.join(format!("download-{id}"));
     fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
     let template = download_dir.join("%(title).180s.%(ext)s");
     let output = Command::new(&ytdlp)
-        .args([
-            "--no-playlist",
-            "-o",
-            &template.to_string_lossy(),
-            url,
-        ])
+        .args(["--no-playlist", "-o", &template.to_string_lossy(), url])
         .output()
         .map_err(|error| format!("failed to run yt-dlp: {error}"))?;
     if !output.status.success() {
@@ -2144,8 +2199,9 @@ fn extract_ocr_with_tesseract(
     id: u64,
     runtime_dir: &Path,
 ) -> Result<String, String> {
-    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir)
-        .ok_or_else(|| "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string())?;
+    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
+        "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
+    })?;
     let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
         .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
     let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
@@ -2190,7 +2246,10 @@ fn extract_ocr_with_tesseract(
             if !text.is_empty() {
                 output.push_str(&format!(
                     "### {}\n\n{}\n\n",
-                    frame.file_name().and_then(|value| value.to_str()).unwrap_or("frame"),
+                    frame
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("frame"),
                     text
                 ));
             }
@@ -2244,7 +2303,10 @@ fn collect_media_files(root: &Path, result: &mut Vec<String>, depth: usize) -> R
     if depth > 3 || !root.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(root).map_err(|error| error.to_string())?.flatten() {
+    for entry in fs::read_dir(root)
+        .map_err(|error| error.to_string())?
+        .flatten()
+    {
         let path = entry.path();
         if path.is_dir() {
             collect_media_files(&path, result, depth + 1)?;
@@ -2315,7 +2377,11 @@ fn note_id(path: &Path) -> u32 {
     let mut hasher = DefaultHasher::new();
     path.to_string_lossy().to_lowercase().hash(&mut hasher);
     let id = (hasher.finish() & 0x7fff_ffff) as u32;
-    if id == 0 { 1 } else { id }
+    if id == 0 {
+        1
+    } else {
+        id
+    }
 }
 
 fn open_path(path: &Path) -> Result<Value, String> {
@@ -2341,7 +2407,9 @@ fn reveal_path(path: &Path) -> Result<Value, String> {
         .spawn();
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("open").args(["-R", &path.to_string_lossy()]).spawn();
+    let result = Command::new("open")
+        .args(["-R", &path.to_string_lossy()])
+        .spawn();
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = Command::new("xdg-open")
@@ -2540,19 +2608,17 @@ mod tests {
     fn components_list_reports_native_manifest_status() {
         let (engine, root) = temp_engine();
         fs::create_dir_all(&engine.manifests_dir).unwrap();
-        fs::create_dir_all(
-            engine
-                .runtime_dir
-                .join("components")
-                .join("download-tools"),
-        )
-        .unwrap();
+        fs::create_dir_all(engine.runtime_dir.join("components").join("download-tools")).unwrap();
         fs::write(
             engine
                 .runtime_dir
                 .join("components")
                 .join("download-tools")
-                .join(if cfg!(target_os = "windows") { "yt-dlp.exe" } else { "yt-dlp" }),
+                .join(if cfg!(target_os = "windows") {
+                    "yt-dlp.exe"
+                } else {
+                    "yt-dlp"
+                }),
             "",
         )
         .unwrap();
@@ -2638,7 +2704,12 @@ mod tests {
             .call("notes.list", json!({}))
             .expect("method handled")
             .expect("list succeeds");
-        let note = notes.as_array().unwrap().first().cloned().expect("note exists");
+        let note = notes
+            .as_array()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("note exists");
         assert_eq!(note["title"], "Lesson Title");
 
         let id = note["id"].as_u64().unwrap();
@@ -2646,7 +2717,10 @@ mod tests {
             .call("notes.get", json!({ "note_id": id }))
             .expect("method handled")
             .expect("get succeeds");
-        assert!(detail["content"].as_str().unwrap().contains("Original content"));
+        assert!(detail["content"]
+            .as_str()
+            .unwrap()
+            .contains("Original content"));
 
         let searched = engine
             .call("notes.search", json!({ "query": "lesson" }))
@@ -2689,7 +2763,10 @@ mod tests {
         assert_eq!(list[0]["item_count"], 2);
 
         engine
-            .call("collection.add_items", json!({ "id": id, "items": ["c.mp4"] }))
+            .call(
+                "collection.add_items",
+                json!({ "id": id, "items": ["c.mp4"] }),
+            )
             .expect("method handled")
             .expect("add succeeds");
         let detail = engine
@@ -2699,7 +2776,10 @@ mod tests {
         assert_eq!(detail["item_count"], 3);
 
         engine
-            .call("collection.remove_items", json!({ "id": id, "item_ids": [2] }))
+            .call(
+                "collection.remove_items",
+                json!({ "id": id, "item_ids": [2] }),
+            )
             .expect("method handled")
             .expect("remove succeeds");
         let detail = engine

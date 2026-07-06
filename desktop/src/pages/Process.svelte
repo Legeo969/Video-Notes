@@ -307,7 +307,7 @@
           </div>
 
           {#if modelsLoading}
-            <div class="model-loading"><span class="loading-ring compact"></span><div><strong>正在读取本地模型</strong><small>检查模型目录和可运行的 faster-whisper 文件夹…</small></div></div>
+            <div class="model-loading"><span class="loading-ring compact"></span><div><strong>正在读取本地模型</strong><small>检查模型目录中的 ggml 模型文件…</small></div></div>
           {:else if selectableWhisperModels.length === 0}
             <div class="model-blocked">
               <span><Icon name="alert" size={18} /></span>

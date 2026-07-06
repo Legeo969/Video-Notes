@@ -1,53 +1,43 @@
-param(
-  [switch]$SkipRust
-)
-
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-Write-Host "[1/3] Python backend verification"
-python -m pytest -q `
-  --ignore=tests/test_collection_delete.py `
-  --ignore=tests/test_smart_summary.py `
-  --ignore=tests/test_provider_profile_settings.py
+function Assert-NativeSuccess {
+  param([Parameter(Mandatory = $true)][string]$Step)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Step failed with exit code $LASTEXITCODE"
+  }
+}
 
-Write-Host "[2/3] Svelte frontend verification"
+Write-Host "[1/2] Svelte frontend verification"
 Push-Location desktop
 try {
   npm ci
+  Assert-NativeSuccess "npm ci"
   npm run build
+  Assert-NativeSuccess "frontend build"
   npx svelte-check --tsconfig ./tsconfig.json
+  Assert-NativeSuccess "svelte-check"
 }
 finally {
   Pop-Location
 }
 
-Write-Host "[3/3] Rust/Tauri verification"
-if (Get-Command cargo -ErrorAction SilentlyContinue) {
-  Push-Location desktop\src-tauri
-  try {
-    cargo fmt --check
-    cargo check
-    cargo test
-  }
-  finally {
-    Pop-Location
-  }
+Write-Host "[2/2] Rust/Tauri verification"
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+  throw "cargo not found; install Rust with rustup before running product verification."
 }
-elif ($SkipRust) {
-  Write-Warning "cargo not found; Rust/Tauri verification was explicitly skipped with -SkipRust. This is not a release-ready verification result."
+Push-Location desktop\src-tauri
+try {
+  cargo fmt --check
+  Assert-NativeSuccess "cargo fmt"
+  cargo check
+  Assert-NativeSuccess "cargo check"
+  cargo test --bin video-notes-ai native_engine -- --nocapture
+  Assert-NativeSuccess "native engine tests"
 }
-else {
-  Write-Host ""
-  Write-Host "Rust/Cargo is required to compile the Tauri desktop shell." -ForegroundColor Yellow
-  Write-Host "Install Rust with rustup, then reopen PowerShell and confirm:" -ForegroundColor Yellow
-  Write-Host "  rustc --version"
-  Write-Host "  cargo --version"
-  Write-Host "On Windows, also install Visual Studio Build Tools with the 'Desktop development with C++' workload."
-  Write-Host "To run only Python/frontend checks intentionally, use:"
-  Write-Host "  .\scripts\verify_product.ps1 -SkipRust"
-  throw "cargo not found; full product verification cannot continue."
+finally {
+  Pop-Location
 }
 
 Write-Host "All enabled product verification gates passed." -ForegroundColor Green

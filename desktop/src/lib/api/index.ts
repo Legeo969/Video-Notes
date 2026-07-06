@@ -23,9 +23,9 @@ export async function engineCall<T = unknown>(
 /**
  * Convert the engine's logical dotted event names to Tauri-safe names.
  *
- * Tauri v2 rejects dots in event names; colons are allowed.  The Python
- * protocol remains unchanged (for example ``job.progress``), while the
- * desktop transport uses ``job:progress``.
+ * Tauri v2 rejects dots in event names; colons are allowed. Engine event
+ * names stay logical (for example ``job.progress``), while the desktop
+ * transport uses ``job:progress``.
  */
 export function toTauriEventName(eventName: string): string {
   return eventName.replaceAll(".", ":");

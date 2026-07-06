@@ -26,7 +26,9 @@ async fn engine_call(
     if let Some(result) = native_engine.call(&method, params.clone()) {
         return result;
     }
-    Err(format!("{method} is not available in the Rust native engine yet."))
+    Err(format!(
+        "{method} is not available in the Rust native engine yet."
+    ))
 }
 
 #[tauri::command]
@@ -34,7 +36,6 @@ async fn get_engine_status() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "running": true,
         "native_running": true,
-        "python_running": false,
         "error": null,
         "startup_log": startup_diagnostics::log_path().to_string_lossy(),
     }))
@@ -66,7 +67,7 @@ fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
                 startup_diagnostics::append("Main webview window was not created");
             }
 
-            startup_diagnostics::append("Rust native engine is ready; Python engine is disabled");
+            startup_diagnostics::append("Rust native engine is ready");
             let _ = app_handle.emit(
                 "engine:started",
                 serde_json::json!({ "running": true, "engine_kind": "rust-native" }),

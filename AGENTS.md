@@ -11,19 +11,15 @@
 
 Windows desktop app for converting videos into structured Markdown notes.
 
-Current desktop product:
+Current product:
 
 - Tauri 2 + Svelte 5 frontend
 - Rust native engine in `desktop/src-tauri/src/native_engine.rs`
-- No Python sidecar in the installer
-- No bundled Python runtime component
 - Native tools as runtime components:
   - `yt-dlp.exe`
   - `ffmpeg.exe` / `ffprobe.exe`
   - `whisper-cli.exe`
   - `tesseract.exe`
-
-Historical Python engine/CLI code remains in `src/` and `main.py`, but it is not the desktop runtime boundary.
 
 ## 2. Runtime Paths
 
@@ -34,9 +30,8 @@ Historical Python engine/CLI code remains in `src/` and `main.py`, but it is not
 
 ## 3. Engineering Rules
 
-- Do not reintroduce `python-engine`, `engine_manager.rs`, `process_tree.rs`, or sidecar JSON-RPC into the desktop release path.
-- Do not add Python runtime components to required desktop manifests.
-- Prefer native executable integrations for download, media, transcription, and OCR.
+- Keep the desktop runtime native-only.
+- Prefer standalone executable integrations for download, media, transcription, and OCR.
 - Keep changes surgical and tied to the requested behavior.
 - Use existing Svelte/Tauri/Rust patterns before adding abstractions.
 
@@ -48,12 +43,9 @@ npm run tauri dev
 ```
 
 ```powershell
-cd desktop
-npm run build
-npm run tauri build
+.\scripts\verify_product.ps1
 ```
 
 ```powershell
-python scripts/verify_release_gate.py
-python -m pytest tests/test_release_gate.py tests/test_installed_runtime_verifier.py -q
+.\scripts\build_windows_release.ps1
 ```

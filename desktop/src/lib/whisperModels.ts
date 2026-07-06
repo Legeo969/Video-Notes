@@ -37,7 +37,8 @@ export function normalizeWhisperModelId(raw: string | null | undefined): string 
 
   value = value.replace(/^models--Systran--/i, "");
   value = value.replace(/^Systran--/i, "");
-  value = value.replace(/^faster-whisper-/i, "");
+  value = value.replace(/^ggml-/i, "");
+  value = value.replace(/\.(bin|gguf)$/i, "");
   return value.trim();
 }
 
@@ -101,7 +102,7 @@ export function buildWhisperModelCatalog(
     return {
       id,
       label: builtin?.label ?? humanizeWhisperModelId(id),
-      description: builtin?.description ?? "本地自定义 faster-whisper 模型",
+      description: builtin?.description ?? "本地自定义 whisper.cpp 模型",
       speed: builtin?.speed ?? "自定义",
       quality: builtin?.quality ?? 4,
       installed: Boolean(local),

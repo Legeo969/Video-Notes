@@ -14,7 +14,9 @@ pub fn log_path() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("Video Notes AI").join("logs").join("desktop-startup.log")
+    base.join("Video Notes AI")
+        .join("logs")
+        .join("desktop-startup.log")
 }
 
 pub fn append(message: impl AsRef<str>) {
@@ -49,12 +51,7 @@ pub fn show_fatal_error(title: &str, message: &str) {
 
     #[link(name = "user32")]
     extern "system" {
-        fn MessageBoxW(
-            hwnd: *mut c_void,
-            text: *const u16,
-            caption: *const u16,
-            kind: u32,
-        ) -> i32;
+        fn MessageBoxW(hwnd: *mut c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
     }
 
     const MB_OK: u32 = 0x0000_0000;

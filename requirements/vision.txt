@@ -1,8 +1,0 @@
-# requirements/vision.txt — 帧提取质量过滤 + 场景检测（可选）
-# pip install -r requirements/base.txt -r requirements/vision.txt
-numpy>=1.24,<2.4
-opencv-contrib-python>=4.10,<5.0
-scenedetect>=0.6.6,<0.7.0
-imagehash>=4.3,<5.0
-scipy>=1.18,<2.0
-PyWavelets>=1.9,<2.0
