@@ -1,5 +1,6 @@
 <script lang="ts">
   import { engineCall } from "../lib/api";
+  import { convertFileSrc } from "@tauri-apps/api/core";
   import type { NoteInfo, NoteDetail } from "../lib/types";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
@@ -29,10 +30,46 @@
   let wordCount = $derived(selectedNote ? selectedNote.content.replace(/\s/g, "").length : 0);
   let readingMinutes = $derived(Math.max(1, Math.ceil(wordCount / 500)));
 
-  function renderMarkdown(content: string): string {
+  const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/;
+
+  function stripMarkdownMetadata(content: string): string {
+    const normalized = content.replace(/^\uFEFF/, "");
+    const lines = normalized.split(/\r?\n/);
+    if (lines[0]?.trim() !== "---") return normalized;
+    const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+    return end > 0 ? lines.slice(end + 1).join("\n").trimStart() : normalized;
+  }
+
+  function noteDirectory(path: string): string {
+    const parts = path.split(/[\\/]/);
+    parts.pop();
+    return parts.join("\\");
+  }
+
+  function decodeImagePath(path: string): string {
+    try { return decodeURI(path); }
+    catch { return path; }
+  }
+
+  function resolveImageSrc(src: string, notePath: string): string {
+    if (!src || /^(https?:|data:|blob:|asset:|file:)/i.test(src) || src.startsWith("#")) return src;
+    const decoded = decodeImagePath(src);
+    const absolute = WINDOWS_ABSOLUTE_PATH.test(decoded) || decoded.startsWith("/")
+      ? decoded
+      : `${noteDirectory(notePath)}\\${decoded}`;
+    return convertFileSrc(absolute);
+  }
+
+  function renderMarkdown(content: string, notePath: string): string {
     try {
-      const raw = marked.parse(content, { async: false }) as string;
-      return DOMPurify.sanitize(raw);
+      const raw = marked.parse(stripMarkdownMetadata(content), { async: false }) as string;
+      const sanitized = DOMPurify.sanitize(raw);
+      const doc = new DOMParser().parseFromString(sanitized, "text/html");
+      for (const img of Array.from(doc.querySelectorAll("img"))) {
+        img.setAttribute("src", resolveImageSrc(img.getAttribute("src") || "", notePath));
+        img.setAttribute("loading", "lazy");
+      }
+      return doc.body.innerHTML;
     } catch {
       return `<p>渲染错误</p>`;
     }
@@ -218,7 +255,7 @@
           {#if sourceView}
             <textarea class="source-editor" bind:value={editContent} spellcheck="false" aria-label="Markdown 源码编辑器"></textarea>
           {:else}
-            <div class="preview-area">{@html renderMarkdown(selectedNote.content)}</div>
+            <div class="preview-area">{@html renderMarkdown(selectedNote.content, selectedNote.path)}</div>
           {/if}
         </article>
       </div>
@@ -243,8 +280,8 @@
 </div>
 
 <style>
-  .notes-workspace { display: grid; grid-template-columns: 330px minmax(0,1fr); width: 100%; height: 100%; background: var(--bg-app); }
-  .library-panel { display: flex; min-width: 0; height: 100%; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-card); }
+  .notes-workspace { display: grid; grid-template-columns: 330px minmax(0,1fr); width: 100%; height: 100%; min-height: 0; background: var(--bg-app); }
+  .library-panel { display: flex; min-width: 0; height: 100%; min-height: 0; overflow: hidden; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-card); }
   .library-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 18px 16px; }
   .library-title { display: flex; align-items: center; gap: 10px; }
   .library-icon { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
@@ -262,7 +299,7 @@
   .library-error { display: flex; gap: 7px; margin: 10px 14px 0; padding: 8px; border-radius: 8px; color: var(--danger-color); background: var(--danger-soft); font-size: 13px; }
   .list-label { display: flex; align-items: center; justify-content: space-between; padding: 12px 17px 7px; color: var(--text-tertiary); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
   .list-label em { font-style: normal; }
-  .notes-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 10px; }
+  .notes-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 10px; }
   .note-item { position: relative; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: start; gap: 9px; width: 100%; margin-bottom: 3px; padding: 10px; border: 1px solid transparent; border-radius: 11px; color: var(--text-primary); background: transparent; cursor: pointer; text-align: left; transition: background .14s, border-color .14s, transform .14s; }
   .note-item:hover { background: var(--bg-hover); transform: translateX(1px); }
   .note-item.selected { border-color: color-mix(in srgb, var(--accent-color) 22%, var(--border-color)); background: var(--accent-faint); box-shadow: inset 3px 0 0 var(--accent-color); }
@@ -279,7 +316,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .library-footer { display: flex; align-items: flex-start; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
 
-  .reader-panel { display: flex; min-width: 0; height: 100%; flex-direction: column; overflow: hidden; }
+  .reader-panel { display: flex; min-width: 0; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
   .reader-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 65px; padding: 13px 20px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-card) 94%, transparent); backdrop-filter: blur(10px); }
   .reader-breadcrumb { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-tertiary); font-size: 13px; }
   .reader-breadcrumb strong { overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
@@ -319,7 +356,8 @@
   .preview-area :global(th), .preview-area :global(td) { padding: 9px 11px; border: 1px solid var(--border-color); text-align: left; }
   .preview-area :global(th) { background: var(--bg-subtle); }
   .preview-area :global(a) { color: var(--accent-color); }
-  .preview-area :global(img) { max-width: 100%; border-radius: 11px; }
+  .preview-area :global(img) { display: block; max-width: 100%; height: auto; margin: 14px 0; border-radius: 11px; outline: 1px solid rgba(0, 0, 0, 0.1); }
+  :global(.dark) .preview-area :global(img) { outline-color: rgba(255, 255, 255, 0.1); }
 
   .reader-loading, .welcome-reader { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
   .reader-loading h2, .welcome-reader h2 { font-size: 21px; }

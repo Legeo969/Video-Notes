@@ -7,8 +7,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+
+const YTDLP_DOWNLOAD_URL: &str =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 
 #[derive(Clone)]
 pub struct NativeEngine {
@@ -659,14 +663,23 @@ impl NativeEngine {
 
     fn components_install(&self, params: Value) -> Result<Value, String> {
         let component = required_string(&params, "component")?;
+        let _manifest = self.read_manifest(&component)?;
         let source = self.runtime_dir.join("packages").join(&component);
+        let target = self.runtime_dir.join("components").join(&component);
         if !source.is_dir() {
+            if component == "download-tools" {
+                install_download_tools(&target)?;
+                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
+            }
+            if component == "ffmpeg-tools" {
+                install_ffmpeg_tools_from_path(&target)?;
+                return Ok(json!({ "ok": true, "component": component, "status": "installed" }));
+            }
             return Err(format!(
-                "Native installer expects an existing package at {}",
+                "Missing local package: {}. Put the component package there, then install again.",
                 source.display()
             ));
         }
-        let target = self.runtime_dir.join("components").join(&component);
         if target.exists() {
             fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
         }
@@ -2356,21 +2369,79 @@ fn note_detail(note: NoteEntry) -> Result<Value, String> {
 }
 
 fn note_title(path: &Path) -> String {
+    let fallback = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
     if let Ok(content) = fs::read_to_string(path) {
-        for line in content.lines().take(40) {
+        if let Some(title) = metadata_title(&content) {
+            return title;
+        }
+        for line in content.lines().take(80) {
             let trimmed = line.trim();
             if let Some(title) = trimmed.strip_prefix("# ") {
                 let title = title.trim();
-                if !title.is_empty() {
+                if !title.is_empty() && !is_generic_note_heading(title) {
                     return title.to_string();
                 }
             }
         }
     }
-    path.file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("Untitled")
-        .to_string()
+    fallback
+}
+
+fn metadata_title(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    let first = lines.next()?.trim_start_matches('\u{feff}').trim();
+    if first == "---" {
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed == "---" {
+                break;
+            }
+            if let Some(title) = parse_title_line(trimmed) {
+                return Some(title);
+            }
+        }
+    }
+    for line in content.lines().take(20) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("# ") {
+            break;
+        }
+        if let Some(title) = parse_title_line(trimmed) {
+            return Some(title);
+        }
+    }
+    None
+}
+
+fn parse_title_line(line: &str) -> Option<String> {
+    let value = line.strip_prefix("title:")?.trim();
+    let value = value
+        .split(" date:")
+        .next()
+        .unwrap_or(value)
+        .split(" tags:")
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn is_generic_note_heading(title: &str) -> bool {
+    matches!(
+        title.trim().to_lowercase().as_str(),
+        "概要" | "摘要" | "总结" | "summary" | "overview"
+    )
 }
 
 fn note_id(path: &Path) -> u32 {
@@ -2495,6 +2566,92 @@ fn missing_files(component_path: &Path, files: &[Value]) -> Vec<String> {
         })
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn install_download_tools(target: &Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = parent.join(format!("{}.download", Uuid::new_v4()));
+    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|error| error.to_string())?;
+        let response = client
+            .get(YTDLP_DOWNLOAD_URL)
+            .send()
+            .map_err(|error| format!("Failed to download yt-dlp: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "Failed to download yt-dlp: HTTP {}",
+                response.status()
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .map_err(|error| format!("Failed to read yt-dlp download: {error}"))?;
+        fs::write(temp.join("yt-dlp.exe"), bytes).map_err(|error| error.to_string())?;
+        if target.exists() {
+            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result
+}
+
+fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
+    let ffmpeg = system_executable_path("ffmpeg").ok_or_else(|| {
+        "Missing local package and ffmpeg was not found on PATH. Install system FFmpeg or put a component package in runtime\\packages\\ffmpeg-tools.".to_string()
+    })?;
+    let ffprobe = system_executable_path("ffprobe").ok_or_else(|| {
+        "Missing local package and ffprobe was not found on PATH. Install system FFmpeg or put a component package in runtime\\packages\\ffmpeg-tools.".to_string()
+    })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temp = parent.join(format!("{}.install", Uuid::new_v4()));
+    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    let result = (|| -> Result<(), String> {
+        fs::copy(&ffmpeg, temp.join(executable_name("ffmpeg")))
+            .map_err(|error| error.to_string())?;
+        fs::copy(&ffprobe, temp.join(executable_name("ffprobe")))
+            .map_err(|error| error.to_string())?;
+        if target.exists() {
+            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result
+}
+
+fn system_executable_path(name: &str) -> Option<PathBuf> {
+    let exe = executable_name(name);
+    let output = if cfg!(target_os = "windows") {
+        Command::new("where").arg(&exe).output().ok()?
+    } else {
+        Command::new("which").arg(&exe).output().ok()?
+    };
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
@@ -2644,6 +2801,34 @@ mod tests {
         assert_eq!(first["installed"], true);
         assert_eq!(first["status"], "ok");
         assert_eq!(first["missing_files"].as_array().unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn note_title_prefers_metadata_over_generic_heading() {
+        let root = std::env::temp_dir().join(format!("video-notes-note-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let note = root.join("summary.md");
+        fs::write(
+            &note,
+            "---\ntitle: Real Lesson Title\ndate: 2026-07-06\n---\n\n# 概要\n\nBody",
+        )
+        .unwrap();
+
+        assert_eq!(note_title(&note), "Real Lesson Title");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn note_title_falls_back_to_filename_for_generic_heading() {
+        let root = std::env::temp_dir().join(format!("video-notes-note-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let note = root.join("lesson-name.md");
+        fs::write(&note, "# 概要\n\nBody").unwrap();
+
+        assert_eq!(note_title(&note), "lesson-name");
 
         let _ = fs::remove_dir_all(root);
     }

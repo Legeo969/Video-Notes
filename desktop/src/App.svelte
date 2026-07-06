@@ -134,8 +134,8 @@
 <style>
   .app-layout { display: flex; width: 100%; height: 100vh; overflow: hidden; background: var(--bg-app); }
   .workspace-shell { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  .content-area { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-app); }
-  .page-host { min-height: 100%; padding: 30px 34px 48px; }
+  .content-area { flex: 1; min-height: 0; overflow: hidden; background: var(--bg-app); }
+  .page-host { height: 100%; min-height: 0; overflow-y: auto; padding: 30px 34px 48px; }
   .page-host.full-bleed { height: 100%; min-height: 0; padding: 0; overflow: hidden; }
   .engine-alert { position: sticky; top: 10px; z-index: 30; display: flex; align-items: flex-start; gap: 11px; width: calc(100% - 68px); max-width: 1240px; margin: 10px auto 0; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--danger-color) 22%, var(--border-color)); border-radius: 12px; background: color-mix(in srgb, var(--danger-soft) 94%, var(--bg-card)); box-shadow: var(--shadow-sm); }
   .alert-symbol { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px; color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 10%, transparent); }
