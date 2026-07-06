@@ -451,6 +451,30 @@
   .detail-error strong { font-size: 12px; }
   .detail-error p, .snapshot-note p { font-size: 11px; }
 
+  .task-layout.with-detail .table-head { display: none; }
+  .task-layout.with-detail .task-list { min-height: 440px; }
+  .task-layout.with-detail .task-row { grid-template-columns: minmax(0,1fr); row-gap: 10px; padding: 15px 16px 15px 18px; }
+  .task-layout.with-detail .task-main {
+    grid-template-columns: 42px minmax(0,1fr) auto;
+    grid-template-areas:
+      "icon identity status"
+      "icon stage stage"
+      "icon time time";
+    align-items: start;
+    gap: 7px 12px;
+    padding: 0;
+  }
+  .task-layout.with-detail .media-icon { grid-area: icon; }
+  .task-layout.with-detail .task-identity { grid-area: identity; }
+  .task-layout.with-detail .task-identity strong { max-width: 100%; }
+  .task-layout.with-detail .stage-cell { grid-area: stage; }
+  .task-layout.with-detail .stage-label { align-items: baseline; }
+  .task-layout.with-detail .inline-error { max-width: 100%; white-space: nowrap; }
+  .task-layout.with-detail .time-cell { grid-area: time; display: flex; flex-direction: row; gap: 8px; }
+  .task-layout.with-detail .status-cell { grid-area: status; justify-content: flex-end; }
+  .task-layout.with-detail .row-actions { justify-content: flex-start; flex-wrap: wrap; gap: 7px; padding: 0 0 0 54px; }
+  .task-layout.with-detail .row-actions .btn { min-height: 34px; }
+
   @media (max-width: 1250px) {
     .metrics-row { grid-template-columns: repeat(3, 1fr); }
     .task-layout.with-detail { grid-template-columns: 1fr; }

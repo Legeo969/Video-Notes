@@ -64,9 +64,11 @@
     provider: "openai_compat",
     api_key: "",
     base_url: "",
-    model: "gpt-4o-mini",
-    vision_model: "gpt-4o-mini",
+    model: "",
+    vision_model: "",
   });
+
+  const providerPresetModels = new Set(["gpt-4o-mini", "gpt-4o", "gemini-2.5-flash", "claude-sonnet-4-5", "gpt-5.5"]);
 
   const providerTypeOptions = [
     {
@@ -115,6 +117,7 @@
     { id: "general", label: "通用与转录", icon: "settings", hint: "目录、模型和 OCR" },
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
+    { id: "storage", label: "存储管理", icon: "database", hint: "缓存、数据库与导出" },
     { id: "diagnostics", label: "系统诊断", icon: "stethoscope", hint: "依赖与运行环境" },
   ];
 
@@ -284,18 +287,16 @@
     if (!providerForm.base_url.trim() && option.defaultBaseUrl) {
       providerForm.base_url = option.defaultBaseUrl;
     }
-    if (option.id === "google_gemini" && (!providerForm.model || providerForm.model.startsWith("gpt-"))) {
-      providerForm.model = "gemini-2.5-flash";
-      providerForm.vision_model = "gemini-2.5-flash";
-    } else if (option.id === "anthropic_messages" && (!providerForm.model || providerForm.model.startsWith("gpt-"))) {
-      providerForm.model = "claude-sonnet-4-5";
-      providerForm.vision_model = "claude-sonnet-4-5";
-    } else if (option.id === "openai_responses" && (!providerForm.model || providerForm.model === "gpt-4o")) {
-      providerForm.model = "gpt-5.5";
-      providerForm.vision_model = "gpt-5.5";
-    } else if (option.id === "chatgpt_codex") {
-      providerForm.model = "";
-      providerForm.vision_model = "";
+    const nextModel =
+      option.id === "google_gemini" ? "gemini-2.5-flash" :
+      option.id === "anthropic_messages" ? "claude-sonnet-4-5" :
+      option.id === "openai_responses" ? "gpt-5.5" :
+      "";
+    if (!providerForm.model.trim() || providerPresetModels.has(providerForm.model.trim())) {
+      providerForm.model = nextModel;
+    }
+    if (!providerForm.vision_model.trim() || providerPresetModels.has(providerForm.vision_model.trim())) {
+      providerForm.vision_model = nextModel;
     }
   }
 
@@ -505,25 +506,7 @@
               <div class="group-head"><div class="group-icon"><Icon name="folder" size={18} /></div><div><h3>文件与模型目录</h3><p>配置笔记产物与本地模型的存储位置。</p></div></div>
               <div class="form-grid two-cols">
                 <div class="field"><label class="field-label" for="vault_path">Obsidian 笔记库 <small>可选，归档到 vault\video-notes</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder" size={15} /></span><input id="vault_path" type="text" bind:value={settings.vault_path} oninput={markDirty} placeholder="D:\Note_Obsidian" /></div></div>
-                <div class="field"><label class="field-label" for="output_dir">导出目录 <small>最终笔记、转录、字幕和帧图</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder-open" size={15} /></span><input id="output_dir" type="text" bind:value={settings.output_dir} oninput={markDirty} placeholder="D:\VideoNotes\exports" /></div></div>
                 <div class="field"><label class="field-label" for="whisper_model_dir">Whisper 模型目录 <small>可选</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="database" size={15} /></span><input id="whisper_model_dir" type="text" bind:value={settings.whisper_model_dir} oninput={markDirty} placeholder="留空使用默认缓存目录" /></div></div>
-              </div>
-            </div>
-
-
-            <div class="setting-group">
-              <div class="group-head with-action"><div class="group-icon"><Icon name="database" size={18} /></div><div><h3>存储管理</h3><p>应用状态在 AppData，导出目录只保存用户可见产物。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={refreshStorageStatus} disabled={storageLoading}><Icon name="refresh" size={13} />刷新</button></div>
-              {#if storageStatus}
-                <div class="storage-grid">
-                  <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.export_bytes)}</strong><small>{storageStatus.export_dir}</small></div>
-                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db_bytes)}</strong><small>{storageStatus.db_path}</small></div>
-                  <div><span>任务缓存</span><strong>{formatBytes(storageStatus.sizes.jobs_bytes + storageStatus.sizes.legacy_jobs_bytes)}</strong><small>{storageStatus.jobs_root}</small></div>
-                  <div><span>Obsidian Vault</span><strong>{storageStatus.vault_path ? "已配置" : "未配置"}</strong><small>{storageStatus.vault_path || "未配置"}</small></div>
-                </div>
-              {/if}
-              <div class="storage-actions">
-                <button class="btn btn-secondary" type="button" onclick={cleanupOrphanWorkspaces} disabled={storageLoading}><Icon name="trash" size={14} />清理孤儿任务缓存</button>
-                <button class="btn btn-secondary" type="button" onclick={cleanupCompletedWorkspaces} disabled={storageLoading}><Icon name="check" size={14} />清理已完成任务缓存</button>
               </div>
             </div>
 
@@ -696,6 +679,36 @@
                 {/each}
               </div>
             {/if}
+          </section>
+
+        {:else if activeTab === "storage"}
+          <section class="settings-pane">
+            <div class="pane-head actions-head">
+              <div><span>STORAGE</span><h2>存储管理</h2><p>查看 AppData 状态、任务缓存、数据库和用户可见导出目录。</p></div>
+              <button class="btn btn-secondary" type="button" onclick={refreshStorageStatus} disabled={storageLoading}><Icon name="refresh" size={15} />{storageLoading ? "刷新中" : "刷新"}</button>
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="database" size={18} /></div><div><h3>本机存储概览</h3><p>应用内部状态保存在 AppData；导出目录只保存最终笔记、转录、字幕和帧图。</p></div></div>
+              {#if storageStatus}
+                <div class="storage-grid">
+                  <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.export_bytes)}</strong><small>{storageStatus.export_dir}</small></div>
+                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db_bytes)}</strong><small>{storageStatus.db_path}</small></div>
+                  <div><span>任务缓存</span><strong>{formatBytes(storageStatus.sizes.jobs_bytes + storageStatus.sizes.legacy_jobs_bytes)}</strong><small>{storageStatus.jobs_root}</small></div>
+                  <div><span>Obsidian Vault</span><strong>{storageStatus.vault_path ? "已配置" : "未配置"}</strong><small>{storageStatus.vault_path || "未配置"}</small></div>
+                </div>
+              {:else}
+                <div class="storage-empty-state"><span class="loading-ring compact"></span><div><strong>尚未读取存储状态</strong><small>点击刷新以查看本机缓存、数据库和导出目录占用。</small></div></div>
+              {/if}
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="trash" size={18} /></div><div><h3>缓存清理</h3><p>只清理任务工作区缓存，不会删除已经导出的笔记文件。</p></div></div>
+              <div class="storage-actions">
+                <button class="btn btn-secondary" type="button" onclick={cleanupOrphanWorkspaces} disabled={storageLoading}><Icon name="trash" size={14} />清理孤儿任务缓存</button>
+                <button class="btn btn-secondary" type="button" onclick={cleanupCompletedWorkspaces} disabled={storageLoading}><Icon name="check" size={14} />清理已完成任务缓存</button>
+              </div>
+            </div>
           </section>
 
         {:else if activeTab === "diagnostics"}
@@ -885,8 +898,8 @@
   .provider-name h3 { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
   .provider-name > span { margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
 
-  .provider-model-head { grid-template-columns: auto 1fr auto; align-items: center; }
-  .provider-model-head .btn { white-space: nowrap; }
+  .provider-model-head { grid-template-columns: 30px minmax(0,1fr); align-items: start; }
+  .provider-model-head .btn { grid-column: 2; justify-self: start; min-height: 34px; margin-top: 9px; white-space: nowrap; }
   .model-picker-field { gap: 8px; }
   .model-choice { width: 100%; min-height: 40px; padding: 0 36px 0 11px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-card); font: inherit; }
   .model-choice:disabled { color: var(--text-tertiary); background: var(--bg-subtle); cursor: not-allowed; }
@@ -1088,13 +1101,17 @@
   .model-availability.installed { color: var(--success-color); background: var(--success-soft); }
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   @media (max-width: 1180px) { .interactive-model-cards { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-.runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
   .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
   .storage-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
   .storage-grid span { color: var(--text-tertiary); font-size: 11px; font-weight: 750; }
   .storage-grid strong { font-size: 15px; }
   .storage-grid small { overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .storage-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .storage-empty-state { display: flex; align-items: center; gap: 12px; min-height: 72px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
+  .storage-empty-state > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+  .storage-empty-state strong { color: var(--text-primary); font-size: 14px; }
+  .storage-empty-state small { font-size: 12px; }
   @media (max-width: 760px) { .runtime-settings-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .storage-grid { grid-template-columns: 1fr; } }
 </style>

@@ -77,23 +77,19 @@ def test_empty_vault_path_does_not_archive(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_configured_vault_path_archives_after_export(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "src.application.services.artifact_writer.archive_to_obsidian",
-        lambda *args: calls.append(args),
-    )
-
+def test_configured_vault_path_archives_without_export_copy(tmp_path):
     vault = tmp_path / "vault"
+    vault.mkdir()
+    output_dir = tmp_path / "out"
     request = PipelineRequest(
         input="video.mp4",
-        output_dir=str(tmp_path / "out"),
+        output_dir=str(output_dir),
         title="Video",
         vault_path=f" {vault} ",
         output=OutputOptions(export_mode="clean"),
     )
 
-    _transcript_path, notes_path = ArtifactWriter.write(
+    transcript_path, notes_path = ArtifactWriter.write(
         request,
         transcript="hello",
         notes="# Notes\n",
@@ -102,4 +98,34 @@ def test_configured_vault_path_archives_after_export(tmp_path, monkeypatch):
         job_id="00000000-0000-4000-8000-000000000001",
     )
 
-    assert calls == [(notes_path, str(vault), "Video")]
+    assert Path(notes_path) == vault / "video-notes" / "Video.md"
+    assert Path(transcript_path) == vault / "video-notes" / "Video.transcript.txt"
+    assert Path(notes_path).is_file()
+    assert Path(transcript_path).is_file()
+    assert not output_dir.exists()
+
+
+def test_vault_archive_path_uses_obsidian_filename_rules(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    output_dir = tmp_path / "out"
+    request = PipelineRequest(
+        input="video.mp4",
+        output_dir=str(output_dir),
+        title="My Video: Part 1",
+        vault_path=str(vault),
+        output=OutputOptions(export_mode="clean"),
+    )
+
+    transcript_path, notes_path = ArtifactWriter.write(
+        request,
+        transcript="hello",
+        notes="# Notes\n",
+        segments=[],
+        frames=[],
+        job_id="00000000-0000-4000-8000-000000000001",
+    )
+
+    assert Path(notes_path) == vault / "video-notes" / "My_Video_Part_1.md"
+    assert Path(transcript_path) == vault / "video-notes" / "My_Video_Part_1.transcript.txt"
+    assert not output_dir.exists()

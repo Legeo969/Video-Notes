@@ -98,6 +98,39 @@ def _get_cached_model(model_path: str, device: str, compute_type: str) -> Whispe
     return WhisperModel(model_path, device=device, compute_type=compute_type)
 
 
+def _looks_like_cuda_runtime_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in (
+            "cublas",
+            "cudnn",
+            "cuda",
+            "cudart",
+            "cannot be loaded",
+            "dll",
+        )
+    )
+
+
+def _can_fallback_to_cpu(requested_device: str, resolved_device: str, error: BaseException) -> bool:
+    return (
+        requested_device == "auto"
+        and resolved_device == "cuda"
+        and _looks_like_cuda_runtime_error(error)
+    )
+
+
+def _load_cpu_fallback_model(model_path: str, error: BaseException) -> WhisperModel:
+    logger.warning(
+        "CUDA Whisper runtime failed (%s); falling back to CPU/int8. "
+        "Explicit CUDA selection will still fail instead of falling back.",
+        error,
+    )
+    _get_cached_model.cache_clear()
+    return _get_cached_model(model_path, "cpu", "int8")
+
+
 def _has_local_models(model_dir: str | None) -> bool:
     if not model_dir or not os.path.isdir(model_dir):
         return False
@@ -266,12 +299,10 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
     try:
         model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
     except RuntimeError as e:
-        if requested_device == "auto" and resolved_device == "cuda":
-            logger.warning("⚠️ CUDA 加载失败 (%s)，自动降级到 CPU/int8。显式选择 CUDA 时将不会降级。", e)
+        if _can_fallback_to_cpu(requested_device, resolved_device, e):
             resolved_device = "cpu"
             resolved_compute_type = "int8"
-            _get_cached_model.cache_clear()
-            model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
+            model = _load_cpu_fallback_model(model_path, e)
         else:
             raise
 
@@ -284,12 +315,10 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
             vad_filter=resolved_vad_filter,
         )
     except RuntimeError as e:
-        if requested_device == "auto" and resolved_device == "cuda" and "cannot be loaded" in str(e):
-            logger.warning(f"⚠️ CUDA 推理失败 ({e})，自动降级到 CPU/int8 重新加载")
+        if _can_fallback_to_cpu(requested_device, resolved_device, e):
             resolved_device = "cpu"
             resolved_compute_type = "int8"
-            _get_cached_model.cache_clear()
-            model = _get_cached_model(model_path, resolved_device, resolved_compute_type)
+            model = _load_cpu_fallback_model(model_path, e)
             segments_gen, info = model.transcribe(
                 audio_path,
                 language=language,
@@ -302,14 +331,37 @@ def transcribe_with_segments(audio_path: str, model_size: str = "large-v3",
     # 一次性迭代 segments，分别保存列表和文本
     segments_list: list[dict] = []
     texts: list[str] = []
-    for seg in segments_gen:
-        segments_list.append({
-            "start": seg.start,
-            "end": seg.end,
-            "text": seg.text,
-            "language": info.language or "",  # 供下游 SpeechTranscriber 读取
-        })
-        texts.append(seg.text)
+    try:
+        for seg in segments_gen:
+            segments_list.append({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "language": info.language or "",  # 供下游 SpeechTranscriber 读取
+            })
+            texts.append(seg.text)
+    except RuntimeError as e:
+        if not _can_fallback_to_cpu(requested_device, resolved_device, e):
+            raise
+        resolved_device = "cpu"
+        resolved_compute_type = "int8"
+        model = _load_cpu_fallback_model(model_path, e)
+        segments_gen, info = model.transcribe(
+            audio_path,
+            language=language,
+            beam_size=resolved_beam_size,
+            vad_filter=resolved_vad_filter,
+        )
+        segments_list = []
+        texts = []
+        for seg in segments_gen:
+            segments_list.append({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "language": info.language or "",
+            })
+            texts.append(seg.text)
 
     # 语言感知拼接：中文不加空格，其他语言加空格避免粘词
     detected_lang = info.language or ""

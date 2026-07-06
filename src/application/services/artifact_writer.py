@@ -4,10 +4,12 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import unquote
 from src.domain.types import PipelineRequest
+from src.infrastructure.artifacts.obsidian import _sanitize_filename as _sanitize_obsidian_filename
 from src.utils.subtitle_writer import write_srt, write_ass, write_timestamped_txt
 from src.utils.system import _safe_dirname
 from src.vault_writer import archive_to_obsidian
@@ -51,12 +53,16 @@ class ArtifactWriter:
         import uuid
 
         title = request.title or "untitled"
-        title_dir = os.path.join(request.output_dir, _safe_dirname(title))
+        vault_path = str(request.vault_path or "").strip()
+        archive_only = bool(vault_path)
+        temp_output_root = tempfile.mkdtemp(prefix="video-notes-archive-") if archive_only else None
+        output_root = temp_output_root or request.output_dir
+        title_dir = os.path.join(output_root, _safe_dirname(title))
         layout = str(getattr(request.output, "artifact_layout", "versioned") or "versioned")
         if layout == "legacy":
             video_dir = title_dir
             run_key = job_id or "legacy"
-            staging_parent = os.path.dirname(title_dir) or request.output_dir
+            staging_parent = os.path.dirname(title_dir) or output_root
         else:
             if job_id:
                 run_key = f"run_{job_id.replace('-', '')[:12]}"
@@ -66,12 +72,17 @@ class ArtifactWriter:
             video_dir = os.path.join(title_dir, run_key)
             staging_parent = title_dir
 
-        os.makedirs(staging_parent, exist_ok=True)
-        staging_dir = os.path.join(
-            staging_parent,
-            f".{os.path.basename(video_dir)}.staging-{uuid.uuid4().hex}",
-        )
-        os.makedirs(staging_dir, exist_ok=False)
+        try:
+            os.makedirs(staging_parent, exist_ok=True)
+            staging_dir = os.path.join(
+                staging_parent,
+                f".{os.path.basename(video_dir)}.staging-{uuid.uuid4().hex}",
+            )
+            os.makedirs(staging_dir, exist_ok=False)
+        except Exception:
+            if temp_output_root:
+                shutil.rmtree(temp_output_root, ignore_errors=True)
+            raise
 
         # Normalize visual evidence before deciding which files belong in the
         # final bundle. Markdown references remain relative to ``frames/``.
@@ -172,6 +183,8 @@ class ArtifactWriter:
             ArtifactWriter._atomic_replace_directory(staging_dir, video_dir)
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
+            if temp_output_root:
+                shutil.rmtree(temp_output_root, ignore_errors=True)
             raise
 
         transcript_path = os.path.join(video_dir, "transcript.txt")
@@ -213,11 +226,81 @@ class ArtifactWriter:
             )
         logger.info("\U0001f4dd 笔记已保存: %s", notes_path)
 
-        vault_path = str(request.vault_path or "").strip()
         if vault_path:
-            archive_to_obsidian(notes_path, vault_path, title)
+            try:
+                before_archive = ArtifactWriter._vault_note_paths(vault_path)
+                archived = archive_to_obsidian(notes_path, vault_path, title)
+                if not archived:
+                    raise RuntimeError(f"Obsidian vault archive failed: {vault_path}")
+                vault_notes_path = ArtifactWriter._find_new_vault_note_path(
+                    vault_path,
+                    before_archive,
+                    title,
+                )
+                if not vault_notes_path:
+                    raise RuntimeError(
+                        f"Obsidian vault archive succeeded but note was not found: {vault_path}"
+                    )
+                transcript_path = ArtifactWriter._copy_vault_sidecars(
+                    video_dir,
+                    vault_notes_path,
+                    transcript_path,
+                )
+                notes_path = vault_notes_path
+            finally:
+                if temp_output_root:
+                    shutil.rmtree(temp_output_root, ignore_errors=True)
 
         return transcript_path, notes_path
+
+    @staticmethod
+    def _vault_note_paths(vault_path: str) -> set[str]:
+        target_dir = os.path.join(vault_path, "video-notes")
+        if not os.path.isdir(target_dir):
+            return set()
+        return {
+            os.path.join(target_dir, name)
+            for name in os.listdir(target_dir)
+            if name.lower().endswith(".md")
+        }
+
+    @staticmethod
+    def _find_new_vault_note_path(
+        vault_path: str,
+        before: set[str],
+        title: str,
+    ) -> str | None:
+        after = ArtifactWriter._vault_note_paths(vault_path)
+        created = [path for path in after - before if os.path.isfile(path)]
+        if created:
+            return max(created, key=os.path.getmtime)
+
+        target_dir = os.path.join(vault_path, "video-notes")
+        safe_title = _sanitize_obsidian_filename(title)
+        candidate = os.path.join(target_dir, f"{safe_title}.md")
+        if os.path.isfile(candidate):
+            return candidate
+        return None
+
+    @staticmethod
+    def _copy_vault_sidecars(video_dir: str, vault_notes_path: str, transcript_path: str) -> str:
+        target_dir = os.path.dirname(vault_notes_path)
+        stem = os.path.splitext(os.path.basename(vault_notes_path))[0]
+        vault_transcript = os.path.join(target_dir, f"{stem}.transcript.txt")
+        if not os.path.isfile(transcript_path):
+            raise FileNotFoundError(f"Transcript file was not found: {transcript_path}")
+        shutil.copy2(transcript_path, vault_transcript)
+
+        subtitle_names = {
+            "transcript.srt": f"{stem}.srt",
+            "transcript.ass": f"{stem}.ass",
+            "transcript_timestamped.txt": f"{stem}.timestamped.txt",
+        }
+        for source_name, target_name in subtitle_names.items():
+            source = os.path.join(video_dir, source_name)
+            if os.path.isfile(source):
+                shutil.copy2(source, os.path.join(target_dir, target_name))
+        return vault_transcript
 
     @staticmethod
     def _atomic_write_text(path: str, text: str) -> None:
