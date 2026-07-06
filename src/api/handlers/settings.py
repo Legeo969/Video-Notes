@@ -20,6 +20,7 @@ from src.application.notes.template_loader import get_template_registry
 from src.config.provider_profiles import normalize_provider_settings
 from src.config.settings import (
     decode_legacy_secret,
+    get_default_export_dir,
     get_settings_path,
     load_settings,
     update_settings,
@@ -362,7 +363,7 @@ def create_settings_handlers() -> dict[str, Any]:
         template_id = str(raw.get("template_id") or raw.get("template") or "default")
         model_dir = str(raw.get("whisper_model_dir") or raw.get("model_dir") or "")
         return {
-            "output_dir": raw.get("output_dir", "./output"),
+            "output_dir": raw.get("output_dir") or get_default_export_dir(),
             "whisper_model": raw.get("whisper_model", "large-v3"),
             "whisper_model_dir": model_dir,
             "model_dir": model_dir,

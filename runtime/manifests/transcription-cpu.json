@@ -1,18 +1,21 @@
 {
   "component": "transcription-cpu",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "CPU 转录 — faster-whisper (CPU 版 CTranslate2)",
-  "sha256": "",
-  "signature": "",
+  "sha256": "4555bc4dcb66cb50a97f63247f0e677148d8c51bf86d6854b88643e06bcbe7ce",
+  "signature": "ed25519:A8i6axgoGioWR4KDnZSla764VEcFGkM9jG98rbHWXZlJlnUmoMXKxgWghKmfMeOyWEH3w7rziuwVhHJkEITXCw==",
   "size_mb": 200,
   "requires": {
-    "base-engine": ">=1.2.0 <2.0.0"
+    "base-engine": ">=1.5.0 <2.0.0"
   },
-  "provides": ["transcription"],
+  "provides": [
+    "transcription"
+  ],
   "files": [
     "ctranslate2/",
     "faster_whisper/"
-  ]
+  ],
+  "package_sha256": "0b80fac67d337856a4c7e8b07ccddb5bd54cb54dbef68df552692b1aa96c0ee1"
 }

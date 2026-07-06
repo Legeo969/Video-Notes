@@ -10,18 +10,20 @@ from __future__ import annotations
 
 import os
 import time
+from importlib import import_module
 from typing import Optional
 
+from src.application.ports.jobs import JobMetadataStore
 from src.utils.logging import get_logger
-from src.infrastructure.db.processing_metadata import ProcessingMetadata
 from src.application.pipeline.video_pipeline import process_url as _process_url, process_local as _process_local
 
 logger = get_logger(__name__)
 
-def _get_metadata_db(output_dir: str) -> ProcessingMetadata:
+def _get_metadata_db(output_dir: str) -> JobMetadataStore:
     """Get or create ProcessingMetadata instance for the output directory."""
     db_path = os.path.join(output_dir, "processing.db")
-    return ProcessingMetadata(db_path)
+    module = import_module("src.infrastructure.db.processing_metadata")
+    return module.ProcessingMetadata(db_path)
 
 
 def process_url(

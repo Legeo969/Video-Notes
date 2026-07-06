@@ -63,7 +63,9 @@ class IndexProvenanceStage:
 
             from src.db.database import connect, upsert_note
 
-            prov_db = os.path.join(ctx.request.output_dir, ".note_index", "video_notes.db")
+            from src.application.services.job_queue import get_default_db_path
+
+            prov_db = get_default_db_path(ctx.request.output_dir)
             notes_path = str(state.get("notes_path") or "")
             notes = str(state.get("notes") or "")
             if notes_path and os.path.isfile(notes_path):

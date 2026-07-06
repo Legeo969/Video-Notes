@@ -1,20 +1,23 @@
 {
   "component": "ocr-gpu",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "GPU OCR — PaddleOCR + PaddlePaddle-GPU + CUDA",
-  "sha256": "",
-  "signature": "",
+  "sha256": "6b2160492692eda86b0d6ce53650cfd4f537dd0f99196a19c57fe831b1dc006c",
+  "signature": "ed25519:k5EC8zawmLVD/IGwYh1G3WiXjqNC07MOs3TVAk6Krm0InQkupalESEZBEMiCKt9bwe1w5xaj4RBAG7gI537LBw==",
   "size_mb": 1200,
   "requires": {
-    "base-engine": ">=1.2.0 <2.0.0"
+    "base-engine": ">=1.5.0 <2.0.0"
   },
-  "provides": ["ocr", "cuda-runtime"],
+  "provides": [
+    "ocr",
+    "cuda-runtime"
+  ],
   "files": [
     "paddle/",
     "paddleocr/",
-    "paddlex/",
-    "paddlepaddle-gpu/"
-  ]
+    "paddlex/"
+  ],
+  "package_sha256": "0647ffb89ab1f118dc3ed6200026f36a4351b0ed697e31ccf5bbd113dacef2e3"
 }

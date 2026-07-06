@@ -1,11 +1,17 @@
 """测试任务队列系统 — JobState / JobQueue / ProcessingMetadata"""
 
 import os
+import sqlite3
 import tempfile
 import shutil
 import pytest
 from src.domain.job_state import JobState, JobRecord, get_next_stage, get_stage_order, get_stage_artifact, StageManifest
-from src.application.services.job_queue import JobQueue
+from src.application.services.job_queue import (
+    JobQueue,
+    get_default_db_path,
+    get_default_state_dir,
+    get_legacy_jobs_root,
+)
 from src.infrastructure.db.processing_metadata import ProcessingMetadata
 
 
@@ -198,6 +204,7 @@ class TestJobQueue:
         job = self.jq.get_job(rid)
         assert job.status == "completed"
         assert job.elapsed_sec == 99.0
+        assert job.job_dir is None
 
     def test_fail_and_cancel(self):
         rid = self.jq.enqueue("v.mp4")
@@ -253,9 +260,46 @@ class TestJobQueue:
     def test_job_dir_creation(self):
         rid = self.jq.enqueue("v.mp4", job_id="dir-test")
         job = self.jq.get_job(rid)
-        assert ".jobs" in job.job_dir
+        assert "jobs" in job.job_dir
         assert "dir-test" in job.job_dir
         assert os.path.isdir(job.job_dir)
+
+    def test_completed_workspace_is_removed(self):
+        rid = self.jq.enqueue("v.mp4", job_id="completed-cleanup")
+        workspace = self.jq.get_job(rid).job_dir
+
+        self.jq.complete(rid)
+
+        assert not os.path.exists(workspace)
+        assert self.jq.get_job(rid).job_dir is None
+
+    def test_orphan_cleanup_removes_legacy_non_uuid_workspace(self):
+        legacy = os.path.join(get_legacy_jobs_root(), "resume-test")
+        os.makedirs(legacy, exist_ok=True)
+
+        assert self.jq.cleanup_orphans(min_age_hours=0, jobs_root=get_legacy_jobs_root()) == 1
+        assert not os.path.exists(legacy)
+
+    def test_default_db_path_uses_state_dir_and_migrates_legacy_db(self):
+        output = os.path.join(self.tmp, "exports")
+        legacy = os.path.join(output, ".note_index", "video_notes.db")
+        os.makedirs(os.path.dirname(legacy), exist_ok=True)
+        conn = sqlite3.connect(legacy)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE legacy_marker(value TEXT NOT NULL)")
+        conn.execute("INSERT INTO legacy_marker(value) VALUES ('from-wal')")
+        conn.commit()
+
+        db_path = get_default_db_path(output)
+
+        assert db_path == os.path.join(get_default_state_dir(), "video_notes.db")
+        migrated = sqlite3.connect(db_path)
+        try:
+            value = migrated.execute("SELECT value FROM legacy_marker").fetchone()[0]
+        finally:
+            migrated.close()
+            conn.close()
+        assert value == "from-wal"
 
     def test_progress_callback(self):
         events = []

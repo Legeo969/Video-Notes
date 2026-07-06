@@ -8,8 +8,8 @@ from pydantic import BaseModel
 class SystemInfoResponse(BaseModel):
     """引擎系统信息。"""
 
-    shell_version: str = "1.2.0"
-    engine_version: str = "1.2.0"
+    shell_version: str = "1.5.0"
+    engine_version: str = "1.5.0"
     protocol_version: int = 1
     python_version: str
     cuda_available: bool = False

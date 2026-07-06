@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import json
 
+from src.api.handlers.settings import create_settings_handlers
 from src.config.provider_profiles import normalize_provider_settings
 
 
@@ -103,11 +104,30 @@ def test_missing_provider_clears_stale_binding():
     assert changed is True
 
 
-def test_settings_save_does_not_implicitly_append_profile():
-    source = Path("src/gui/pages/settings_page.py").read_text(encoding="utf-8")
-    save_body = source.split("    def _save_settings(self):", 1)[1].split(
-        "    def _load_settings(self):", 1
-    )[0]
+def test_settings_update_does_not_implicitly_append_profile(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "output_dir": "./output",
+                "providers": [
+                    {
+                        "name": "阿里云百炼",
+                        "type": "自定义",
+                        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "api_key": "secret",
+                        "models": ["deepseek-v4-flash"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VIDEO_NOTES_SETTINGS_PATH", str(settings_path))
 
-    assert "self._commit_selected_profile()" in save_body
-    assert "self._save_edit_to_providers()" not in save_body
+    handlers = create_settings_handlers()
+    assert handlers["settings.update"]({"patches": {"output_dir": str(tmp_path / "notes")}}) is True
+
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert [item["name"] for item in saved["providers"]] == ["阿里云百炼"]

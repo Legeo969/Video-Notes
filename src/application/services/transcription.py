@@ -3,7 +3,7 @@
 import time
 import logging
 from src.domain.types import PipelineRequest
-from src.infrastructure.transcription.whisper_engine import transcribe_with_segments
+from src.application.speech import SpeechTranscriber
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,7 @@ logger = logging.getLogger(__name__)
 class TranscriptionService:
     """封装转录调用，统一输入/输出格式。
 
-    当前实现代理到 whisper_engine.transcribe_with_segments，
-    后续可切换 TranscriptionBackend 协议（faster-whisper / whisper.cpp / API）。
+    当前实现代理到 SpeechTranscriber，具体后端由 TranscriptionGateway 提供。
     """
 
     @staticmethod
@@ -27,11 +26,21 @@ class TranscriptionService:
             (full_text, segments)
         """
         t0 = time.time()
-        full_text, segments = transcribe_with_segments(
-            audio_path,
+        result = SpeechTranscriber(
             model_size=request.whisper_model,
-            language=request.language,
             model_dir=request.model_dir,
+        ).transcribe(
+            audio_path,
+            language=request.language,
         )
+        segments = [
+            {
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+                "language": segment.language,
+            }
+            for segment in result.segments
+        ]
         logger.info(f"⏱  转录耗时: {time.time() - t0:.1f}s")
-        return full_text, segments
+        return result.full_text, segments

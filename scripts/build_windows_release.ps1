@@ -120,6 +120,10 @@ if (-not $Installers) {
   throw "Build command finished but no MSI/NSIS installer was found under: $BundleDir"
 }
 
+$PrimaryInstaller = $Installers | Select-Object -First 1
+& python "$PSScriptRoot\verify_installed_runtime.py" --sidecar $sidecar --installer $PrimaryInstaller.FullName --timeout 180
+Assert-NativeSuccess "installed runtime sidecar smoke"
+
 Write-Host ""
 Write-Host "Build completed successfully." -ForegroundColor Green
 Write-Host "Installers:" -ForegroundColor Green

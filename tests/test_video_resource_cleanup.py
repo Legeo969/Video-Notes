@@ -532,17 +532,28 @@ class ManagedMediaWorkspaceTests(unittest.TestCase):
             video_path = download_dir / "source.mp4"
             audio_path = download_dir / "source.wav"
 
-            def fake_download(_url, output_dir):
-                self.assertEqual(Path(output_dir), job_dir / "temp")
-                download_dir.mkdir(parents=True)
-                video_path.write_bytes(b"video")
-                return str(video_path)
+            class FakeGateway:
+                def check_ytdlp(self):
+                    return True
 
-            def fake_extract(source, output_dir=None):
-                self.assertEqual(Path(source), video_path)
-                self.assertEqual(Path(output_dir), download_dir)
-                audio_path.write_bytes(b"audio")
-                return str(audio_path)
+                def check_ffmpeg(self):
+                    return True
+
+                def download_video(self, _url, output_dir, cookies=None):
+                    self_outer.assertEqual(Path(output_dir), job_dir / "temp")
+                    self_outer.assertIsNone(cookies)
+                    download_dir.mkdir(parents=True)
+                    video_path.write_bytes(b"video")
+                    return str(video_path)
+
+                def download_audio(self, _url, output_dir, cookies=None):
+                    raise AssertionError("video path should be used when vision is enabled")
+
+                def extract_audio(self, source, output_dir=None):
+                    self_outer.assertEqual(Path(source), video_path)
+                    self_outer.assertEqual(Path(output_dir), download_dir)
+                    audio_path.write_bytes(b"audio")
+                    return str(audio_path)
 
             request = PipelineRequest(
                 input="https://example.com/video",
@@ -550,11 +561,11 @@ class ManagedMediaWorkspaceTests(unittest.TestCase):
                 vision_enabled=True,
             )
 
-            with patch("src.application.services.media_resolver.check_ytdlp", return_value=True), \
-                 patch("src.application.services.media_resolver.check_ffmpeg", return_value=True), \
-                 patch("src.application.services.media_resolver.download_video", side_effect=fake_download), \
-                 patch("src.application.services.media_resolver.extract_audio", side_effect=fake_extract):
-                audio, video, owned = MediaResolver.resolve(request, job_dir=str(job_dir))
+            self_outer = self
+            audio, video, owned = MediaResolver(FakeGateway()).resolve(
+                request,
+                job_dir=str(job_dir),
+            )
 
             self.assertEqual(Path(audio), audio_path)
             self.assertEqual(Path(video), video_path)
@@ -580,16 +591,31 @@ class ManagedMediaWorkspaceTests(unittest.TestCase):
             (job_dir / "temp").mkdir()
             audio_path = job_dir / "temp" / "audio.wav"
 
-            def fake_extract(input_path, output_dir=None):
-                self.assertEqual(Path(input_path), source)
-                self.assertEqual(Path(output_dir), job_dir / "temp")
-                audio_path.write_bytes(b"audio")
-                return str(audio_path)
+            class FakeGateway:
+                def check_ytdlp(self):
+                    return True
+
+                def check_ffmpeg(self):
+                    return True
+
+                def download_video(self, _url, output_dir, cookies=None):
+                    raise AssertionError("local input should not download video")
+
+                def download_audio(self, _url, output_dir, cookies=None):
+                    raise AssertionError("local input should not download audio")
+
+                def extract_audio(self, input_path, output_dir=None):
+                    self_outer.assertEqual(Path(input_path), source)
+                    self_outer.assertEqual(Path(output_dir), job_dir / "temp")
+                    audio_path.write_bytes(b"audio")
+                    return str(audio_path)
 
             request = PipelineRequest(input=str(source), output_dir=str(output_dir))
-            with patch("src.application.services.media_resolver.check_ffmpeg", return_value=True), \
-                 patch("src.application.services.media_resolver.extract_audio", side_effect=fake_extract):
-                audio, video, owned = MediaResolver.resolve(request, job_dir=str(job_dir))
+            self_outer = self
+            audio, video, owned = MediaResolver(FakeGateway()).resolve(
+                request,
+                job_dir=str(job_dir),
+            )
 
             self.assertEqual(Path(audio), audio_path)
             self.assertEqual(Path(video), source)

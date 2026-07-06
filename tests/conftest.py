@@ -43,6 +43,18 @@ for _mod_name in _MISSING_MODULES:
     _ensure_optional_module_mock(_mod_name)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_video_notes_runtime_state(monkeypatch, tmp_path):
+    """Keep tests from writing runtime state into the real user AppData."""
+    data_dir = tmp_path / "video-notes-data"
+    monkeypatch.setenv("VIDEO_NOTES_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("VIDEO_NOTES_JOBS_DIR", str(data_dir / "jobs"))
+    monkeypatch.setenv(
+        "VIDEO_NOTES_SETTINGS_PATH",
+        str(data_dir / "settings.json"),
+    )
+
+
 def pytest_addoption(parser):
     """自定义命令行选项。"""
     parser.addoption(

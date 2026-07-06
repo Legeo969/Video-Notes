@@ -41,6 +41,21 @@ class CleanupManager:
             return None
 
         resolved = Path(job_dir).resolve(strict=False)
+        from src.application.services.job_queue import get_default_jobs_root
+
+        root = Path(get_default_jobs_root()).resolve(strict=False)
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            rel = None
+        if rel is not None:
+            if not rel.parts:
+                return None
+            job_id = rel.parts[0]
+            if not job_id or job_id in {".", ".."}:
+                return None
+            return root / job_id
+
         parts = resolved.parts
         indices = [idx for idx, part in enumerate(parts) if part == ".jobs"]
         if not indices:

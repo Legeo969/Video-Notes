@@ -43,7 +43,9 @@
     ],
     "windows": {
       "wix": null,
-      "nsis": null
+      "nsis": {
+        "installerHooks": "nsis/cleanup-appdata.nsh"
+      }
     }
   }
 }

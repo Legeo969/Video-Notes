@@ -1,19 +1,22 @@
 {
   "component": "ocr-cpu",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "CPU OCR — PaddleOCR (CPU 版 PaddlePaddle)",
-  "sha256": "",
-  "signature": "",
+  "sha256": "6b2160492692eda86b0d6ce53650cfd4f537dd0f99196a19c57fe831b1dc006c",
+  "signature": "ed25519:k5EC8zawmLVD/IGwYh1G3WiXjqNC07MOs3TVAk6Krm0InQkupalESEZBEMiCKt9bwe1w5xaj4RBAG7gI537LBw==",
   "size_mb": 300,
   "requires": {
-    "base-engine": ">=1.2.0 <2.0.0"
+    "base-engine": ">=1.5.0 <2.0.0"
   },
-  "provides": ["ocr"],
+  "provides": [
+    "ocr"
+  ],
   "files": [
     "paddle/",
     "paddleocr/",
     "paddlex/"
-  ]
+  ],
+  "package_sha256": "cf64e3ef8406b2642f51ec21ee41c55363e05dd8bdc42048f67632fdd7f4bcaa"
 }

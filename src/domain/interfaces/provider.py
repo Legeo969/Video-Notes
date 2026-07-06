@@ -5,13 +5,28 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProviderConfig:
     """Provider 配置（与 config.py 的冻结版本共存，此处用于 base 层）。"""
-    provider: str
+    provider: str | None
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+
+    def normalized_provider(self) -> str | None:
+        if self.provider is None:
+            return None
+        aliases = {
+            "bailian": "dashscope",
+            "自定义": "openai_compat",
+            "custom": "openai_compat",
+            "google": "google_gemini",
+            "gemini": "google_gemini",
+            "anthropic": "anthropic_messages",
+            "claude": "anthropic_messages",
+            "responses": "openai_responses",
+        }
+        return aliases.get(self.provider, self.provider)
 
 
 class Provider(ABC):

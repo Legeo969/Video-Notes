@@ -13,14 +13,18 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import shutil
+import sqlite3
 import subprocess
 import threading
 import uuid
 from datetime import datetime, timezone
+from importlib import import_module
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+from src.application.ports.jobs import JobMetadataStore
 from src.domain.job_state import (
     JobState,
     JobRecord,
@@ -29,7 +33,6 @@ from src.domain.job_state import (
     artifact_path,
     temp_path,
 )
-from src.infrastructure.db.processing_metadata import ProcessingMetadata
 from src.db.database import compact_database
 
 # Progress callback: preferred signature is
@@ -46,6 +49,36 @@ _SHARED_STATE_LOCK = threading.RLock()
 _SHARED_TOKENS: dict[str, dict[int, "CancellationToken"]] = {}
 _SHARED_REGISTRIES: dict[str, "ProcessRegistry"] = {}
 _SHARED_ACTIVE_RUNS: dict[str, set[int]] = {}
+
+
+def _create_job_metadata_store(db_path: str) -> JobMetadataStore:
+    module = import_module("src.infrastructure.db.processing_metadata")
+    return module.ProcessingMetadata(db_path)
+
+
+def _copy_sqlite_database_snapshot(source: str, destination: str) -> None:
+    """Copy a consistent SQLite DB, including committed WAL pages."""
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    tmp_destination = destination + ".tmp"
+    try:
+        if os.path.exists(tmp_destination):
+            os.remove(tmp_destination)
+        source_uri = f"file:{os.path.abspath(source)}?mode=ro"
+        source_conn = sqlite3.connect(source_uri, uri=True)
+        try:
+            destination_conn = sqlite3.connect(tmp_destination)
+            try:
+                source_conn.backup(destination_conn)
+                destination_conn.commit()
+            finally:
+                destination_conn.close()
+        finally:
+            source_conn.close()
+        os.replace(tmp_destination, destination)
+    except sqlite3.Error:
+        if os.path.exists(tmp_destination):
+            os.remove(tmp_destination)
+        shutil.copy2(source, destination)
 
 
 def get_default_app_data_dir() -> str:
@@ -70,7 +103,20 @@ def get_default_jobs_root() -> str:
     override = os.environ.get("VIDEO_NOTES_JOBS_DIR", "").strip()
     if override:
         return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+    return os.path.join(get_default_app_data_dir(), "jobs")
+
+
+def get_legacy_jobs_root() -> str:
+    """Return the pre-state-split hidden jobs directory."""
     return os.path.join(get_default_app_data_dir(), ".jobs")
+
+
+def get_default_state_dir() -> str:
+    """Return the private per-user directory for durable app state."""
+    override = os.environ.get("VIDEO_NOTES_STATE_DIR", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+    return os.path.join(get_default_app_data_dir(), "state")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -299,11 +345,12 @@ class JobQueue:
         db_path: str,
         output_dir: str = "./output",
         on_progress: ProgressCallback | None = None,
+        metadata_store: JobMetadataStore | None = None,
     ):
         self.db_path = db_path
         self.output_dir = os.path.abspath(output_dir)
         self.jobs_root = get_default_jobs_root()
-        self.meta = ProcessingMetadata(db_path)
+        self.meta = metadata_store or _create_job_metadata_store(db_path)
         self._on_progress = on_progress
         self._state_key = os.path.abspath(db_path)
         with _SHARED_STATE_LOCK:
@@ -522,6 +569,8 @@ class JobQueue:
         note_id: Optional[int] = None,
     ) -> None:
         """标记任务完成。"""
+        job = self.meta.get_job(run_id)
+        job_dir = job.job_dir if job else None
         self.meta.complete_run(
             run_id,
             output_path=notes_path,
@@ -534,6 +583,13 @@ class JobQueue:
         # 清理 token
         with self._lock:
             self._tokens.pop(run_id, None)
+            self._active_runs.discard(run_id)
+        if job_dir and os.path.isdir(job_dir):
+            try:
+                shutil.rmtree(job_dir)
+                self.meta.detach_workspace(run_id)
+            except OSError as exc:
+                logger.warning("Completed workspace cleanup failed %s: %s", job_dir, exc)
         self._notify(run_id, JobState.COMPLETED, "任务完成", 100)
 
     def fail(self, run_id: int, error: str) -> None:
@@ -735,7 +791,11 @@ class JobQueue:
             return self.meta.delete_run_with_index(run_id, job.job_id)
         return self.meta.delete_run(run_id)
 
-    def cleanup_orphans(self, min_age_hours: float = 168.0) -> int:
+    def cleanup_orphans(
+        self,
+        min_age_hours: float = 168.0,
+        jobs_root: str | None = None,
+    ) -> int:
         """Conservatively remove old, untracked workspaces.
 
         This method is no longer called by page refresh/startup.  A directory is
@@ -745,7 +805,7 @@ class JobQueue:
         import shutil
         import time
 
-        jobs_dir = self.jobs_root
+        jobs_dir = jobs_root or self.jobs_root
         if not os.path.isdir(jobs_dir):
             return 0
         known = {
@@ -759,8 +819,6 @@ class JobQueue:
             entry_path = os.path.join(jobs_dir, entry)
             if not os.path.isdir(entry_path) or entry in known:
                 continue
-            if len(entry) != 36 or entry.count("-") != 4:
-                continue
             if os.path.exists(os.path.join(entry_path, ".active")):
                 continue
             try:
@@ -772,10 +830,20 @@ class JobQueue:
                 logger.warning("孤儿工作目录清理失败 %s: %s", entry_path, exc)
         return cleaned
 
+    def cleanup_completed_workspaces(self) -> int:
+        """Remove workspaces for completed jobs while preserving history."""
+        count = 0
+        for job in self.meta.list_all_jobs(limit=100000):
+            if job.status != "completed":
+                continue
+            if job.job_dir and os.path.isdir(job.job_dir):
+                shutil.rmtree(job.job_dir)
+                count += 1
+            self.meta.detach_workspace(job.id)
+        return count
+
     def clear_workspaces(self, *, include_orphans: bool = False) -> int:
         """Remove non-running ``.jobs`` data but keep task history/final outputs."""
-        import shutil
-
         count = 0
         for job in self.meta.list_all_jobs(limit=100000):
             if job.status in ("running", "pausing", "cancelling"):
@@ -883,7 +951,15 @@ class JobQueue:
 
 def get_default_db_path(output_dir: str) -> str:
     """获取默认的任务数据库路径。"""
-    return os.path.join(output_dir, ".note_index", "video_notes.db")
+    override = os.environ.get("VIDEO_NOTES_DB_PATH", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+
+    db_path = os.path.join(get_default_state_dir(), "video_notes.db")
+    legacy = os.path.join(output_dir, ".note_index", "video_notes.db")
+    if not os.path.exists(db_path) and os.path.isfile(legacy):
+        _copy_sqlite_database_snapshot(legacy, db_path)
+    return db_path
 
 
 def get_job_dir_from_output(output_dir: str, job_id: str) -> str:

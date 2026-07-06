@@ -131,7 +131,8 @@ const mockTemplates = [
 ];
 
 let mockSettings: any = {
-  output_dir: "./output",
+  output_dir: "D:\\VideoNotes\\exports",
+  vault_path: "",
   whisper_model: "large-v3",
   whisper_model_dir: "",
   model_dir: "",
@@ -288,6 +289,28 @@ const mockResponses: Record<string, (params: any) => any> = {
     { name: "FFmpeg", status: "pass", detail: "mock" },
   ],
   "diagnostics.bundle": () => "./output/diagnostics/mock.json",
+  "storage.status": () => ({
+    export_dir: "D:\\VideoNotes\\exports",
+    state_dir: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\state",
+    db_path: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\state\\video_notes.db",
+    jobs_root: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\jobs",
+    legacy_jobs_root: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\.jobs",
+    vault_path: mockSettings.vault_path,
+    sizes: {
+      export_bytes: 12582912,
+      state_bytes: 524288,
+      jobs_bytes: 3145728,
+      legacy_jobs_bytes: 0,
+      db_bytes: 262144,
+      vault_bytes: 0,
+    },
+    counts: {
+      jobs: { dirs: 2, files: 6 },
+      legacy_jobs: { dirs: 0, files: 0 },
+    },
+  }),
+  "storage.cleanup_orphans": () => ({ removed: 0, current: 0, legacy: 0 }),
+  "storage.cleanup_completed": () => ({ removed: 0 }),
 };
 
 // ── Mock implementation ─────────────────────────────────

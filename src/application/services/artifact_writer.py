@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import unquote
 from src.domain.types import PipelineRequest
-from src.infrastructure.transcription.subtitle_writer import write_srt, write_ass, write_timestamped_txt
+from src.utils.subtitle_writer import write_srt, write_ass, write_timestamped_txt
 from src.utils.system import _safe_dirname
 from src.vault_writer import archive_to_obsidian
 import logging
@@ -213,8 +213,9 @@ class ArtifactWriter:
             )
         logger.info("\U0001f4dd 笔记已保存: %s", notes_path)
 
-        if request.vault_path is not None:
-            archive_to_obsidian(notes_path, request.vault_path, title)
+        vault_path = str(request.vault_path or "").strip()
+        if vault_path:
+            archive_to_obsidian(notes_path, vault_path, title)
 
         return transcript_path, notes_path
 

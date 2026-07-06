@@ -253,20 +253,23 @@ class TestExtractFramesStage:
         ctx.request.frame_mode = "fixed"
         ctx.request.max_frames = 20
 
-        with patch("src.infrastructure.video.frame_extractor.extract_frames",
-                   return_value=[{"path": "/frame1.jpg", "filename": "f1.jpg", "timestamp_sec": 0}]) as mock_ef:
-            stage = ExtractFramesStage()
-            result = stage.run(ctx, {"video_path": video_path, "speech_result": sr})
+        frame_service = MagicMock()
+        frame_service.extract.return_value = [
+            {"path": "/frame1.jpg", "filename": "f1.jpg", "timestamp_sec": 0}
+        ]
+        stage = ExtractFramesStage(frame_service=frame_service)
+        result = stage.run(ctx, {"video_path": video_path, "speech_result": sr})
 
-            mock_ef.assert_called_once_with(
-                video_path,
-                os.path.join(ctx.request.output_dir, ".temp_frames"),
-                interval_sec=15,
-                mode="fixed",
-                max_frames=20,
-                transcript_segments=[{"start": 0, "end": 1, "text": "test"}],
-            )
-            assert len(result.outputs["frames"]) == 1
+        frame_service.extract.assert_called_once_with(
+            video_path,
+            os.path.join(ctx.job_dir, ".temp_frames"),
+            interval_sec=15,
+            mode="fixed",
+            max_frames=20,
+            transcript_segments=[{"start": 0, "end": 1, "text": "test"}],
+            ocr_enabled=False,
+        )
+        assert len(result.outputs["frames"]) == 1
 
     def test_default_params_when_not_set_on_request(self, ctx, temp_dir):
         video_path = os.path.join(temp_dir, "video.mp4")
@@ -275,11 +278,11 @@ class TestExtractFramesStage:
         from src.application.speech import SpeechResult, SpeechSegment
         sr = SpeechResult(full_text="t", segments=[SpeechSegment(0, 1, "t")])
 
-        with patch("src.infrastructure.video.frame_extractor.extract_frames",
-                   return_value=[]) as mock_ef:
-            stage = ExtractFramesStage()
-            stage.run(ctx, {"video_path": video_path, "speech_result": sr})
-            mock_ef.assert_called_once()
+        frame_service = MagicMock()
+        frame_service.extract.return_value = []
+        stage = ExtractFramesStage(frame_service=frame_service)
+        stage.run(ctx, {"video_path": video_path, "speech_result": sr})
+        frame_service.extract.assert_called_once()
 
     def test_runs_ocr_when_enabled(self, ctx, temp_dir):
         video_path = os.path.join(temp_dir, "video.mp4")
@@ -290,25 +293,26 @@ class TestExtractFramesStage:
         frames = [{"path": "/f.jpg", "filename": "f.jpg", "timestamp_sec": 0}]
         ctx.request.ocr_enabled = True
 
-        with (
-            patch("src.infrastructure.video.frame_extractor.extract_frames", return_value=frames),
-            patch("src.application.services.frame_service.FrameService._analyze_ocr") as mock_ocr,
-        ):
-            stage = ExtractFramesStage()
-            result = stage.run(ctx, {"video_path": video_path, "speech_result": sr})
+        frame_service = MagicMock()
+        frame_service.extract.return_value = frames
+        stage = ExtractFramesStage(frame_service=frame_service)
+        result = stage.run(ctx, {"video_path": video_path, "speech_result": sr})
 
-        mock_ocr.assert_called_once_with(frames)
+        frame_service.extract.assert_called_once()
+        assert frame_service.extract.call_args.kwargs["ocr_enabled"] is True
         assert result.outputs["frames"] is frames
 
     def test_via_stage_runner(self, ctx, mem_store, temp_dir):
         video_path = os.path.join(temp_dir, "video.mp4")
         Path(video_path).write_text("fake")
 
-        with patch("src.infrastructure.video.frame_extractor.extract_frames",
-                   return_value=[{"path": "/f.jpg", "filename": "f.jpg", "timestamp_sec": 0}]):
-            runner = StageRunner(manifest_store=mem_store)
-            result = runner.run(ctx, [ExtractFramesStage()], initial_state={
-                "video_path": video_path,
-                "speech_result": MagicMock(segments=[]),
-            })
-            assert "frames" in result
+        frame_service = MagicMock()
+        frame_service.extract.return_value = [
+            {"path": "/f.jpg", "filename": "f.jpg", "timestamp_sec": 0}
+        ]
+        runner = StageRunner(manifest_store=mem_store)
+        result = runner.run(ctx, [ExtractFramesStage(frame_service=frame_service)], initial_state={
+            "video_path": video_path,
+            "speech_result": MagicMock(segments=[]),
+        })
+        assert "frames" in result

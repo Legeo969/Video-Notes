@@ -46,12 +46,18 @@ def _resolve_runtime_output_dir(output_dir: str | None = None) -> str:
     if requested not in {"./output", ".\\output", "output"}:
         return requested
     try:
-        from src.config.settings import get_settings_path, load_settings
+        from src.config.settings import get_default_export_dir, get_settings_path, load_settings
         configured = str(load_settings(get_settings_path()).get("output_dir") or "").strip()
         if configured:
             return configured
     except Exception:
         pass
+    if requested in {"./output", ".\\output", "output"}:
+        try:
+            from src.config.settings import get_default_export_dir
+            return get_default_export_dir()
+        except Exception:
+            pass
     return requested
 
 
@@ -135,7 +141,11 @@ def create_dispatcher(
         output_dir=output_dir,
     ))
     d.register_all(create_settings_handlers())
-    d.register_all(create_collections_handlers(output_dir=output_dir))
+    d.register_all(create_collections_handlers(
+        output_dir=output_dir,
+        job_queue=job_queue,
+        supervisor=supervisor,
+    ))
     d.register_all(create_diagnostics_handlers(output_dir=output_dir))
 
     return d

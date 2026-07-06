@@ -1,9 +1,10 @@
 """Provider 工厂 — 创建 Provider 实例。"""
 
+from importlib import import_module
+
 from src.application.llm import get_provider
 from src.domain.interfaces.llm import LLMProvider
 from src.domain.interfaces.provider import Provider, ProviderConfig
-from src.infrastructure.providers.ocr_adapter import OCRProvider
 
 
 def _resolve_provider_name(config) -> str:
@@ -19,6 +20,10 @@ def _resolve_provider_name(config) -> str:
     return name or "mimo"
 
 
+def _load_adapter(module_name: str, class_name: str):
+    return getattr(import_module(module_name), class_name)
+
+
 class ProviderFactory:
     def create(self, config) -> LLMProvider:
         provider_name = _resolve_provider_name(config)
@@ -30,8 +35,6 @@ class ProviderFactory:
 
     def create_vision(self, config) -> Provider:
         """创建 VisionProvider 实例。"""
-        from src.infrastructure.providers.vision_adapter import VisionProvider
-
         provider_name = _resolve_provider_name(config)
         provider_config = ProviderConfig(
             provider=provider_name,
@@ -39,10 +42,14 @@ class ProviderFactory:
             base_url=config.base_url,
             model=config.model,
         )
+        VisionProvider = _load_adapter(
+            "src.infrastructure.providers.vision_adapter",
+            "VisionProvider",
+        )
         return VisionProvider(config=provider_config)
 
     @staticmethod
-    def create_ocr(config: ProviderConfig | None = None) -> OCRProvider:
+    def create_ocr(config: ProviderConfig | None = None) -> Provider:
         """创建 OCRProvider 实例。
 
         Args:
@@ -50,4 +57,8 @@ class ProviderFactory:
         """
         if config is None:
             config = ProviderConfig(provider="ocr")
+        OCRProvider = _load_adapter(
+            "src.infrastructure.providers.ocr_adapter",
+            "OCRProvider",
+        )
         return OCRProvider(config=config)

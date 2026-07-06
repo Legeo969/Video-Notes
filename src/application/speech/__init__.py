@@ -15,7 +15,10 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Any
+
+from src.application.ports.transcription import TranscriptionGateway
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +68,18 @@ class SpeechResult:
 class SpeechTranscriber:
     """语音转录器。
 
-    使用 faster-whisper 进行单次转录（内部已有 CUDA 并行优化），
+    使用注入的转录网关进行单次转录，
     输出 SpeechSegment 列表 + chunk_text 分块工具供下游使用。
     """
 
-    def __init__(self, model_size: str = "large-v3-turbo", model_dir: str | None = None, device: str = "auto", compute_type: str = "auto"):
+    def __init__(
+        self,
+        model_size: str = "large-v3-turbo",
+        model_dir: str | None = None,
+        device: str = "auto",
+        compute_type: str = "auto",
+        gateway: TranscriptionGateway | None = None,
+    ):
         """初始化。
 
         Args:
@@ -80,6 +90,12 @@ class SpeechTranscriber:
         self._model_dir = model_dir
         self._device = device or "auto"
         self._compute_type = compute_type or "auto"
+        self._gateway = gateway or self._default_gateway()
+
+    @staticmethod
+    def _default_gateway() -> TranscriptionGateway:
+        adapter = import_module("src.infrastructure.transcription.gateway")
+        return adapter.InfrastructureTranscriptionGateway()
 
     def transcribe(
         self,
@@ -102,11 +118,9 @@ class SpeechTranscriber:
         Returns:
             SpeechResult 包含转录分段和完整文本。
         """
-        from src.infrastructure.transcription.whisper_engine import transcribe_with_segments
-
         t0 = time.time()
 
-        full_text, seg_list = transcribe_with_segments(
+        full_text, seg_list = self._gateway.transcribe_with_segments(
             audio_path,
             model_size=self._model_size,
             language=language,

@@ -1,23 +1,47 @@
 """LLM client and provider management."""
+
+from importlib import import_module
+
 from src.domain.interfaces.llm import LLMProvider
 from src.application.llm.registry import ProviderRegistry
-from src.infrastructure.providers.mimo import MimoProvider
-from src.infrastructure.providers.dashscope import DashScopeProvider
-from src.infrastructure.providers.openai_compat import OpenAICompatProvider
-from src.infrastructure.providers.http_api_types import (
-    GoogleGeminiProvider,
-    AnthropicMessagesProvider,
-    OpenAIResponsesProvider,
-)
 
-# 注册内置 provider
-_registry = ProviderRegistry()
-_registry.register("mimo", MimoProvider)
-_registry.register("dashscope", DashScopeProvider)
-_registry.register("openai_compat", OpenAICompatProvider)
-_registry.register("google_gemini", GoogleGeminiProvider)
-_registry.register("anthropic_messages", AnthropicMessagesProvider)
-_registry.register("openai_responses", OpenAIResponsesProvider)
+_registry: ProviderRegistry | None = None
+
+
+def _load_symbol(module_name: str, attribute: str):
+    return getattr(import_module(module_name), attribute)
+
+
+def _get_registry() -> ProviderRegistry:
+    global _registry
+    if _registry is None:
+        registry = ProviderRegistry()
+        registry.register(
+            "mimo",
+            _load_symbol("src.infrastructure.providers.mimo", "MimoProvider"),
+        )
+        registry.register(
+            "dashscope",
+            _load_symbol("src.infrastructure.providers.dashscope", "DashScopeProvider"),
+        )
+        registry.register(
+            "openai_compat",
+            _load_symbol("src.infrastructure.providers.openai_compat", "OpenAICompatProvider"),
+        )
+        registry.register(
+            "google_gemini",
+            _load_symbol("src.infrastructure.providers.http_api_types", "GoogleGeminiProvider"),
+        )
+        registry.register(
+            "anthropic_messages",
+            _load_symbol("src.infrastructure.providers.http_api_types", "AnthropicMessagesProvider"),
+        )
+        registry.register(
+            "openai_responses",
+            _load_symbol("src.infrastructure.providers.http_api_types", "OpenAIResponsesProvider"),
+        )
+        _registry = registry
+    return _registry
 
 # GUI 显示名 → 注册表名称
 _DISPLAY_NAME_MAP = {
@@ -52,14 +76,15 @@ def get_provider(
     if name is not None:
         name = _DISPLAY_NAME_MAP.get(name, name)
 
+    registry = _get_registry()
     if name is not None:
-        provider = _registry.get(name)
+        provider = registry.get(name)
     else:
-        inferred = _registry._infer_provider_from_env()
+        inferred = registry._infer_provider_from_env()
         if inferred:
-            provider = _registry.get(inferred)
+            provider = registry.get(inferred)
         else:
-            provider = _registry.get("mimo")
+            provider = registry.get("mimo")
 
     if api_key is not None:
         provider.api_key = api_key

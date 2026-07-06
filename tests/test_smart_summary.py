@@ -2,11 +2,7 @@
 
 import unittest
 from unittest.mock import patch, MagicMock
-import inspect
-import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 import pytest
 
@@ -136,243 +132,31 @@ class TestSmartSummary(unittest.TestCase):
         self.assertIn("--smart-summary", result.stdout)
         self.assertIn("启用长文智能总结", result.stdout)
 
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_workers_accept_processing_options(self):
-        """GUI single and batch workers accept feature option wiring."""
-        from src.gui.workers.processing import Worker, BatchWorker
+    def test_processing_form_forwards_vision_and_ocr_options(self):
+        """Processing form state forwards multimodal processing options."""
+        from src.application.viewmodels.processing_form import ProcessingFormState
 
-        self.assertIn("smart_summary", inspect.signature(Worker).parameters)
-        self.assertIn("smart_summary", inspect.signature(BatchWorker).parameters)
-        self.assertIn("bilibili_cookies", inspect.signature(Worker).parameters)
-        self.assertIn("bilibili_cookies", inspect.signature(BatchWorker).parameters)
-        self.assertIn("vision_enabled", inspect.signature(Worker).parameters)
-        self.assertIn("vision_enabled", inspect.signature(BatchWorker).parameters)
-        self.assertIn("ocr_enabled", inspect.signature(Worker).parameters)
-        self.assertIn("ocr_enabled", inspect.signature(BatchWorker).parameters)
-        self.assertIn("kb_provider", inspect.signature(Worker).parameters)
-        self.assertIn("kb_provider", inspect.signature(BatchWorker).parameters)
-        self.assertIn("kb_model", inspect.signature(Worker).parameters)
-        self.assertIn("kb_model", inspect.signature(BatchWorker).parameters)
-        self.assertIn("kb_api_key", inspect.signature(Worker).parameters)
-        self.assertIn("kb_api_key", inspect.signature(BatchWorker).parameters)
-        self.assertIn("kb_base_url", inspect.signature(Worker).parameters)
-        self.assertIn("kb_base_url", inspect.signature(BatchWorker).parameters)
-
-    def test_gui_worker_forwards_vision_and_ocr_options(self):
-        """Single item GUI worker forwards multimodal processing options."""
-        from src.gui.workers.processing import Worker
-
-        with tempfile.TemporaryDirectory() as tmp:
-            notes_path = Path(tmp) / "notes.md"
-            captured = {}
-
-            def fake_process(input_path, **kwargs):
-                captured.update(kwargs)
-                notes_path.write_text("# Notes\n", encoding="utf-8")
-                return str(notes_path)
-
-            worker = Worker(
-                process_fn=fake_process,
-                input_path="video.mp4",
-                whisper_model="large-v3",
-                output_dir=tmp,
-                gpt_model="mimo-v2.5",
-                vision_enabled=True,
-                vision_provider="自定义",
-                vision_model="vision-model",
-                vision_api_key="vision-key",
-                vision_base_url="https://vision.example.com/v1",
-                ocr_enabled=True,
-            )
-            worker.run()
-
-        self.assertTrue(captured["vision_enabled"])
-        self.assertEqual(captured["vision_provider"], "自定义")
-        self.assertEqual(captured["vision_model"], "vision-model")
-        self.assertEqual(captured["vision_api_key"], "vision-key")
-        self.assertEqual(captured["vision_base_url"], "https://vision.example.com/v1")
-        self.assertTrue(captured["ocr_enabled"])
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_worker_forwards_kb_model_options(self):
-        """Single item GUI worker forwards knowledge-base model settings."""
-        from src.gui.workers.processing import Worker
-
-        with tempfile.TemporaryDirectory() as tmp:
-            notes_path = Path(tmp) / "notes.md"
-            captured = {}
-
-            def fake_process(input_path, **kwargs):
-                captured.update(kwargs)
-                notes_path.write_text("# Notes\n", encoding="utf-8")
-                return str(notes_path)
-
-            worker = Worker(
-                process_fn=fake_process,
-                input_path="video.mp4",
-                whisper_model="large-v3",
-                output_dir=tmp,
-                gpt_model="mimo-v2.5",
-                kb_provider="bailian",
-                kb_model="qwen-plus",
-                kb_api_key="kb-key",
-                kb_base_url="https://kb.example.com/v1",
-            )
-            worker.run()
-
-        self.assertEqual(captured["kb_provider"], "bailian")
-        self.assertEqual(captured["kb_model"], "qwen-plus")
-        self.assertEqual(captured["kb_api_key"], "kb-key")
-        self.assertEqual(captured["kb_base_url"], "https://kb.example.com/v1")
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_batch_worker_forwards_kb_model_options(self):
-        """Batch GUI worker forwards knowledge-base model settings."""
-        from src.gui.workers.processing import BatchWorker
-
-        with tempfile.TemporaryDirectory() as tmp:
-            captured = {}
-
-            def fake_process_url(input_path, **kwargs):
-                captured.update(kwargs)
-                return str(Path(tmp) / "notes.md")
-
-            worker = BatchWorker(
-                process_url_fn=fake_process_url,
-                process_local_fn=lambda input_path, **kwargs: "",
-                items=[{"input": "https://example.com/video"}],
-                whisper_model="large-v3",
-                output_dir=tmp,
-                gpt_model="mimo-v2.5",
-                kb_provider="bailian",
-                kb_model="qwen-plus",
-                kb_api_key="kb-key",
-                kb_base_url="https://kb.example.com/v1",
-            )
-            worker.run()
-
-        self.assertEqual(captured["kb_provider"], "bailian")
-        self.assertEqual(captured["kb_model"], "qwen-plus")
-        self.assertEqual(captured["kb_api_key"], "kb-key")
-        self.assertEqual(captured["kb_base_url"], "https://kb.example.com/v1")
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_worker_sets_bilibili_cookie_env(self):
-        """Single item GUI worker applies the configured Bilibili cookie path."""
-        from src.gui.workers.processing import Worker
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cookie_path = Path(tmp) / "cookies.txt"
-            cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
-            notes_path = Path(tmp) / "notes.md"
-            captured = {}
-
-            def fake_process(input_path, **kwargs):
-                captured["input"] = input_path
-                captured["cookies"] = os.environ.get("VIDEO_NOTES_BILIBILI_COOKIES")
-                notes_path.write_text("# Notes\n", encoding="utf-8")
-                return str(notes_path)
-
-            worker = Worker(
-                process_fn=fake_process,
-                input_path="https://www.bilibili.com/video/BV1",
-                whisper_model="large-v3",
-                output_dir=tmp,
-                gpt_model="mimo-v2.5",
-                bilibili_cookies=str(cookie_path),
-            )
-
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("VIDEO_NOTES_BILIBILI_COOKIES", None)
-                worker.run()
-
-        self.assertEqual(captured["input"], "https://www.bilibili.com/video/BV1")
-        self.assertEqual(captured["cookies"], str(cookie_path))
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_batch_worker_sets_bilibili_cookie_env(self):
-        """Batch GUI worker applies the configured Bilibili cookie path."""
-        from src.gui.workers.processing import BatchWorker
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cookie_path = Path(tmp) / "cookies.txt"
-            cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
-            captured = {}
-
-            def fake_process_url(input_path, **kwargs):
-                captured["input"] = input_path
-                captured["cookies"] = os.environ.get("VIDEO_NOTES_BILIBILI_COOKIES")
-                return str(Path(tmp) / "notes.md")
-
-            worker = BatchWorker(
-                process_url_fn=fake_process_url,
-                process_local_fn=lambda input_path, **kwargs: "",
-                items=[{"input": "https://www.bilibili.com/video/BV1"}],
-                whisper_model="large-v3",
-                output_dir=tmp,
-                gpt_model="mimo-v2.5",
-                bilibili_cookies=str(cookie_path),
-            )
-
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("VIDEO_NOTES_BILIBILI_COOKIES", None)
-                worker.run()
-
-        self.assertEqual(captured["input"], "https://www.bilibili.com/video/BV1")
-        self.assertEqual(captured["cookies"], str(cookie_path))
-
-    def _make_main_window_with_settings(self, settings):
-        """Create the main window with isolated persisted settings."""
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-        from PySide6.QtWidgets import QApplication
-        from src.gui.windows import main_window
-
-        app = QApplication.instance() or QApplication([])
-        self.addCleanup(app.processEvents)
-
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        settings_path = Path(tmp.name) / "settings.json"
-        settings_path.write_text(
-            json.dumps(settings, ensure_ascii=False),
-            encoding="utf-8",
+        state = ProcessingFormState(
+            file_path="video.mp4",
+            whisper_model="large-v3",
+            output_dir="./output",
+            ai_model="mimo-v2.5",
+            vision_enabled=True,
+            vision_provider="自定义",
+            vision_model="vision-model",
+            vision_api_key="vision-key",
+            vision_base_url="https://vision.example.com/v1",
+            ocr_enabled=True,
         )
 
-        with (
-            patch.object(main_window.MainWindow, "SETTINGS_PATH", str(settings_path)),
-            patch.object(main_window, "scan_models", return_value=["large-v3"]),
-            patch.object(main_window, "get_default_model_dir", return_value=str(tmp.name)),
-            patch("src.utils.check_ffmpeg", return_value=True),
-            patch("src.utils._get_tool_version", return_value="test"),
-        ):
-            window = main_window.MainWindow(lambda *a, **k: "", lambda *a, **k: "")
+        request = state.to_pipeline_request()
 
-        self.addCleanup(window.deleteLater)
-        return window
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_settings_restore_style_without_smart_summary_key(self):
-        """GUI restores style even when older settings lack smart_summary."""
-        window = self._make_main_window_with_settings({"style": "详细"})
-
-        self.assertEqual(window.style_combo.currentText(), "详细")
-        self.assertFalse(window.smart_summary_check.isChecked())
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_settings_restore_smart_summary_without_style_key(self):
-        """GUI restores smart_summary even when older settings lack style."""
-        window = self._make_main_window_with_settings({"smart_summary": True})
-
-        self.assertTrue(window.smart_summary_check.isChecked())
-
-    @pytest.mark.skip(reason="需要 PySide6/Qt GUI 环境，默认跳过")
-    def test_gui_settings_restore_bilibili_cookies_path(self):
-        """GUI restores configured Bilibili cookie path."""
-        cookie_path = "C:/Users/example/cookies.txt"
-        window = self._make_main_window_with_settings({"bilibili_cookies": cookie_path})
-
-        self.assertEqual(window.bilibili_cookies_edit.text(), cookie_path)
+        self.assertTrue(request.vision_enabled)
+        self.assertEqual(request.vision_provider, "自定义")
+        self.assertEqual(request.vision_model, "vision-model")
+        self.assertEqual(request.vision_api_key, "vision-key")
+        self.assertEqual(request.vision_base_url, "https://vision.example.com/v1")
+        self.assertTrue(request.ocr_enabled)
 
 
 if __name__ == "__main__":

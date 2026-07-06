@@ -122,6 +122,44 @@ class TestProviderFactory(TestCase):
             "mimo", api_key=None, base_url=None,
         )
 
+    @patch("src.application.providers.factory._load_adapter")
+    def test_create_vision_uses_loaded_adapter(self, mock_load_adapter):
+        adapter_cls = MagicMock()
+        mock_load_adapter.return_value = adapter_cls
+
+        cfg = _import_config()
+        config = cfg.ProviderConfig(
+            provider="bailian",
+            api_key="sk-vision",
+            base_url="https://vision.test",
+            model="qwen-vl",
+        )
+        self.factory.create_vision(config)
+
+        mock_load_adapter.assert_called_once_with(
+            "src.infrastructure.providers.vision_adapter",
+            "VisionProvider",
+        )
+        created_config = adapter_cls.call_args.kwargs["config"]
+        self.assertEqual(created_config.provider, "dashscope")
+        self.assertEqual(created_config.api_key, "sk-vision")
+        self.assertEqual(created_config.base_url, "https://vision.test")
+        self.assertEqual(created_config.model, "qwen-vl")
+
+    @patch("src.application.providers.factory._load_adapter")
+    def test_create_ocr_uses_loaded_adapter(self, mock_load_adapter):
+        adapter_cls = MagicMock()
+        mock_load_adapter.return_value = adapter_cls
+
+        result = self.factory.create_ocr()
+
+        mock_load_adapter.assert_called_once_with(
+            "src.infrastructure.providers.ocr_adapter",
+            "OCRProvider",
+        )
+        self.assertIs(result, adapter_cls.return_value)
+        self.assertEqual(adapter_cls.call_args.kwargs["config"].provider, "ocr")
+
 
 class TestPipelineRequestProviderConfig(TestCase):
     def _request(self, **kwargs):

@@ -53,12 +53,13 @@ class TaskSupervisor:
                 f"当前已有任务 {active[0]} 正在运行。首个正式版一次只执行一个任务。"
             )
 
-    @staticmethod
-    def _legacy_snapshot(job: JobRecord) -> dict:
-        output_dir = "./output"
+    def _legacy_snapshot(self, job: JobRecord) -> dict:
+        output_dir = self.job_queue.output_dir
         if job.job_dir:
-            # {output_dir}/.jobs/{uuid}
-            output_dir = os.path.dirname(os.path.dirname(job.job_dir)) or output_dir
+            parts = os.path.normpath(job.job_dir).split(os.sep)
+            if ".jobs" in parts:
+                # Legacy layout: {output_dir}/.jobs/{uuid}
+                output_dir = os.path.dirname(os.path.dirname(job.job_dir)) or output_dir
         request = PipelineRequest(input=job.input, title=job.title, output_dir=output_dir)
         return pipeline_request_to_snapshot(request)
 
@@ -115,6 +116,61 @@ class TaskSupervisor:
         )
         self._spawn(run_id, request)
         return run_id
+
+    def start_batch(self, requests: list[PipelineRequest]) -> list[int]:
+        """Create task records and run them sequentially in one worker thread."""
+        if not requests:
+            return []
+        self._assert_capacity()
+
+        run_ids: list[int] = []
+        for request in requests:
+            snapshot = pipeline_request_to_snapshot(request)
+            run_id = self.job_queue.enqueue(
+                input_path=request.input,
+                title=request.title,
+                request_snapshot=snapshot,
+            )
+            run_ids.append(run_id)
+
+        def _batch_worker() -> None:
+            try:
+                for run_id, request in zip(run_ids, requests):
+                    token = self.job_queue.get_token(run_id) or self.job_queue.create_token(run_id)
+                    try:
+                        result = self.orchestrator.run(
+                            request=request,
+                            resume_run_id=run_id,
+                            job_queue=self.job_queue,
+                            cancel_token=token,
+                        )
+                        self.job_queue.complete(
+                            run_id,
+                            notes_path=result.notes_path,
+                            transcript_path=result.transcript_path,
+                            elapsed_sec=result.elapsed_sec,
+                            frames_count=result.frames_count,
+                            note_id=result.note_id,
+                        )
+                    except TaskCancelledError:
+                        pass
+                    except Exception as exc:
+                        self.job_queue.fail(run_id, str(exc))
+            finally:
+                with self._lock:
+                    for run_id in run_ids:
+                        self._threads.pop(run_id, None)
+
+        thread = threading.Thread(
+            target=_batch_worker,
+            name=f"video-notes-batch-{run_ids[0]}",
+            daemon=True,
+        )
+        with self._lock:
+            for run_id in run_ids:
+                self._threads[run_id] = thread
+        thread.start()
+        return run_ids
 
     def resume(self, run_id: int) -> int:
         self._assert_capacity(run_id)

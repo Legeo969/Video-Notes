@@ -5,38 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import time
+from importlib import import_module
 
+from src.application.ports.media import MediaGateway
 from src.application.services.cleanup_manager import CleanupManager
 from src.domain.types import PipelineRequest
-from src.infrastructure.video.audio_extractor import extract_audio
-from src.utils.system import check_ffmpeg, check_ytdlp
 
 logger = logging.getLogger(__name__)
-
-def download_audio(*args, **kwargs):
-    """Lazy compatibility wrapper around the optional yt-dlp adapter."""
-    try:
-        from src.infrastructure.video.downloader import download_audio as _download_audio
-    except ModuleNotFoundError as exc:
-        if exc.name == "yt_dlp":
-            raise RuntimeError(
-                "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
-            ) from exc
-        raise
-    return _download_audio(*args, **kwargs)
-
-
-def download_video(*args, **kwargs):
-    """Lazy compatibility wrapper around the optional yt-dlp adapter."""
-    try:
-        from src.infrastructure.video.downloader import download_video as _download_video
-    except ModuleNotFoundError as exc:
-        if exc.name == "yt_dlp":
-            raise RuntimeError(
-                "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
-            ) from exc
-        raise
-    return _download_video(*args, **kwargs)
 
 
 class MediaResolver:
@@ -46,6 +21,14 @@ class MediaResolver:
     不能写入用户配置的输出根目录。这样即使任务正在运行，输出根目录也
     只包含 ``.jobs``、``.dl_tmp`` 等受管理目录和最终产物。
     """
+
+    def __init__(self, gateway: MediaGateway | None = None) -> None:
+        self._gateway = gateway or self._default_gateway()
+
+    @staticmethod
+    def _default_gateway() -> MediaGateway:
+        adapter = import_module("src.infrastructure.video.media_gateway")
+        return adapter.InfrastructureMediaGateway()
 
     @staticmethod
     def _prepare_temp_dir(
@@ -67,8 +50,8 @@ class MediaResolver:
         os.makedirs(temp_dir, exist_ok=True)
         return temp_dir, owned_job_dir
 
-    @staticmethod
     def resolve(
+        self,
         request: PipelineRequest,
         *,
         job_dir: str | None = None,
@@ -85,9 +68,9 @@ class MediaResolver:
             - URL 下载的视频与音频位于 ``job_dir/temp`` 内；
             - 本地视频保持原路径不动，提取音频位于 ``job_dir/temp``；
             - ``owned_files`` 仅用于兼容独立调用。正常管线依靠
-              ``CleanupManager.cleanup_temp(job_dir)`` 统一清理。
+            ``CleanupManager.cleanup_temp(job_dir)`` 统一清理。
         """
-        temp_dir, owned_job_dir = MediaResolver._prepare_temp_dir(request, job_dir)
+        temp_dir, owned_job_dir = self._prepare_temp_dir(request, job_dir)
         owned_files: list[str] = [owned_job_dir] if owned_job_dir else []
 
         is_url = request.input.startswith(("http://", "https://"))
@@ -95,20 +78,24 @@ class MediaResolver:
         if is_url:
             # Module-level wrappers import the optional Python adapter only
             # when an online job actually starts.
-            if not check_ytdlp():
+            if not self._gateway.check_ytdlp():
                 raise RuntimeError("yt-dlp 不可用，无法下载视频")
-            if not check_ffmpeg():
+            if not self._gateway.check_ffmpeg():
                 raise RuntimeError("FFmpeg 不可用，无法处理音频")
 
             need_video = request.vision_enabled or request.ocr_enabled
             if need_video:
                 started = time.time()
-                video_path = download_video(request.input, temp_dir, cookies=request.bilibili_cookies)
+                video_path = self._gateway.download_video(
+                    request.input,
+                    temp_dir,
+                    cookies=request.bilibili_cookies,
+                )
                 logger.info("⏱  视频下载耗时: %.1fs", time.time() - started)
 
                 started = time.time()
                 # 与下载文件放在同一受管理临时目录中，避免根目录出现 WAV。
-                audio_path = extract_audio(
+                audio_path = self._gateway.extract_audio(
                     video_path,
                     output_dir=os.path.dirname(video_path),
                 )
@@ -116,18 +103,22 @@ class MediaResolver:
                 return audio_path, video_path, owned_files
 
             started = time.time()
-            audio_path = download_audio(request.input, temp_dir, cookies=request.bilibili_cookies)
+            audio_path = self._gateway.download_audio(
+                request.input,
+                temp_dir,
+                cookies=request.bilibili_cookies,
+            )
             logger.info("⏱  音频下载耗时: %.1fs", time.time() - started)
             return audio_path, None, owned_files
 
         # ── 本地文件 ──
         if not os.path.isfile(request.input):
             raise FileNotFoundError(f"文件不存在: {request.input}")
-        if not check_ffmpeg():
+        if not self._gateway.check_ffmpeg():
             raise RuntimeError("FFmpeg 不可用，无法提取音频")
 
         started = time.time()
-        audio_path = extract_audio(request.input, output_dir=temp_dir)
+        audio_path = self._gateway.extract_audio(request.input, output_dir=temp_dir)
         logger.info("⏱  音频提取耗时: %.1fs", time.time() - started)
         # 用户原始视频永远不加入 owned_files，也不会被清理。
         return audio_path, request.input, owned_files

@@ -1,18 +1,21 @@
 {
   "component": "ffmpeg-tools",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "FFmpeg + FFprobe 工具",
-  "sha256": "",
-  "signature": "",
+  "sha256": "1c9b808e3df89d7282b9d15abeae4bcc59e28a77b229b17d4fe36a7f2fa071cd",
+  "signature": "ed25519:+dxAJ9nXeI9L5U43A1p2wE9p6oeM7VSD+Lg/s8io1OqbWZgHuS5IHq6+dItb/lpt5mK60w8hoWrMuoE+imPdDQ==",
   "size_mb": 50,
   "requires": {
-    "base-engine": ">=1.2.0 <2.0.0"
+    "base-engine": ">=1.5.0 <2.0.0"
   },
-  "provides": ["ffmpeg"],
+  "provides": [
+    "ffmpeg"
+  ],
   "files": [
     "ffmpeg.exe",
     "ffprobe.exe"
-  ]
+  ],
+  "package_sha256": "523ba9101bd9e92b06658231c58b74c267b8a1ccc020dce0452832d449477133"
 }

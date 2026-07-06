@@ -7,8 +7,9 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from importlib import import_module
 
-from src.infrastructure.db.repositories.collection_repository import CollectionRepository
+from src.application.ports.collections import CollectionRepositoryPort
 
 from .models import CollectionItem, CollectionRecord, CollectionStatus
 
@@ -29,6 +30,11 @@ def generate_collection_id(title: str) -> str:
     return f"col-{h}"
 
 
+def _create_collection_repository(conn) -> CollectionRepositoryPort:
+    module = import_module("src.infrastructure.db.repositories.collection_repository")
+    return module.CollectionRepository(conn)
+
+
 # ── CollectionService ───────────────────────────────────────
 
 class CollectionService:
@@ -37,9 +43,13 @@ class CollectionService:
     所有方法直接使用 sqlite3.Connection，由调用方管理事务。
     """
 
-    def __init__(self, conn):
+    def __init__(
+        self,
+        conn,
+        repository: CollectionRepositoryPort | None = None,
+    ):
         self.conn = conn
-        self._repo = CollectionRepository(conn)
+        self._repo = repository or _create_collection_repository(conn)
 
     # ── CRUD ─────────────────────────────────────────────
 

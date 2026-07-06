@@ -7,6 +7,22 @@ import base64
 from src.config.constants import DEFAULT_SETTINGS_DIRNAME, DEFAULT_SETTINGS_FILENAME
 
 
+def get_default_export_dir() -> str:
+    """Return a stable user-visible export directory.
+
+    Desktop sidecars run with an AppData working directory, so a relative
+    ``./output`` default would create invisible products under AppData.
+    CLI callers can still pass ``--output ./output`` explicitly.
+    """
+    override = os.environ.get("VIDEO_NOTES_DEFAULT_OUTPUT_DIR", "").strip()
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+    if os.name == "nt":
+        home = os.path.expanduser("~")
+        return os.path.join(home, "Documents", "Video Notes AI", "exports")
+    return os.path.join(os.path.expanduser("~"), "Video Notes AI", "exports")
+
+
 def get_settings_path() -> str:
     """Return the per-user settings JSON path.
 

@@ -1,10 +1,34 @@
-"""Provider 抽象基类、配置、工厂和 LLM 实现。
+"""Provider compatibility exports."""
 
-Note: base.py, ocr.py and vision.py remain in src.core.providers (not migrated yet).
-"""
-from src.domain.interfaces.provider import Provider, ProviderConfig  # noqa: F401
-from src.infrastructure.providers.ocr_adapter import OCRProvider  # noqa: F401
-from src.infrastructure.providers.vision_adapter import VisionProvider  # noqa: F401
-from src.infrastructure.providers.mimo import MimoProvider  # noqa: F401
-from src.infrastructure.providers.dashscope import DashScopeProvider  # noqa: F401
-from src.infrastructure.providers.openai_compat import OpenAICompatProvider  # noqa: F401
+from __future__ import annotations
+
+from importlib import import_module
+
+from src.domain.interfaces.provider import Provider, ProviderConfig
+
+_EXPORTS = {
+    "OCRProvider": ("src.infrastructure.providers.ocr_adapter", "OCRProvider"),
+    "VisionProvider": ("src.infrastructure.providers.vision_adapter", "VisionProvider"),
+    "MimoProvider": ("src.infrastructure.providers.mimo", "MimoProvider"),
+    "DashScopeProvider": ("src.infrastructure.providers.dashscope", "DashScopeProvider"),
+    "OpenAICompatProvider": (
+        "src.infrastructure.providers.openai_compat",
+        "OpenAICompatProvider",
+    ),
+}
+
+__all__ = [
+    "Provider",
+    "ProviderConfig",
+    *_EXPORTS,
+]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(name) from exc
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value

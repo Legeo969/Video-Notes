@@ -18,17 +18,22 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib import import_module
 from pathlib import Path
 from typing import Optional
 
+from src.application.ports.provenance import ProvenanceStore
 from src.application.provenance.models import SourceRef, ProvenanceBlock
 from src.application.provenance.linker import SourceLinker
-from src.infrastructure.db.gateway import DatabaseGateway
-from src.infrastructure.db.repositories.provenance_repository import ProvenanceRepository
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _create_provenance_store(db_path: str) -> ProvenanceStore:
+    module = import_module("src.infrastructure.db.provenance_store")
+    return module.SqliteProvenanceStore(db_path)
 
 
 @dataclass
@@ -57,6 +62,7 @@ class ProvenanceIndexer:
         self,
         db_path: str,
         linker: SourceLinker | None = None,
+        store: ProvenanceStore | None = None,
     ):
         """初始化索引器。
 
@@ -66,6 +72,7 @@ class ProvenanceIndexer:
         """
         self._db_path = db_path
         self._linker = linker or SourceLinker()
+        self._store = store or _create_provenance_store(db_path)
 
     # ── 主入口 ──────────────────────────────────────────────
 
@@ -222,8 +229,7 @@ class ProvenanceIndexer:
 
     def _clear_job(self, job_id: str) -> None:
         """删除指定 job 的所有 provenance 记录（幂等）。"""
-        with DatabaseGateway(self._db_path).connection() as conn:
-            ProvenanceRepository(conn).clear_job(job_id)
+        self._store.clear_job(job_id)
 
     # ── video_sources ───────────────────────────────────────
 
@@ -236,10 +242,9 @@ class ProvenanceIndexer:
         duration: float | None,
         local_video_path: str | None,
     ) -> None:
-        with DatabaseGateway(self._db_path).connection() as conn:
-            ProvenanceRepository(conn).index_video_source(
-                job_id, source_type, source_uri, title, duration, local_video_path,
-            )
+        self._store.index_video_source(
+            job_id, source_type, source_uri, title, duration, local_video_path
+        )
 
     # ── transcript_segments ─────────────────────────────────
 
@@ -271,8 +276,7 @@ class ProvenanceIndexer:
             }
             for i, s in enumerate(segments)
         ]
-        with DatabaseGateway(self._db_path).connection() as conn:
-            return ProvenanceRepository(conn).index_transcript_segments(job_id, segment_dicts)
+        return self._store.index_transcript_segments(job_id, segment_dicts)
 
     # ── frame_assets ────────────────────────────────────────
 
@@ -310,10 +314,8 @@ class ProvenanceIndexer:
                     "text": text,
                     "confidence": item.get("ocr_confidence"),
                 })
-        with DatabaseGateway(self._db_path).connection() as conn:
-            repo = ProvenanceRepository(conn)
-            frame_count = repo.index_frame_assets(job_id, frame_rows)
-            ocr_count = repo.index_ocr_results(job_id, ocr_rows)
+        frame_count = self._store.index_frame_assets(job_id, frame_rows)
+        ocr_count = self._store.index_ocr_results(job_id, ocr_rows)
         return frame_count, ocr_count
 
     def _index_frames(self, job_id: str, job_dir: str) -> int:
@@ -356,8 +358,7 @@ class ProvenanceIndexer:
                 "path": fp,
             })
 
-        with DatabaseGateway(self._db_path).connection() as conn:
-            return ProvenanceRepository(conn).index_frame_assets(job_id, frames)
+        return self._store.index_frame_assets(job_id, frames)
 
     # ── knowledge_blocks + block_sources ────────────────────
 
@@ -366,20 +367,8 @@ class ProvenanceIndexer:
 
         同时尝试更新 note_id_int（从 notes 表映射）。
         """
-        with DatabaseGateway(self._db_path).connection() as conn:
-            conn.execute(
-                """UPDATE knowledge_blocks
-                   SET note_id_int = (
-                       SELECT n.id FROM notes n
-                       WHERE n.rel_path = knowledge_blocks.note_id
-                   )
-                   WHERE note_id_int IS NULL
-                     AND job_id = ?
-                     AND note_id IS NOT NULL
-                     AND note_id != ''""",
-                (job_id,),
-            )
-            return ProvenanceRepository(conn).load_blocks_for_job(job_id)
+        self._store.update_block_note_links(job_id)
+        return self._store.load_blocks_for_job(job_id)
 
     def _link_and_save_sources(
         self, job_id: str, blocks: list[dict], job_dir: str,
@@ -414,21 +403,17 @@ class ProvenanceIndexer:
                     "quote": src.quote,
                 })
 
-        with DatabaseGateway(self._db_path).connection() as conn:
-            repo = ProvenanceRepository(conn)
-            repo.link_block_sources(all_block_sources)
+        self._store.link_block_sources(all_block_sources)
 
         return len(all_block_sources)
 
     def _load_transcript_segments(self, job_id: str) -> list[dict]:
         """从 DB 读取转写分段。"""
-        with DatabaseGateway(self._db_path).connection() as conn:
-            return ProvenanceRepository(conn).load_transcript_segments(job_id)
+        return self._store.load_transcript_segments(job_id)
 
     def _load_frame_assets(self, job_id: str) -> list[dict]:
         """从 DB 读取帧资产。"""
-        with DatabaseGateway(self._db_path).connection() as conn:
-            return ProvenanceRepository(conn).load_frame_assets(job_id)
+        return self._store.load_frame_assets(job_id)
 
     # ── 状态查询 ────────────────────────────────────────────
 
@@ -445,54 +430,30 @@ class ProvenanceIndexer:
             total_sources: int      — block_sources 总行数
             is_citation_ready: bool — 能否生成 citations
         """
-        with DatabaseGateway(self._db_path).connection() as conn:
-            repo = ProvenanceRepository(conn)
-            counts = repo.check_provenance_status(job_id)
+        counts = self._store.check_provenance_status(job_id)
+        total_blocks = self._store.count_blocks(job_id)
+        blocks_with_sources = self._store.count_blocks_with_sources(job_id)
+        indexed = counts["transcript_segments"] > 0 or counts["frame_assets"] > 0
+        citation_ready = indexed and blocks_with_sources > 0
 
-            total_blocks = conn.execute(
-                "SELECT COUNT(*) as n FROM knowledge_blocks WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()["n"]
-
-            blocks_with_sources = conn.execute(
-                """SELECT COUNT(DISTINCT kb.id) as n
-                   FROM knowledge_blocks kb
-                   INNER JOIN block_sources bs ON bs.block_id = kb.id
-                   WHERE kb.job_id = ?""",
-                (job_id,),
-            ).fetchone()["n"]
-
-            indexed = counts["transcript_segments"] > 0 or counts["frame_assets"] > 0
-            citation_ready = indexed and blocks_with_sources > 0
-
-            return {
-                "indexed": indexed,
-                "segments": counts["transcript_segments"],
-                "frames": counts["frame_assets"],
-                "ocr": counts["ocr_results"],
-                "blocks_with_sources": blocks_with_sources,
-                "total_blocks": total_blocks,
-                "total_sources": counts["block_sources"],
-                "is_citation_ready": citation_ready,
-            }
+        return {
+            "indexed": indexed,
+            "segments": counts["transcript_segments"],
+            "frames": counts["frame_assets"],
+            "ocr": counts["ocr_results"],
+            "blocks_with_sources": blocks_with_sources,
+            "total_blocks": total_blocks,
+            "total_sources": counts["block_sources"],
+            "is_citation_ready": citation_ready,
+        }
 
     def check_all_jobs_provenance(self) -> list[dict]:
         """检查所有已完成的 job 的 provenance 状态。
 
         返回 list[dict]，每项含 job_id + provenance status 字段。
         """
-        job_ids: list[str] = []
-        with DatabaseGateway(self._db_path).connection() as conn:
-            rows = conn.execute(
-                """SELECT DISTINCT job_id FROM knowledge_blocks WHERE job_id IS NOT NULL AND job_id != ''
-                   UNION
-                   SELECT DISTINCT job_id FROM transcript_segments
-                   ORDER BY job_id""",
-            ).fetchall()
-            job_ids = [r["job_id"] for r in rows]
-
         results: list[dict] = []
-        for jid in job_ids:
+        for jid in self._store.list_indexed_job_ids():
             pv = self.check_provenance_status(jid)
             pv["job_id"] = jid
             results.append(pv)

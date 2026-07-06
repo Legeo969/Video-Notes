@@ -34,8 +34,20 @@
     detail: string;
   }
 
+  interface StorageStatus {
+    export_dir: string;
+    state_dir: string;
+    db_path: string;
+    jobs_root: string;
+    legacy_jobs_root: string;
+    vault_path: string;
+    sizes: Record<string, number>;
+    counts: Record<string, { dirs: number; files: number }>;
+  }
+
   interface SettingsBag {
     output_dir: string;
+    vault_path: string;
     whisper_model: string;
     whisper_model_dir: string;
     whisper_device: string;
@@ -109,6 +121,7 @@
   let activeTab = $state("general");
   let settings = $state<SettingsBag>({
     output_dir: "./output",
+    vault_path: "",
     whisper_model: "large-v3",
     whisper_model_dir: "",
     whisper_device: "auto",
@@ -129,6 +142,8 @@
   let testingProvider = $state<string | null>(null);
   let doctorRunning = $state(false);
   let bundlingDiagnostics = $state(false);
+  let storageLoading = $state(false);
+  let storageStatus = $state<StorageStatus | null>(null);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
 
@@ -167,10 +182,11 @@
         engineCall<TemplateInfo[]>("settings.templates.list"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local").catch(() => []),
       ]);
-      settings = { ...s, whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
+      settings = { ...s, vault_path: s.vault_path ?? "", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
       providers = provs;
       templates = tmpls;
       localWhisperModels = normalizeLocalWhisperModels(localModels);
+      refreshStorageStatus();
     } catch (e: any) {
       showToast(`加载设置失败：${e?.message ?? e}`, "error");
     } finally { loading = false; }
@@ -213,6 +229,7 @@
       await engineCall("settings.update", {
         patches: {
           output_dir: settings.output_dir,
+          vault_path: settings.vault_path,
           whisper_model: settings.whisper_model,
           whisper_model_dir: settings.whisper_model_dir,
           whisper_device: settings.whisper_device,
@@ -398,6 +415,55 @@
     finally { bundlingDiagnostics = false; }
   }
 
+  function formatBytes(bytes = 0) {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = bytes / 1024;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024;
+      index += 1;
+    }
+    return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
+  }
+
+  async function refreshStorageStatus() {
+    storageLoading = true;
+    try {
+      storageStatus = await engineCall<StorageStatus>("storage.status");
+    } catch (e: any) {
+      showToast(`读取存储状态失败：${e?.message ?? e}`, "error");
+    } finally {
+      storageLoading = false;
+    }
+  }
+
+  async function cleanupOrphanWorkspaces() {
+    storageLoading = true;
+    try {
+      const result = await engineCall<{ removed: number }>("storage.cleanup_orphans", { min_age_hours: 0 });
+      showToast(`已清理 ${result.removed} 个孤儿任务缓存`, "success");
+      await refreshStorageStatus();
+    } catch (e: any) {
+      showToast(`清理孤儿任务缓存失败：${e?.message ?? e}`, "error");
+    } finally {
+      storageLoading = false;
+    }
+  }
+
+  async function cleanupCompletedWorkspaces() {
+    storageLoading = true;
+    try {
+      const result = await engineCall<{ removed: number }>("storage.cleanup_completed");
+      showToast(`已清理 ${result.removed} 个已完成任务缓存`, "success");
+      await refreshStorageStatus();
+    } catch (e: any) {
+      showToast(`清理已完成任务缓存失败：${e?.message ?? e}`, "error");
+    } finally {
+      storageLoading = false;
+    }
+  }
+
   $effect(() => { loadAll(); });
 </script>
 
@@ -438,11 +504,28 @@
             <div class="setting-group">
               <div class="group-head"><div class="group-icon"><Icon name="folder" size={18} /></div><div><h3>文件与模型目录</h3><p>配置笔记产物与本地模型的存储位置。</p></div></div>
               <div class="form-grid two-cols">
-                <div class="field"><label class="field-label" for="output_dir">输出目录 <small>生成的笔记和中间产物</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder-open" size={15} /></span><input id="output_dir" type="text" bind:value={settings.output_dir} oninput={markDirty} placeholder="D:\VideoNotes\output" /></div></div>
+                <div class="field"><label class="field-label" for="vault_path">Obsidian 笔记库 <small>可选，归档到 vault\video-notes</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder" size={15} /></span><input id="vault_path" type="text" bind:value={settings.vault_path} oninput={markDirty} placeholder="D:\Note_Obsidian" /></div></div>
+                <div class="field"><label class="field-label" for="output_dir">导出目录 <small>最终笔记、转录、字幕和帧图</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder-open" size={15} /></span><input id="output_dir" type="text" bind:value={settings.output_dir} oninput={markDirty} placeholder="D:\VideoNotes\exports" /></div></div>
                 <div class="field"><label class="field-label" for="whisper_model_dir">Whisper 模型目录 <small>可选</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="database" size={15} /></span><input id="whisper_model_dir" type="text" bind:value={settings.whisper_model_dir} oninput={markDirty} placeholder="留空使用默认缓存目录" /></div></div>
               </div>
             </div>
 
+
+            <div class="setting-group">
+              <div class="group-head with-action"><div class="group-icon"><Icon name="database" size={18} /></div><div><h3>存储管理</h3><p>应用状态在 AppData，导出目录只保存用户可见产物。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={refreshStorageStatus} disabled={storageLoading}><Icon name="refresh" size={13} />刷新</button></div>
+              {#if storageStatus}
+                <div class="storage-grid">
+                  <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.export_bytes)}</strong><small>{storageStatus.export_dir}</small></div>
+                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db_bytes)}</strong><small>{storageStatus.db_path}</small></div>
+                  <div><span>任务缓存</span><strong>{formatBytes(storageStatus.sizes.jobs_bytes + storageStatus.sizes.legacy_jobs_bytes)}</strong><small>{storageStatus.jobs_root}</small></div>
+                  <div><span>Obsidian Vault</span><strong>{storageStatus.vault_path ? "已配置" : "未配置"}</strong><small>{storageStatus.vault_path || "未配置"}</small></div>
+                </div>
+              {/if}
+              <div class="storage-actions">
+                <button class="btn btn-secondary" type="button" onclick={cleanupOrphanWorkspaces} disabled={storageLoading}><Icon name="trash" size={14} />清理孤儿任务缓存</button>
+                <button class="btn btn-secondary" type="button" onclick={cleanupCompletedWorkspaces} disabled={storageLoading}><Icon name="check" size={14} />清理已完成任务缓存</button>
+              </div>
+            </div>
 
             <div class="setting-group online-video-settings">
               <div class="group-head"><div class="group-icon"><Icon name="link" size={18} /></div><div><h3>在线视频下载与 Cookie</h3><p>用于 B站等需要登录态的视频下载。公开免费视频可留空。</p></div></div>
@@ -1006,5 +1089,12 @@
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   @media (max-width: 1180px) { .interactive-model-cards { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .storage-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
+  .storage-grid span { color: var(--text-tertiary); font-size: 11px; font-weight: 750; }
+  .storage-grid strong { font-size: 15px; }
+  .storage-grid small { overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .storage-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   @media (max-width: 760px) { .runtime-settings-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 760px) { .storage-grid { grid-template-columns: 1fr; } }
 </style>

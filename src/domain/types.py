@@ -356,7 +356,7 @@ class PipelineRequest:
     # ── ProviderConfig 工厂方法 ──
 
     def main_llm_config(self):
-        from src.application.providers.config import ProviderConfig
+        from src.domain.interfaces.provider import ProviderConfig
         return ProviderConfig(
             provider=self.provider or "mimo",
             api_key=self.api_key,
@@ -365,7 +365,7 @@ class PipelineRequest:
         )
 
     def vision_llm_config(self):
-        from src.application.providers.config import ProviderConfig
+        from src.domain.interfaces.provider import ProviderConfig
         if not self.vision_provider:
             return None
         return ProviderConfig(

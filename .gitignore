@@ -20,6 +20,8 @@ _internal/
 *.exe
 *.patched.exe
 *.bak
+release-keys/
+runtime/packages/
 
 # Project output
 output/

@@ -34,3 +34,16 @@ def test_notes_handlers_keep_database_open_for_request(tmp_path: Path) -> None:
 
     by_path = handlers["notes.get_by_path"]({"path": "demo.md"})
     assert by_path["id"] == note_id
+
+    search_rows = handlers["notes.search"]({"query": "Demo"})
+    assert search_rows[0]["id"] == note_id
+
+    assert handlers["notes.update"]({"id": note_id, "content": "# Updated"}) is True
+    updated = handlers["notes.get"]({"id": note_id})
+    assert updated["content"] == "# Updated"
+
+    for method in ("notes.open", "notes.reveal"):
+        assert method in handlers
+
+    assert handlers["notes.delete"]({"id": note_id}) is True
+    assert handlers["notes.list"]({}) == []

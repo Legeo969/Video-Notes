@@ -9,6 +9,7 @@ import sys
 from typing import Any, Callable
 
 from src.api.protocol.version import ENGINE_VERSION, PROTOCOL_VERSION
+from src.utils.runtime import RuntimeCapabilities
 
 
 def create_system_handlers(
@@ -81,9 +82,24 @@ def create_system_handlers(
             "status": "running",
         }
 
+    def handle_capabilities(params: dict[str, Any]) -> dict[str, bool]:
+        """system.capabilities — 返回当前运行时能力。"""
+        caps = RuntimeCapabilities.detect()
+        return {
+            "ffmpeg": caps.has_ffmpeg,
+            "ytdlp": caps.has_ytdlp,
+            "whisper": caps.has_whisper,
+            "whisper_cpp": caps.has_whisper_cpp,
+            "ocr": caps.has_ocr,
+            "cuda": caps.has_cuda,
+            "vision": caps.has_vision,
+            "gui": caps.has_gui,
+        }
+
     return {
         "system.ping": handle_ping,
         "system.info": handle_info,
         "system.shutdown": handle_shutdown,
         "system.snapshot": handle_snapshot,
+        "system.capabilities": handle_capabilities,
     }

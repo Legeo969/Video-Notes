@@ -116,6 +116,7 @@ impl EngineManager {
                 self.last_error = Some(message.clone());
                 return Err(message);
             }
+            configure_private_engine_env(&mut cmd, &working_dir, &self.app_handle);
             cmd.current_dir(&working_dir);
         }
 
@@ -537,16 +538,46 @@ pub fn resolve_engine_path(app_handle: &AppHandle) -> (String, Vec<String>, Opti
 /// system-wide installations behave the same way.
 fn production_engine_working_dir(app_handle: &AppHandle) -> PathBuf {
     if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(base)
-            .join("Video Notes AI")
-            .join("engine-runtime");
+        return PathBuf::from(base).join("Video Notes AI");
     }
 
     app_handle
         .path()
         .app_local_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("Video Notes AI"))
-        .join("engine-runtime")
+}
+
+fn configure_private_engine_env(
+    cmd: &mut Command,
+    working_dir: &PathBuf,
+    app_handle: &AppHandle,
+) {
+    let data_dir = working_dir;
+    let state_dir = data_dir.join("state");
+    cmd.env("VIDEO_NOTES_DATA_DIR", data_dir)
+        .env("VIDEO_NOTES_STATE_DIR", &state_dir)
+        .env("VIDEO_NOTES_JOBS_DIR", data_dir.join("jobs"))
+        .env("VIDEO_NOTES_SETTINGS_PATH", state_dir.join("settings.json"))
+        .env("VIDEO_NOTES_DEFAULT_OUTPUT_DIR", default_export_dir(app_handle));
+}
+
+fn default_export_dir(app_handle: &AppHandle) -> PathBuf {
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        let trimmed = user_profile.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed)
+                .join("Documents")
+                .join("Video Notes AI")
+                .join("exports");
+        }
+    }
+
+    app_handle
+        .path()
+        .document_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("Video Notes AI")
+        .join("exports")
 }
 
 /// Locate a source checkout when a release executable is launched directly

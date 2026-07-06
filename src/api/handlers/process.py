@@ -6,6 +6,9 @@ Handlers validate API input and delegate all worker ownership to
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from src.api.event_journal import EventJournal
@@ -14,6 +17,7 @@ from src.application.services.job_queue import JobQueue, get_default_db_path
 from src.application.services.orchestrator import PipelineOrchestrator
 from src.application.services.task_supervisor import TaskSupervisor
 from src.config.settings import (
+    get_default_export_dir,
     get_settings_path,
     load_settings,
     resolve_provider_binding_from_settings,
@@ -71,12 +75,14 @@ def _build_request(params: dict[str, Any]) -> PipelineRequest:
         supplied = params.get(name)
         return supplied if supplied is not None else default
 
+    vault_path = str(value("vault_path", settings.get("vault_path")) or "").strip() or None
+
     request = PipelineRequest(
         input=input_src,
         title=value("title"),
         whisper_model=value("whisper_model", settings.get("whisper_model", "large-v3")),
         language=value("language"),
-        output_dir=value("output_dir", settings.get("output_dir", "./output")),
+        output_dir=value("output_dir", settings.get("output_dir") or get_default_export_dir()),
         model_dir=value("model_dir", settings.get("whisper_model_dir") or settings.get("model_dir")),
         whisper_device=value("whisper_device", settings.get("whisper_device", "auto")),
         whisper_compute_type=value("whisper_compute_type", settings.get("whisper_compute_type", "auto")),
@@ -103,7 +109,7 @@ def _build_request(params: dict[str, Any]) -> PipelineRequest:
         provider=value("provider", llm.get("type") or None),
         api_key=value("api_key", llm.get("api_key") or None),
         base_url=value("base_url", llm.get("base_url") or None),
-        vault_path=value("vault_path", settings.get("vault_path")),
+        vault_path=vault_path,
         bilibili_cookies=value("bilibili_cookies", settings.get("bilibili_cookies") or settings.get("bilibili_cookie_file")),
         export_mode=value("export_mode", settings.get("export_mode", "clean")),
         artifact_layout=value("artifact_layout", "versioned"),
@@ -122,7 +128,8 @@ def create_process_handlers(
     """Create the process API surface with one shared runtime owner."""
     orchestrator = orchestrator or PipelineOrchestrator()
     job_queue = job_queue or JobQueue(
-        db_path=get_default_db_path("./output"), output_dir="./output"
+        db_path=get_default_db_path(get_default_export_dir()),
+        output_dir=get_default_export_dir(),
     )
     supervisor = supervisor or TaskSupervisor(orchestrator, job_queue)
 
@@ -181,6 +188,23 @@ def create_process_handlers(
         get_job(run_id)
         return journal.events_since(run_id, int(params.get("after_id", 0) or 0))
 
+    def handle_open_output(params: dict[str, Any]) -> str:
+        job = get_job(_run_id(params))
+        path = str(job.output_path or job.job_dir or "").strip()
+        if not path:
+            raise InvalidParams("job has no output path")
+        target = Path(path)
+        if not target.exists():
+            raise InvalidParams(f"output path does not exist: {path}")
+        open_target = target if target.is_dir() else target.parent
+        try:
+            os.startfile(str(open_target))  # type: ignore[attr-defined]
+        except AttributeError:
+            subprocess.Popen(["open", str(open_target)])
+        except OSError as exc:
+            raise InvalidParams(str(exc)) from exc
+        return str(open_target)
+
     def handle_delete(params: dict[str, Any]) -> bool:
         try:
             return job_queue.delete_job(_run_id(params))
@@ -199,6 +223,8 @@ def create_process_handlers(
         "process.list": handle_list,
         "process.get": handle_get,
         "process.events": handle_events,
+        "process.events_since": handle_events,
+        "process.open_output": handle_open_output,
         "process.delete": handle_delete,
         "process.permanent_clean": handle_permanent_clean,
     }
