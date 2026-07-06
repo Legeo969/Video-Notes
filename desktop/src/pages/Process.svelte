@@ -19,7 +19,9 @@
   let linkSource = $state("");
   let title = $state("");
   let whisperModel = $state("large-v3");
+  let transcriptionBackend = $state<"whisper_cpp" | "faster_whisper">("whisper_cpp");
   let ocrEnabled = $state(false);
+  let ocrBackend = $state<"tesseract" | "paddleocr">("tesseract");
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
@@ -54,7 +56,9 @@
       const [settings, discovered] = await Promise.all([
         engineCall<{
           whisper_model?: string;
+          transcription_backend?: string;
           ocr_enabled?: boolean;
+          ocr_backend?: string;
           vision_enabled?: boolean;
           active_provider?: string;
           whisper_device?: string;
@@ -65,10 +69,12 @@
       const normalizedModels = normalizeLocalWhisperModels(discovered);
       localWhisperModels = normalizedModels;
       const preferred = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
+      transcriptionBackend = (settings.transcription_backend === "faster_whisper" ? "faster_whisper" : "whisper_cpp");
       whisperModel = normalizedModels.some((model) => model.id === preferred)
         ? preferred
         : normalizedModels[0]?.id || preferred;
       ocrEnabled = Boolean(settings.ocr_enabled);
+      ocrBackend = settings.ocr_backend === "paddleocr" ? "paddleocr" : "tesseract";
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
@@ -167,8 +173,10 @@
       const result = await engineCall<{ job_id: number }>("process.start", {
         input,
         title: title.trim() || undefined,
+        transcription_backend: transcriptionBackend,
         whisper_model: normalizeWhisperModelId(whisperModel),
         ocr_enabled: ocrEnabled,
+        ocr_backend: ocrBackend,
         vision_enabled: visionEnabled,
         whisper_device: whisperDevice,
         whisper_compute_type: whisperComputeType,
@@ -327,8 +335,15 @@
 
           <div class="whisper-runtime-grid">
             <div class="field">
+              <label class="field-label" for="task-transcription-backend">转写后端</label>
+              <select id="task-transcription-backend" bind:value={transcriptionBackend}>
+                <option value="whisper_cpp">whisper.cpp native CLI</option>
+                <option value="faster_whisper">faster-whisper Python component</option>
+              </select>
+            </div>
+            <div class="field">
               <label class="field-label" for="task-whisper-device">运行设备</label>
-              <select id="task-whisper-device" bind:value={whisperDevice}>
+              <select id="task-whisper-device" bind:value={whisperDevice} disabled={transcriptionBackend === "whisper_cpp"}>
                 <option value="auto">自动：优先 CUDA，可降级 CPU</option>
                 <option value="cuda">CUDA / GPU：不可用时报错</option>
                 <option value="cpu">CPU</option>
@@ -336,7 +351,7 @@
             </div>
             <div class="field">
               <label class="field-label" for="task-whisper-compute">计算精度</label>
-              <select id="task-whisper-compute" bind:value={whisperComputeType}>
+              <select id="task-whisper-compute" bind:value={whisperComputeType} disabled={transcriptionBackend === "whisper_cpp"}>
                 <option value="auto">自动：CUDA=float16，CPU=int8</option>
                 <option value="float16">float16（CUDA 推荐）</option>
                 <option value="int8_float16">int8_float16（CUDA 低显存）</option>
@@ -356,6 +371,15 @@
               <span class="switch-track"></span>
             </span>
           </button>
+
+          <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
+            <div class="enhance-icon"><Icon name="scan" size={20} /></div>
+            <div class="enhance-copy"><strong>OCR 后端</strong><span>{ocrBackend === "tesseract" ? "native executable" : "Python component"}</span></div>
+            <select bind:value={ocrBackend} disabled={!ocrEnabled}>
+              <option value="tesseract">Tesseract native</option>
+              <option value="paddleocr">PaddleOCR</option>
+            </select>
+          </label>
 
           <button type="button" class="enhancement-card" class:enabled={visionEnabled} class:disabled={!activeProvider} onclick={() => activeProvider && (visionEnabled = !visionEnabled)} aria-pressed={visionEnabled} disabled={!activeProvider}>
             <div class="enhance-icon"><Icon name="eye" size={20} /></div>
@@ -482,11 +506,14 @@
   .input-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 
 
-  .enhancement-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .enhancement-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .enhancement-card { display: flex; align-items: center; gap: 11px; min-height: 76px; padding: 13px; border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .15s, background .15s; appearance: none; font: inherit; }
   .enhancement-card:hover { border-color: var(--border-strong); background: var(--bg-subtle); }
   .enhancement-card.enabled { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)); background: var(--accent-faint); }
   .enhancement-card.disabled { opacity: .62; cursor: not-allowed; }
+  .ocr-backend-card { cursor: default; }
+  .ocr-backend-card[aria-disabled="true"] { opacity: .62; }
+  .ocr-backend-card select { width: 142px; min-width: 0; }
   .task-preflight { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 11px; color: var(--text-secondary); background: var(--bg-subtle); font-size: 13px; line-height: 1.55; }
   .enhance-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 11px; color: var(--text-secondary); background: var(--bg-muted); }
   .enabled .enhance-icon { color: var(--accent-color); background: var(--accent-soft); }
@@ -662,6 +689,7 @@
   @media (max-width: 900px) { .model-picker-control { grid-template-columns: 1fr; } }
 .url-input { width: 100%; min-width: 0; }
   .link-source-card { align-items: start; }
-  .whisper-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
+  .whisper-runtime-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
+  @media (max-width: 980px) { .enhancement-grid { grid-template-columns: 1fr; } .ocr-backend-card select { width: 100%; } }
   @media (max-width: 760px) { .whisper-runtime-grid { grid-template-columns: 1fr; } }
 </style>

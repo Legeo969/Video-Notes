@@ -1645,3 +1645,15 @@ Component Manager
 ```
 
 不再因为修改按钮、页面或业务代码而重新打包全部 CUDA、PaddleOCR 和 Whisper 运行时。
+
+## 22. Runtime Payload 构建脚本
+
+组件发布前先运行 `prepare_runtime_payload_sources.ps1` 准备隔离来源，并写出
+`payload-source-map.json`。
+
+随后由 `stage_runtime_payloads.py` 将来源复制到 `runtime/packages/<component>`，
+再由 `verify_runtime_payloads.py` 校验 manifest files、缺失文件和非法路径。
+
+`download-tools` 使用官方 `yt-dlp.exe` standalone executable；`ffmpeg-tools`
+使用 `ffmpeg.exe` / `ffprobe.exe`。两者都按 native tool component 管理，
+不作为 Python package 进入 base runtime。

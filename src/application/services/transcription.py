@@ -29,9 +29,14 @@ class TranscriptionService:
         result = SpeechTranscriber(
             model_size=request.whisper_model,
             model_dir=request.model_dir,
+            device=request.whisper_device,
+            compute_type=request.whisper_compute_type,
+            backend=request.transcription_backend,
         ).transcribe(
             audio_path,
             language=request.language,
+            beam_size=request.beam_size,
+            vad_filter=request.vad_filter,
         )
         segments = [
             {

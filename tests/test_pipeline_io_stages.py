@@ -268,6 +268,7 @@ class TestExtractFramesStage:
             max_frames=20,
             transcript_segments=[{"start": 0, "end": 1, "text": "test"}],
             ocr_enabled=False,
+            ocr_backend="tesseract",
         )
         assert len(result.outputs["frames"]) == 1
 

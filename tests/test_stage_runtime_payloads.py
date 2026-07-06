@@ -78,6 +78,40 @@ def test_stage_runtime_payloads_copies_ffmpeg_payload(tmp_path: Path) -> None:
     assert (payload / "ffprobe.exe").is_file()
 
 
+def test_stage_runtime_payloads_copies_whisper_cpp_payload(tmp_path: Path) -> None:
+    _manifest(tmp_path, "whisper-cpp-tools", ["whisper-cli.exe", "whisper.dll"])
+    source = tmp_path / "runtime" / "packages" / "whisper-cpp-tools"
+    _write(source / "whisper-cli.exe")
+    _write(source / "whisper.dll")
+
+    payload_stager.stage_runtime_payloads(
+        tmp_path,
+        components=["whisper-cpp-tools"],
+        clean=True,
+    )
+
+    payload = tmp_path / "runtime" / "packages" / "whisper-cpp-tools"
+    assert (payload / "whisper-cli.exe").is_file()
+    assert (payload / "whisper.dll").is_file()
+
+
+def test_stage_runtime_payloads_copies_tesseract_payload(tmp_path: Path) -> None:
+    _manifest(tmp_path, "tesseract-ocr-tools", ["tesseract.exe", "tessdata/"])
+    source = tmp_path / "runtime" / "packages" / "tesseract-ocr-tools"
+    _write(source / "tesseract.exe")
+    _write(source / "tessdata" / "eng.traineddata")
+
+    payload_stager.stage_runtime_payloads(
+        tmp_path,
+        components=["tesseract-ocr-tools"],
+        clean=True,
+    )
+
+    payload = tmp_path / "runtime" / "packages" / "tesseract-ocr-tools"
+    assert (payload / "tesseract.exe").is_file()
+    assert (payload / "tessdata" / "eng.traineddata").is_file()
+
+
 def test_stage_runtime_payloads_copies_site_packages_payload(tmp_path: Path) -> None:
     _manifest(tmp_path, "transcription-cpu", ["ctranslate2/", "faster_whisper/"])
     site_packages = tmp_path / "site-packages"

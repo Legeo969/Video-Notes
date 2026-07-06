@@ -20,6 +20,8 @@ def test_nsis_uninstall_cleans_private_appdata_only() -> None:
 
     assert hook == "nsis/cleanup-appdata.nsh"
     assert "NSIS_HOOK_POSTUNINSTALL" in script
+    assert "$APPDATA\\Video Notes AI" not in script
+    assert "$APPDATA\\Video Notes AI\\settings.json" not in script
     # Keep this legacy path in the uninstaller so upgrades clean older builds.
     assert "$LOCALAPPDATA\\Video Notes AI\\engine-runtime" in script
     assert "$LOCALAPPDATA\\Video Notes AI\\logs" in script

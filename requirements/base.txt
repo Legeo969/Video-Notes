@@ -1,8 +1,5 @@
 # requirements/base.txt — 核心依赖（CLI 模式 / 无 GUI）
 # pip install -r requirements/base.txt
-faster-whisper==1.2.1
-ctranslate2>=3.0.0,<5.0.0
-yt-dlp==2026.3.17
 curl_cffi>=0.14,<0.15
 openai==2.37.0
 httpx==0.28.1

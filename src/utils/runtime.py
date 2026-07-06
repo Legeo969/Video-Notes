@@ -5,7 +5,9 @@ import subprocess
 
 from dataclasses import dataclass
 
+from src.utils.external_tools import resolve_tool
 from src.utils.subprocess_flags import hidden_subprocess_kwargs
+from src.utils.runtime_components import activate_runtime_components
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,9 @@ class RuntimeCapabilities:
     has_ytdlp: bool = False
     has_whisper: bool = False       # faster-whisper / ctranslate2
     has_whisper_cpp: bool = False   # whisper.cpp lite 后端
-    has_ocr: bool = False           # PaddleOCR
+    has_ocr: bool = False           # Tesseract native or PaddleOCR
     has_cuda: bool = False          # NVIDIA CUDA（ctranslate2 GPU）
-    has_vision: bool = False        # opencv + scenedetect
+    has_vision: bool = False        # FFmpeg frame extraction; OpenCV/SceneDetect are optional enhancers
     has_gui: bool = False           # 桌面 GUI (Tauri)
 
     @classmethod
@@ -36,8 +38,9 @@ class RuntimeCapabilities:
 
         # FFmpeg
         try:
+            ffmpeg = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
             result = subprocess.run(
-                ["ffmpeg", "-version"], capture_output=True, timeout=5,
+                [ffmpeg or "ffmpeg", "-version"], capture_output=True, timeout=5,
                 **hidden_subprocess_kwargs(),
             )
             caps.has_ffmpeg = result.returncode == 0
@@ -45,15 +48,18 @@ class RuntimeCapabilities:
             caps.has_ffmpeg = False
 
         # yt-dlp
-        try:
-            import importlib
-            importlib.import_module("yt_dlp")
-            caps.has_ytdlp = True
-        except ImportError:
-            caps.has_ytdlp = False
+        caps.has_ytdlp = resolve_tool(
+            "yt-dlp",
+            components=["download-tools"],
+            provides="download",
+        ) is not None
 
         # faster-whisper / ctranslate2
         try:
+            activate_runtime_components(
+                components=["transcription-cuda", "transcription-cpu"],
+                provides="transcription",
+            )
             import ctranslate2
             from faster_whisper import WhisperModel
             caps.has_whisper = True
@@ -61,43 +67,45 @@ class RuntimeCapabilities:
             caps.has_whisper = False
 
         # whisper.cpp
-        try:
-            import importlib
-            importlib.import_module("whispercpp")
-            caps.has_whisper_cpp = True
-        except ImportError:
-            try:
-                result = subprocess.run(
-                    ["whisper-cpp", "--version"], capture_output=True, timeout=5,
-                    **hidden_subprocess_kwargs(),
-                )
-                caps.has_whisper_cpp = result.returncode == 0
-            except Exception:
-                caps.has_whisper_cpp = False
+        caps.has_whisper_cpp = any(
+            resolve_tool(
+                name,
+                components=["whisper-cpp-tools"],
+                provides="transcription-native",
+            )
+            for name in ("whisper-cli", "main")
+        )
 
-        # PaddleOCR
-        try:
-            import paddle
-            import importlib
-            importlib.import_module("paddleocr")
-            caps.has_ocr = True
-        except Exception:
-            caps.has_ocr = False
+        # OCR
+        caps.has_ocr = resolve_tool(
+            "tesseract",
+            components=["tesseract-ocr-tools"],
+            provides="ocr-native",
+        ) is not None
+        if not caps.has_ocr:
+            try:
+                activate_runtime_components(provides="ocr")
+                import paddle
+                import importlib
+                importlib.import_module("paddleocr")
+                caps.has_ocr = True
+            except Exception:
+                caps.has_ocr = False
 
         # CUDA
         try:
+            activate_runtime_components(
+                components=["transcription-cuda", "transcription-cpu"],
+                provides="transcription",
+            )
             import ctranslate2
             caps.has_cuda = ctranslate2.get_cuda_device_count() > 0
         except Exception:
             caps.has_cuda = False
 
-        # Vision (opencv + scenedetect)
-        try:
-            import cv2
-            import scenedetect
-            caps.has_vision = True
-        except ImportError:
-            caps.has_vision = False
+        # Vision frame extraction is FFmpeg based. Python CV packages only add
+        # optional quality filtering / scene detection enhancements.
+        caps.has_vision = caps.has_ffmpeg
 
         # 桌面 GUI (Tauri)
         caps.has_gui = True  # Tauri 桌面应用为默认入口

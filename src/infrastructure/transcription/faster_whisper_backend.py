@@ -30,6 +30,7 @@ class FasterWhisperBackend:
         vad_filter: bool | None = None,
         compute_type: str | None = None,
         device: str | None = None,
+        **_ignored,
     ):
         self.model_size = model_size
         self.model_dir = model_dir

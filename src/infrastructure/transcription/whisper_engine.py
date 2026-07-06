@@ -5,6 +5,8 @@ import os
 import re
 import sys
 
+from src.utils.runtime_components import activate_runtime_components
+
 logger = logging.getLogger(__name__)
 _DLL_DIRECTORY_HANDLES = []
 
@@ -68,6 +70,12 @@ def _setup_cuda_env() -> None:
             except OSError:
                 logger.debug("[CUDA] Could not add DLL directory: %s", path, exc_info=True)
 
+
+# Runtime components must be on sys.path before importing faster-whisper.
+activate_runtime_components(
+    components=["transcription-cuda", "transcription-cpu"],
+    provides="transcription",
+)
 
 # 在导入 ctranslate2 之前设置 CUDA 环境
 _setup_cuda_env()

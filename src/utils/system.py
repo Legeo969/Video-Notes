@@ -8,6 +8,8 @@ from src.utils.subprocess_flags import hidden_subprocess_kwargs
 import shutil
 import re
 
+from src.utils.external_tools import resolve_tool, verify_tool
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,10 +116,15 @@ def _find_tool_on_disk(tool: str) -> str | None:
 
 def _get_tool_version(tool: str) -> str | None:
     """获取工具版本号，失败返回 None"""
+    resolved = resolve_tool(
+        tool,
+        components=["download-tools"] if tool == "yt-dlp" else ["ffmpeg-tools"],
+        provides="download" if tool == "yt-dlp" else "ffmpeg",
+    ) or tool
     for flag in ("--version", "-version"):
         try:
             result = subprocess.run(
-                [tool, flag],
+                [resolved, flag],
                 capture_output=True, text=True, timeout=10,
                 **hidden_subprocess_kwargs(),
             )
@@ -135,23 +142,12 @@ def _verify_tool(tool: str) -> bool:
     某些工具（如 Gyan.dev ffmpeg）的 --version 有 bug，
     需要回退到 -version。先试 --version，失败再试 -version。
     """
-    for flag in ("--version", "-version"):
-        try:
-            result = subprocess.run(
-                [tool, flag],
-                capture_output=True, text=True, timeout=10,
-                **hidden_subprocess_kwargs(),
-            )
-            if result.returncode == 0:
-                return True
-        except Exception:
-            continue
-    return False
+    return verify_tool(tool)
 
 
 def check_ffmpeg() -> bool:
     """检查 FFmpeg 是否可用，支持多路径自动检测"""
-    if shutil.which("ffmpeg") and _verify_tool("ffmpeg"):
+    if resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg"):
         return True
 
     # 扫描常见安装路径
@@ -171,7 +167,7 @@ def check_ffmpeg() -> bool:
 
 def check_ytdlp() -> bool:
     """检查 yt-dlp 是否可用，支持多路径自动检测"""
-    if shutil.which("yt-dlp") and _verify_tool("yt-dlp"):
+    if resolve_tool("yt-dlp", components=["download-tools"], provides="download"):
         return True
 
     # 扫描常见安装路径
@@ -182,7 +178,7 @@ def check_ytdlp() -> bool:
     logger.error(
         "❌ 未找到 yt-dlp。\n"
         "   请安装：\n"
-        "     pip install yt-dlp\n"
+        "     在设置 > 插件中安装 download-tools\n"
         "   或：\n"
         "     winget install yt-dlp.yt-dlp",
     )
@@ -202,5 +198,5 @@ def check_dependencies() -> None:
         raise RuntimeError(
             f"缺少系统依赖: {items}\n"
             f"  FFmpeg: winget install Gyan.FFmpeg\n"
-            f"  yt-dlp: pip install yt-dlp"
+            f"  yt-dlp: 设置 > 插件安装 download-tools，或 winget install yt-dlp.yt-dlp"
         )

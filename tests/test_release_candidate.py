@@ -20,11 +20,10 @@ spec.loader.exec_module(candidate_builder)
 
 COMPONENTS = (
     "base-engine",
+    "download-tools",
     "ffmpeg-tools",
-    "ocr-cpu",
-    "ocr-gpu",
-    "transcription-cpu",
-    "transcription-cuda",
+    "whisper-cpp-tools",
+    "tesseract-ocr-tools",
 )
 
 
@@ -75,7 +74,7 @@ def test_create_windows_release_candidate_writes_vm_bundle(tmp_path: Path) -> No
 
 def test_create_windows_release_candidate_fails_when_component_missing(tmp_path: Path) -> None:
     _create_release_inputs(tmp_path)
-    (tmp_path / "dist" / "components" / "ocr-gpu-1.5.0.zip").unlink()
+    (tmp_path / "dist" / "components" / "tesseract-ocr-tools-1.5.0.zip").unlink()
 
     report = candidate_builder.create_release_candidate(
         tmp_path,
@@ -85,4 +84,4 @@ def test_create_windows_release_candidate_fails_when_component_missing(tmp_path:
     )
 
     assert not report.ok
-    assert any("ocr-gpu-1.5.0.zip" in error for error in report.errors)
+    assert any("tesseract-ocr-tools-1.5.0.zip" in error for error in report.errors)

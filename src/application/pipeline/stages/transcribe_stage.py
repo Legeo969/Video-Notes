@@ -25,6 +25,7 @@ class TranscribeStage:
     def cache_inputs(ctx: ProcessingContext, state: dict[str, Any]) -> dict[str, Any]:
         return {
             "audio_path": state.get("audio_path"),
+            "transcription_backend": ctx.request.transcription_backend,
             "whisper_model": ctx.request.whisper_model,
             "model_dir": ctx.request.model_dir,
             "language": ctx.request.language,
@@ -67,6 +68,7 @@ class TranscribeStage:
                 model_dir=ctx.request.model_dir,
                 device=ctx.request.whisper_device,
                 compute_type=ctx.request.whisper_compute_type,
+                backend=ctx.request.transcription_backend,
             )
         else:
             transcriber = self._transcriber

@@ -132,8 +132,11 @@ def _create_minimal_release_repo(root: Path) -> None:
             "python3.dll\n"
             'python$($pythonInfo.version_nodot).dll\n'
             "requirements\\sidecar.txt\n"
+            "requirements\\transcription-cpu.txt\n"
             "requirements\\ocr-cpu.txt\n"
             "requirements\\ocr-gpu.txt\n"
+            "whisper-bin-x64.zip\n"
+            "tesseract.exe\n"
             "stage_runtime_payloads.py\n"
             "verify_runtime_payloads.py\n"
         ),
@@ -143,7 +146,10 @@ def _create_minimal_release_repo(root: Path) -> None:
         (
             "def stage_runtime_payloads(): pass\n"
             "base-engine\n"
+            "download-tools\n"
             "ffmpeg-tools\n"
+            "whisper-cpp-tools\n"
+            "tesseract-ocr-tools\n"
             "transcription-cpu\n"
             "ocr-cpu\n"
             "--clean\n"

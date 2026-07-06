@@ -1,0 +1,22 @@
+{
+  "component": "tesseract-ocr-tools",
+  "version": "1.5.0",
+  "platform": "windows-x86_64",
+  "engine_api": 1,
+  "description": "Tesseract native executable OCR tools",
+  "sha256": "",
+  "signature": "",
+  "size_mb": 120,
+  "requires": {
+    "base-engine": ">=1.5.0 <2.0.0"
+  },
+  "provides": [
+    "ocr",
+    "ocr-native"
+  ],
+  "files": [
+    "tesseract.exe",
+    "tessdata/"
+  ],
+  "package_sha256": ""
+}

@@ -32,7 +32,7 @@
   </nav>
   <div class="sidebar-spacer"></div>
   <section class="engine-card" class:offline={!engineOnline}>
-    <div class="engine-row"><span class="engine-symbol"><Icon name="activity" size={15} /></span><div><strong>{engineOnline ? "处理引擎正常" : "处理引擎离线"}</strong><small>{engineOnline ? "可提交本地任务" : "查看页面顶部诊断"}</small></div><span class="engine-status-dot"></span></div>
+    <div class="engine-row"><span class="engine-symbol"><Icon name="activity" size={15} /></span><div><strong>{engineOnline ? "Native 引擎正常" : "处理引擎离线"}</strong><small>{engineOnline ? "设置和插件管理可用" : "查看页面顶部诊断"}</small></div><span class="engine-status-dot"></span></div>
     {#if activeJobCount > 0}<div class="engine-progress"><span style={`width:${Math.min(100, 28 + activeJobCount * 14)}%`}></span></div>{/if}
   </section>
   <footer><button class="theme-button" onclick={() => applyTheme(!darkMode)}><Icon name={darkMode ? "sun" : "moon"} size={15} /><span>{darkMode ? "浅色外观" : "深色外观"}</span></button><span class="version">1.5.0</span></footer>

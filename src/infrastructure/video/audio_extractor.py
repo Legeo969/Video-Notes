@@ -6,6 +6,8 @@ from src.utils.subprocess_flags import hidden_subprocess_kwargs
 import os
 from pathlib import Path
 
+from src.utils.external_tools import require_tool
+
 logger = logging.getLogger(__name__)
 _FFMPEG_TIMEOUT = 300  # 5 分钟超时
 
@@ -25,9 +27,10 @@ def extract_audio(video_path: str, output_dir: str | None = None) -> str:
 
     base_name = Path(video_path).stem
     audio_path = os.path.join(output_dir, f"{base_name}.wav")
+    ffmpeg = require_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
 
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-nostdin",
         "-hide_banner",
         "-loglevel", "error",

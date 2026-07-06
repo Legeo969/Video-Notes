@@ -23,6 +23,7 @@ from src.domain.job_state import JobState, JobRecord  # noqa: F401 — re-export
 @dataclass
 class TranscriptionOptions:
     """转录参数。"""
+    transcription_backend: str = "whisper_cpp"  # whisper_cpp | faster_whisper
     whisper_model: str = "large-v3"  # tiny/base/small/medium/large-v2/large-v3
     model_dir: str | None = None
     language: str | None = None
@@ -64,6 +65,7 @@ class VisionOptions:
     vision_api_key: str | None = None
     vision_base_url: str | None = None
     ocr_enabled: bool = False
+    ocr_backend: str = "tesseract"  # tesseract | paddleocr
 
 
 @dataclass
@@ -121,6 +123,7 @@ class PipelineRequest:
         "export_mode": ("output", "export_mode"),
         "artifact_layout": ("output", "artifact_layout"),
         # transcription
+        "transcription_backend": ("transcription", "transcription_backend"),
         "whisper_model": ("transcription", "whisper_model"),
         "model_dir": ("transcription", "model_dir"),
         "language": ("transcription", "language"),
@@ -150,6 +153,7 @@ class PipelineRequest:
         "vision_api_key": ("vision", "vision_api_key"),
         "vision_base_url": ("vision", "vision_base_url"),
         "ocr_enabled": ("vision", "ocr_enabled"),
+        "ocr_backend": ("vision", "ocr_backend"),
     }
 
     def __init__(self, input: str, **kwargs):
@@ -202,6 +206,11 @@ class PipelineRequest:
     def language(self) -> str | None: return self.transcription.language
     @language.setter
     def language(self, v: str | None): self.transcription.language = v
+
+    @property
+    def transcription_backend(self) -> str: return self.transcription.transcription_backend
+    @transcription_backend.setter
+    def transcription_backend(self, v: str): self.transcription.transcription_backend = v
 
     @property
     def whisper_model(self) -> str: return self.transcription.whisper_model
@@ -327,6 +336,11 @@ class PipelineRequest:
     def ocr_enabled(self) -> bool: return self.vision.ocr_enabled
     @ocr_enabled.setter
     def ocr_enabled(self, v: bool): self.vision.ocr_enabled = v
+
+    @property
+    def ocr_backend(self) -> str: return self.vision.ocr_backend
+    @ocr_backend.setter
+    def ocr_backend(self, v: str): self.vision.ocr_backend = v
 
     @property
     def artifact_layout(self) -> str: return self.output.artifact_layout

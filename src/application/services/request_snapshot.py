@@ -34,6 +34,7 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "whisper_model",
     "model_dir",
     "language",
+    "transcription_backend",
     "beam_size",
     "vad_filter",
     "whisper_device",
@@ -55,6 +56,7 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "vision_model",
     "vision_base_url",
     "ocr_enabled",
+    "ocr_backend",
 )
 
 # These values must never be written to the task database or event journal.

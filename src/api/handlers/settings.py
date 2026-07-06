@@ -158,10 +158,13 @@ def _normalise_whisper_model_id(name: str) -> str:
         "models--Systran--faster-whisper-",
         "Systran--faster-whisper-",
         "faster-whisper-",
+        "ggml-",
     ):
         if value.lower().startswith(prefix.lower()):
             value = value[len(prefix):]
             break
+    if value.lower().endswith(".bin"):
+        value = value[:-4]
     return value.strip()
 
 
@@ -177,6 +180,7 @@ def _discover_local_whisper_models(raw: dict[str, Any]) -> list[dict[str, str]]:
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
         roots.append((Path(local_app_data) / "VideoCaptioner" / "AppData" / "models", "videocaptioner"))
+    roots.append((Path.home() / ".video-notes-ai" / "models" / "whisper-cpp", "whisper_cpp"))
     roots.append((Path.home() / "faster-whisper", "home"))
 
     discovered: dict[str, dict[str, str]] = {}
@@ -189,19 +193,30 @@ def _discover_local_whisper_models(raw: dict[str, Any]) -> list[dict[str, str]]:
         if not root.is_dir():
             continue
         try:
+            for model_file in root.glob("ggml-*.bin"):
+                model_id = _normalise_whisper_model_id(model_file.name)
+                if model_id:
+                    discovered[model_id] = {
+                        "id": model_id,
+                        "path": str(model_file.resolve()),
+                        "source": source,
+                    }
             for entry in root.iterdir():
                 if not entry.is_dir():
                     continue
                 prefixed = entry.name.lower().startswith("faster-whisper-")
+                whisper_cpp_model = next(entry.glob("ggml-*.bin"), None)
                 direct_model = any((entry / marker).exists() for marker in ("model.bin", "config.json"))
-                if not prefixed and not direct_model:
+                if not prefixed and not direct_model and whisper_cpp_model is None:
                     continue
-                model_id = _normalise_whisper_model_id(entry.name)
+                model_id = _normalise_whisper_model_id(
+                    whisper_cpp_model.name if whisper_cpp_model else entry.name
+                )
                 if not model_id:
                     continue
                 discovered[model_id] = {
                     "id": model_id,
-                    "path": str(entry.resolve()),
+                    "path": str((whisper_cpp_model or entry).resolve()),
                     "source": source,
                 }
         except OSError:
@@ -364,6 +379,7 @@ def create_settings_handlers() -> dict[str, Any]:
         model_dir = str(raw.get("whisper_model_dir") or raw.get("model_dir") or "")
         return {
             "output_dir": raw.get("output_dir") or get_default_export_dir(),
+            "transcription_backend": raw.get("transcription_backend", "whisper_cpp"),
             "whisper_model": raw.get("whisper_model", "large-v3"),
             "whisper_model_dir": model_dir,
             "model_dir": model_dir,
@@ -374,6 +390,7 @@ def create_settings_handlers() -> dict[str, Any]:
             "frame_mode": raw.get("frame_mode", "fixed"),
             "max_frames": raw.get("max_frames", 30),
             "ocr_enabled": bool(raw.get("ocr_enabled", False)),
+            "ocr_backend": raw.get("ocr_backend", "tesseract"),
             "vision_enabled": bool(raw.get("vision_enabled", False)),
             "template": template_id,
             "template_id": template_id,
@@ -401,10 +418,10 @@ def create_settings_handlers() -> dict[str, Any]:
         if not isinstance(patches, dict):
             raise InvalidParams("patches must be an object")
         allowed = {
-            "output_dir", "whisper_model", "whisper_model_dir", "model_dir",
+            "output_dir", "transcription_backend", "whisper_model", "whisper_model_dir", "model_dir",
             "whisper_device", "whisper_compute_type",
             "language", "frame_interval", "frame_mode", "max_frames",
-            "ocr_enabled", "vision_enabled", "template", "template_id",
+            "ocr_enabled", "ocr_backend", "vision_enabled", "template", "template_id",
             "detail_level", "vault_path", "export_mode",
             "provider", "ai_model", "base_url", "vision_provider",
             "vision_model", "vision_base_url", "subtitle_format",

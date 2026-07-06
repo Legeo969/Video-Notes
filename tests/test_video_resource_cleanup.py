@@ -627,25 +627,15 @@ class ManagedMediaWorkspaceTests(unittest.TestCase):
     def test_downloader_does_not_copy_video_to_output_root(self):
         from src.infrastructure.video import downloader
 
-        class FakeYoutubeDL:
-            def __init__(self, opts):
-                self.opts = opts
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def download(self, _urls):
-                outtmpl = self.opts["outtmpl"]
-                target_dir = Path(outtmpl).parent
-                target_dir.mkdir(parents=True, exist_ok=True)
-                (target_dir / "sample.mp4").write_bytes(b"video")
+        def fake_run_ytdlp(cmd, _url):
+            target_dir = Path(cmd[cmd.index("--output") + 1]).parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "sample.mp4").write_bytes(b"video")
 
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(downloader.yt_dlp, "YoutubeDL", FakeYoutubeDL), \
-             patch.object(downloader, "apply_yt_dlp_compat"):
+             patch.object(downloader, "require_tool", return_value="yt-dlp.exe"), \
+             patch.object(downloader, "_run_ytdlp", side_effect=fake_run_ytdlp), \
+             patch.object(downloader, "resolve_tool", return_value=None):
             result = Path(downloader.download_video("https://example.com/v", tmp))
 
             self.assertTrue(result.is_file())

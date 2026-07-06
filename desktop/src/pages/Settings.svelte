@@ -45,14 +45,29 @@
     counts: Record<string, { dirs: number; files: number }>;
   }
 
+  interface RuntimeComponent {
+    component: string;
+    version: string;
+    description: string;
+    installed: boolean;
+    installed_version?: string | null;
+    status: string;
+    size_mb?: number;
+    component_path?: string;
+    provides?: string[];
+    missing_files?: string[];
+  }
+
   interface SettingsBag {
     output_dir: string;
     vault_path: string;
+    transcription_backend: string;
     whisper_model: string;
     whisper_model_dir: string;
     whisper_device: string;
     whisper_compute_type: string;
     ocr_enabled: boolean;
+    ocr_backend: string;
     vision_enabled: boolean;
     template: string;
     active_provider: string;
@@ -117,6 +132,7 @@
     { id: "general", label: "通用与转录", icon: "settings", hint: "目录、模型和 OCR" },
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
+    { id: "plugins", label: "插件", icon: "package", hint: "转写 / OCR 可选组件" },
     { id: "storage", label: "存储管理", icon: "database", hint: "缓存、数据库与导出" },
     { id: "diagnostics", label: "系统诊断", icon: "stethoscope", hint: "依赖与运行环境" },
   ];
@@ -125,11 +141,13 @@
   let settings = $state<SettingsBag>({
     output_dir: "./output",
     vault_path: "",
+    transcription_backend: "whisper_cpp",
     whisper_model: "large-v3",
     whisper_model_dir: "",
     whisper_device: "auto",
     whisper_compute_type: "auto",
     ocr_enabled: false,
+    ocr_backend: "tesseract",
     vision_enabled: false,
     template: "default",
     active_provider: "",
@@ -147,6 +165,9 @@
   let bundlingDiagnostics = $state(false);
   let storageLoading = $state(false);
   let storageStatus = $state<StorageStatus | null>(null);
+  let componentsLoading = $state(false);
+  let runtimeComponents = $state<RuntimeComponent[]>([]);
+  let componentAction = $state<string | null>(null);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
 
@@ -168,6 +189,9 @@
   let whisperCatalog = $derived(buildWhisperModelCatalog(localWhisperModels, settings.whisper_model, true));
   let selectedWhisperModel = $derived(whisperCatalog.find((model) => model.id === normalizeWhisperModelId(settings.whisper_model)));
   let selectedWhisperAvailable = $derived(Boolean(selectedWhisperModel?.installed));
+  let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
+  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component.startsWith("transcription-") || item.component === "whisper-cpp-tools" || (item.provides ?? []).some((cap) => ["transcription", "transcription-native"].includes(cap))));
+  let ocrComponents = $derived(runtimeComponents.filter((item) => item.component.startsWith("ocr-") || (item.provides ?? []).includes("ocr")));
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     toast = { msg, type };
@@ -185,11 +209,12 @@
         engineCall<TemplateInfo[]>("settings.templates.list"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local").catch(() => []),
       ]);
-      settings = { ...s, vault_path: s.vault_path ?? "", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
+      settings = { ...s, vault_path: s.vault_path ?? "", transcription_backend: s.transcription_backend ?? "whisper_cpp", ocr_backend: s.ocr_backend ?? "tesseract", whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3" };
       providers = provs;
       templates = tmpls;
       localWhisperModels = normalizeLocalWhisperModels(localModels);
       refreshStorageStatus();
+      refreshComponents();
     } catch (e: any) {
       showToast(`加载设置失败：${e?.message ?? e}`, "error");
     } finally { loading = false; }
@@ -233,11 +258,13 @@
         patches: {
           output_dir: settings.output_dir,
           vault_path: settings.vault_path,
+          transcription_backend: settings.transcription_backend,
           whisper_model: settings.whisper_model,
           whisper_model_dir: settings.whisper_model_dir,
           whisper_device: settings.whisper_device,
           whisper_compute_type: settings.whisper_compute_type,
           ocr_enabled: settings.ocr_enabled,
+          ocr_backend: settings.ocr_backend,
           vision_enabled: settings.vision_enabled,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
@@ -439,6 +466,69 @@
     }
   }
 
+  function componentStatusLabel(component: RuntimeComponent) {
+    if (component.installed && component.status === "ok") return "已安装";
+    if (component.installed) return "需修复";
+    return "未安装";
+  }
+
+  function componentStatusType(component: RuntimeComponent) {
+    if (component.installed && component.status === "ok") return "pass";
+    if (component.installed) return "warn";
+    return "pending";
+  }
+
+  async function refreshComponents() {
+    componentsLoading = true;
+    try {
+      runtimeComponents = await engineCall<RuntimeComponent[]>("components.list");
+    } catch (e: any) {
+      showToast(`读取插件状态失败：${e?.message ?? e}`, "error");
+    } finally {
+      componentsLoading = false;
+    }
+  }
+
+  async function installComponent(component: RuntimeComponent) {
+    componentAction = `install:${component.component}`;
+    try {
+      await engineCall("components.install", { component: component.component });
+      showToast(`${component.component} 已安装`, "success");
+      await refreshComponents();
+    } catch (e: any) {
+      showToast(`安装 ${component.component} 失败：${e?.message ?? e}`, "error");
+    } finally {
+      componentAction = null;
+    }
+  }
+
+  async function verifyComponent(component: RuntimeComponent) {
+    componentAction = `verify:${component.component}`;
+    try {
+      const result = await engineCall<{ ok: boolean }>("components.verify", { component: component.component });
+      showToast(result.ok ? `${component.component} 验证通过` : `${component.component} 验证未通过`, result.ok ? "success" : "error");
+      await refreshComponents();
+    } catch (e: any) {
+      showToast(`验证 ${component.component} 失败：${e?.message ?? e}`, "error");
+    } finally {
+      componentAction = null;
+    }
+  }
+
+  async function removeComponent(component: RuntimeComponent) {
+    if (!confirm(`确定卸载 ${component.component} 吗？`)) return;
+    componentAction = `remove:${component.component}`;
+    try {
+      await engineCall("components.remove", { component: component.component });
+      showToast(`${component.component} 已卸载`, "success");
+      await refreshComponents();
+    } catch (e: any) {
+      showToast(`卸载 ${component.component} 失败：${e?.message ?? e}`, "error");
+    } finally {
+      componentAction = null;
+    }
+  }
+
   async function cleanupOrphanWorkspaces() {
     storageLoading = true;
     try {
@@ -561,8 +651,15 @@
               {/if}
               <div class="runtime-settings-grid">
                 <div class="field">
+                  <label class="field-label" for="transcription_backend">转写后端</label>
+                  <select id="transcription_backend" bind:value={settings.transcription_backend} onchange={markDirty}>
+                    <option value="whisper_cpp">whisper.cpp native CLI</option>
+                    <option value="faster_whisper">faster-whisper Python component</option>
+                  </select>
+                </div>
+                <div class="field">
                   <label class="field-label" for="whisper_device">Whisper 运行设备</label>
-                  <select id="whisper_device" bind:value={settings.whisper_device} onchange={markDirty}>
+                  <select id="whisper_device" bind:value={settings.whisper_device} onchange={markDirty} disabled={settings.transcription_backend === "whisper_cpp"}>
                     <option value="auto">自动：优先 CUDA，可降级 CPU</option>
                     <option value="cuda">CUDA / GPU：不可用时报错</option>
                     <option value="cpu">CPU</option>
@@ -570,7 +667,7 @@
                 </div>
                 <div class="field">
                   <label class="field-label" for="whisper_compute_type">计算精度</label>
-                  <select id="whisper_compute_type" bind:value={settings.whisper_compute_type} onchange={markDirty}>
+                  <select id="whisper_compute_type" bind:value={settings.whisper_compute_type} onchange={markDirty} disabled={settings.transcription_backend === "whisper_cpp"}>
                     <option value="auto">自动：CUDA=float16，CPU=int8</option>
                     <option value="float16">float16（CUDA 推荐）</option>
                     <option value="int8_float16">int8_float16（CUDA 低显存）</option>
@@ -594,6 +691,15 @@
                   <span class="toggle-copy"><strong>视觉理解</strong><small>对关键帧、图表和演示内容做语义分析。需要活动 AI 供应商和视觉模型。</small></span>
                   <span class="switch" aria-hidden="true"><input type="checkbox" checked={settings.vision_enabled} tabindex="-1" /><span class="switch-track"></span></span>
                 </button>
+              </div>
+              <div class="runtime-settings-grid">
+                <div class="field">
+                  <label class="field-label" for="ocr_backend">OCR 后端</label>
+                  <select id="ocr_backend" bind:value={settings.ocr_backend} onchange={markDirty}>
+                    <option value="tesseract">Tesseract native executable</option>
+                    <option value="paddleocr">PaddleOCR Python component</option>
+                  </select>
+                </div>
               </div>
               <div class="enhancement-explain"><Icon name="info" size={14} />OCR 是本地能力；视觉理解会调用当前活动 AI 供应商。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
             </div>
@@ -679,6 +785,128 @@
                 {/each}
               </div>
             {/if}
+          </section>
+
+        {:else if activeTab === "plugins"}
+          <section class="settings-pane">
+            <div class="pane-head actions-head">
+              <div><span>PLUGINS</span><h2>插件</h2><p>按需安装转写和 OCR 运行时组件；主程序保持轻量，重依赖放在本机 runtime。</p></div>
+              <button class="btn btn-secondary" type="button" onclick={refreshComponents} disabled={componentsLoading}><Icon name="refresh" size={15} />{componentsLoading ? "刷新中" : "刷新"}</button>
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="download" size={18} /></div><div><h3>外部工具</h3><p>yt-dlp 和 FFmpeg 以 standalone executable 运行，不依赖 Python package。</p></div></div>
+              {#if componentsLoading && toolComponents.length === 0}
+                <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
+              {:else if toolComponents.length === 0}
+                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到工具组件清单</strong><small>请确认 runtime/manifests/download-tools.json 或 ffmpeg-tools.json 存在。</small></div></div>
+              {:else}
+                <div class="plugin-grid">
+                  {#each toolComponents as component}
+                    <article class="plugin-card" class:installed={component.installed}>
+                      <div class="plugin-card-head">
+                        <div class="plugin-icon"><Icon name={component.component === "download-tools" ? "download" : "video"} size={20} /></div>
+                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
+                        <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
+                      </div>
+                      <div class="plugin-meta">
+                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
+                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
+                      </div>
+                      <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
+                      {#if component.missing_files?.length}
+                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
+                      {/if}
+                      <div class="plugin-actions">
+                        {#if component.installed}
+                          <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
+                        {:else}
+                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                        {/if}
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>默认使用 whisper.cpp native executable；faster-whisper 仅作为可选 Python component。</p></div></div>
+              {#if componentsLoading && transcriptionComponents.length === 0}
+                <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
+              {:else if transcriptionComponents.length === 0}
+                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到转写插件清单</strong><small>请确认 runtime/manifests/whisper-cpp-tools.json 存在。</small></div></div>
+              {:else}
+                <div class="plugin-grid">
+                  {#each transcriptionComponents as component}
+                    <article class="plugin-card" class:installed={component.installed}>
+                      <div class="plugin-card-head">
+                        <div class="plugin-icon"><Icon name="audio" size={20} /></div>
+                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
+                        <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
+                      </div>
+                      <div class="plugin-meta">
+                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
+                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
+                      </div>
+                      <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
+                      {#if component.missing_files?.length}
+                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
+                      {/if}
+                      <div class="plugin-actions">
+                        {#if component.installed}
+                          <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
+                        {:else}
+                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                        {/if}
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>Tesseract 是 native executable；PaddleOCR 是可选 Python component。只需要安装其中一个。</p></div></div>
+              {#if componentsLoading && ocrComponents.length === 0}
+                <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
+              {:else if ocrComponents.length === 0}
+                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到 OCR 插件清单</strong><small>请确认 runtime/manifests/tesseract-ocr-tools.json 或 ocr-cpu.json 存在。</small></div></div>
+              {:else}
+                <div class="plugin-grid">
+                  {#each ocrComponents as component}
+                    <article class="plugin-card" class:installed={component.installed}>
+                      <div class="plugin-card-head">
+                        <div class="plugin-icon"><Icon name="ocr" size={20} /></div>
+                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
+                        <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
+                      </div>
+                      <div class="plugin-meta">
+                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
+                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
+                      </div>
+                      <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
+                      {#if component.missing_files?.length}
+                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
+                      {/if}
+                      <div class="plugin-actions">
+                        {#if component.installed}
+                          <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
+                        {:else}
+                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                        {/if}
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           </section>
 
         {:else if activeTab === "storage"}
@@ -1101,7 +1329,28 @@
   .model-availability.installed { color: var(--success-color); background: var(--success-soft); }
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   @media (max-width: 1180px) { .interactive-model-cards { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-  .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .runtime-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .plugin-card { display: flex; min-width: 0; flex-direction: column; gap: 13px; padding: 15px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
+  .plugin-card.installed { border-color: color-mix(in srgb, var(--success-color) 28%, var(--border-color)); }
+  .plugin-card-head { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 11px; }
+  .plugin-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--accent-color); background: var(--accent-soft); }
+  .plugin-title { display: flex; min-width: 0; flex-direction: column; }
+  .plugin-title strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-title small { margin-top: 3px; overflow: hidden; color: var(--text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .plugin-meta > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; background: var(--bg-subtle); }
+  .plugin-meta span, .plugin-path span { color: var(--text-tertiary); font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+  .plugin-meta strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-path { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-subtle); }
+  .plugin-path code { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-warning { display: flex; align-items: center; gap: 7px; padding: 9px 10px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
+  .plugin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+  .plugin-actions .btn { min-height: 40px; }
+  .plugin-empty-state { display: flex; align-items: center; gap: 12px; min-height: 78px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
+  .plugin-empty-state > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+  .plugin-empty-state strong { color: var(--text-primary); font-size: 14px; }
+  .plugin-empty-state small { font-size: 12px; }
   .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
   .storage-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
   .storage-grid span { color: var(--text-tertiary); font-size: 11px; font-weight: 750; }
@@ -1113,5 +1362,6 @@
   .storage-empty-state strong { color: var(--text-primary); font-size: 14px; }
   .storage-empty-state small { font-size: 12px; }
   @media (max-width: 760px) { .runtime-settings-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 760px) { .plugin-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .storage-grid { grid-template-columns: 1fr; } }
 </style>

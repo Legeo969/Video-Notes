@@ -68,8 +68,10 @@ class EnvironmentChecker:
     def check_ffprobe(self) -> DiagnosticCheck:
         """Check ffprobe (usually bundled with FFmpeg)."""
         try:
+            from src.utils.external_tools import resolve_tool
+            ffprobe = resolve_tool("ffprobe", components=["ffmpeg-tools"], provides="ffmpeg")
             result = subprocess.run(
-                ["ffprobe", "-version"], capture_output=True, timeout=5,
+                [ffprobe or "ffprobe", "-version"], capture_output=True, timeout=5,
                 **hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -98,39 +100,22 @@ class EnvironmentChecker:
         """Check yt-dlp availability."""
         try:
             from src.utils.system import _get_tool_version
-            import importlib
-            try:
-                m = importlib.import_module("yt_dlp")
-                ver = getattr(m.version, "__version__", None) or _get_tool_version("yt-dlp") or "已安装"
+            ver = _get_tool_version("yt-dlp")
+            if ver:
                 return DiagnosticCheck(
                     id="ytdlp", name="yt-dlp", status="ok",
                     message=f"可用：{ver}",
                 )
-            except ImportError:
-                # Try from PATH
-                try:
-                    result = subprocess.run(
-                        ["yt-dlp", "--version"], capture_output=True, timeout=5,
-                        **hidden_subprocess_kwargs(),
-                    )
-                    if result.returncode == 0:
-                        ver = result.stdout.decode().strip()
-                        return DiagnosticCheck(
-                            id="ytdlp", name="yt-dlp", status="ok",
-                            message=f"可用：{ver}",
-                        )
-                except Exception:
-                    pass
-                return DiagnosticCheck(
-                    id="ytdlp", name="yt-dlp", status="error",
-                    message="未找到 yt-dlp",
-                    suggestion="请安装：pip install yt-dlp 或 winget install yt-dlp.yt-dlp",
-                )
+            return DiagnosticCheck(
+                id="ytdlp", name="yt-dlp", status="error",
+                message="未找到 yt-dlp.exe",
+                suggestion="请在设置 > 插件中安装 download-tools，或 winget install yt-dlp.yt-dlp",
+            )
         except Exception as exc:
             return DiagnosticCheck(
                 id="ytdlp", name="yt-dlp", status="error",
                 message=f"检测失败：{exc}",
-                suggestion="请安装 yt-dlp",
+                suggestion="请安装 download-tools",
             )
 
     def check_whisper(self) -> DiagnosticCheck:
@@ -310,33 +295,54 @@ class EnvironmentChecker:
                 message="ctranslate2 未安装或 CUDA 不可用",
             ))
 
-        # Vision
+        # Vision / frame extraction. The primary path uses FFmpeg; Python CV
+        # packages only improve filtering and scene detection.
         try:
-            import cv2  # noqa: F401
-            import scenedetect  # noqa: F401
+            from src.utils.external_tools import resolve_tool
+
+            ffmpeg = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
+            if not ffmpeg:
+                raise FileNotFoundError("ffmpeg")
+            try:
+                import cv2  # noqa: F401
+                import scenedetect  # noqa: F401
+                message = "FFmpeg 可用；OpenCV/SceneDetect 增强可用"
+            except ImportError:
+                message = "FFmpeg 可用；Python 视觉增强未安装"
             checks.append(DiagnosticCheck(
                 id="vision", name="视觉识别", status="ok",
-                message="opencv + scenedetect 可用",
+                message=message,
             ))
-        except ImportError:
+        except Exception:
             checks.append(DiagnosticCheck(
                 id="vision", name="视觉识别", status="skipped",
-                message="未安装（可选功能）",
-                suggestion="如需使用：pip install video-notes-ai[vision]",
+                message="未检测到 FFmpeg，无法抽帧",
+                suggestion="安装 ffmpeg-tools 插件或配置系统 FFmpeg",
             ))
 
         # whisper.cpp
-        try:
-            import importlib
-            importlib.import_module("whispercpp")
+        from src.utils.external_tools import resolve_tool
+        whisper_cpp = (
+            resolve_tool(
+                "whisper-cli",
+                components=["whisper-cpp-tools"],
+                provides="transcription-native",
+            )
+            or resolve_tool(
+                "main",
+                components=["whisper-cpp-tools"],
+                provides="transcription-native",
+            )
+        )
+        if whisper_cpp:
             checks.append(DiagnosticCheck(
                 id="whisper_cpp", name="whisper.cpp (轻量后端)", status="ok",
-                message="可用",
+                message=f"可用：{whisper_cpp}",
             ))
-        except ImportError:
+        else:
             checks.append(DiagnosticCheck(
                 id="whisper_cpp", name="whisper.cpp (轻量后端)", status="skipped",
-                message="未安装（可选）：pip install whispercpp",
+                message="未安装（可选）：安装 whisper-cpp-tools",
             ))
 
         # GUI 环境

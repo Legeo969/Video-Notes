@@ -9,7 +9,9 @@ import sys
 from typing import Any, Callable
 
 from src.api.protocol.version import ENGINE_VERSION, PROTOCOL_VERSION
+from src.utils.external_tools import resolve_tool
 from src.utils.runtime import RuntimeCapabilities
+from src.utils.runtime_components import activate_runtime_components
 
 
 def create_system_handlers(
@@ -33,6 +35,10 @@ def create_system_handlers(
         cuda_device_count = 0
         cuda_compute_types: list[str] = []
         try:
+            activate_runtime_components(
+                components=["transcription-cuda", "transcription-cpu"],
+                provides="transcription",
+            )
             import ctranslate2
             cuda_device_count = ctranslate2.get_cuda_device_count()
             cuda = cuda_device_count > 0
@@ -44,8 +50,9 @@ def create_system_handlers(
         ffmpeg = False
         try:
             import subprocess
+            ffmpeg_exe = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
             subprocess.run(
-                ["ffmpeg", "-version"],
+                [ffmpeg_exe or "ffmpeg", "-version"],
                 capture_output=True, timeout=5,
             )
             ffmpeg = True

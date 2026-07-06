@@ -38,9 +38,6 @@
       "icons/256x256.png",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/python-engine"
-    ],
     "windows": {
       "wix": null,
       "nsis": {

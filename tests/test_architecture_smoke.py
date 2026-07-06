@@ -188,35 +188,17 @@ class ArchitectureSmokeTests(unittest.TestCase):
 
         self.assertEqual(paths[0], cookie_path)
 
-    def test_bilibili_cookie_loader_keeps_session_cookies(self):
+    def test_bilibili_cookie_path_helper_sets_and_clears_env(self):
         compat = importlib.import_module("src.infrastructure.video.yt_dlp_compat")
-        bilibili = importlib.import_module("yt_dlp.extractor.bilibili")
 
         with tempfile.TemporaryDirectory() as tmp:
             cookie_path = Path(tmp) / "cookies.txt"
-            cookie_path.write_text(
-                "# Netscape HTTP Cookie File\n"
-                ".bilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\tlogged-in\n",
-                encoding="utf-8",
-            )
+            with patch.dict(os.environ, {}, clear=False):
+                compat.set_bilibili_cookie_path(str(cookie_path))
+                self.assertEqual(os.environ["VIDEO_NOTES_BILIBILI_COOKIES"], str(cookie_path))
+                compat.set_bilibili_cookie_path(None)
 
-            loaded = {}
-
-            class FakeExtractor:
-                def _set_cookie(self, domain, name, value):
-                    loaded[(domain, name)] = value
-
-            with patch.dict(
-                os.environ,
-                {"VIDEO_NOTES_BILIBILI_COOKIES": str(cookie_path)},
-            ):
-                compat.apply_yt_dlp_compat("https://www.bilibili.com/video/BV1")
-                base = bilibili.BilibiliBaseIE
-                if hasattr(base, "_video_notes_ai_bili_cookies_loaded"):
-                    delattr(base, "_video_notes_ai_bili_cookies_loaded")
-                base._load_bili_cookies(FakeExtractor())
-
-        self.assertEqual(loaded[(".bilibili.com", "SESSDATA")], "logged-in")
+        self.assertNotIn("VIDEO_NOTES_BILIBILI_COOKIES", os.environ)
 
 
 if __name__ == "__main__":

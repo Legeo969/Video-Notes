@@ -24,11 +24,9 @@ class InfrastructureMediaGateway(MediaGateway):
         try:
             from src.infrastructure.video.downloader import download_audio
         except ModuleNotFoundError as exc:
-            if exc.name == "yt_dlp":
-                raise RuntimeError(
-                    "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
-                ) from exc
-            raise
+            raise RuntimeError(
+                "下载组件不可用，无法处理在线视频。请安装 download-tools 插件。"
+            ) from exc
         return download_audio(url, output_dir, cookies=cookies)
 
     def download_video(
@@ -41,11 +39,9 @@ class InfrastructureMediaGateway(MediaGateway):
         try:
             from src.infrastructure.video.downloader import download_video
         except ModuleNotFoundError as exc:
-            if exc.name == "yt_dlp":
-                raise RuntimeError(
-                    "yt-dlp Python 包未安装，无法处理在线视频。请安装可选下载组件。"
-                ) from exc
-            raise
+            raise RuntimeError(
+                "下载组件不可用，无法处理在线视频。请安装 download-tools 插件。"
+            ) from exc
         return download_video(url, output_dir, cookies=cookies)
 
     def extract_audio(self, source: str, *, output_dir: str | None = None) -> str:

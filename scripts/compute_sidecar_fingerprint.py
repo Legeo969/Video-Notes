@@ -18,7 +18,6 @@ def iter_inputs():
             yield path
     for relative in (
         "requirements/sidecar.txt",
-        "requirements/cuda.txt",
         "requirements/build.txt",
         "scripts/prepare_tauri_sidecar.ps1",
         "pyproject.toml",

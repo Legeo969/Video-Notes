@@ -80,6 +80,7 @@ def _build_request(params: dict[str, Any]) -> PipelineRequest:
     request = PipelineRequest(
         input=input_src,
         title=value("title"),
+        transcription_backend=value("transcription_backend", settings.get("transcription_backend", "whisper_cpp")),
         whisper_model=value("whisper_model", settings.get("whisper_model", "large-v3")),
         language=value("language"),
         output_dir=value("output_dir", settings.get("output_dir") or get_default_export_dir()),
@@ -99,6 +100,7 @@ def _build_request(params: dict[str, Any]) -> PipelineRequest:
         vision_api_key=value("vision_api_key", vision.get("api_key") or None),
         vision_base_url=value("vision_base_url", vision.get("base_url") or None),
         ocr_enabled=value("ocr_enabled", settings.get("ocr_enabled", False)),
+        ocr_backend=value("ocr_backend", settings.get("ocr_backend", "tesseract")),
         subtitle_format=value("subtitle_format", settings.get("subtitle_format", "none")),
         collection_id=value("collection_id"),
         frame_interval=value("frame_interval", settings.get("frame_interval", 30)),

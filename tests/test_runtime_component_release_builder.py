@@ -123,6 +123,7 @@ def _create_release_gate_repo(root: Path) -> None:
     shutil.copy2(SCRIPTS / "verify_runtime_payloads.py", root / "scripts" / "verify_runtime_payloads.py")
     shutil.copy2(SCRIPTS / "prepare_runtime_payload_sources.ps1", root / "scripts" / "prepare_runtime_payload_sources.ps1")
     shutil.copy2(SCRIPTS / "stage_runtime_payloads.py", root / "scripts" / "stage_runtime_payloads.py")
+    shutil.copy2(SCRIPTS / "verify_release_candidate.py", root / "scripts" / "verify_release_candidate.py")
     shutil.copy2(SCRIPTS / "generate_component_release_keys.py", root / "scripts" / "generate_component_release_keys.py")
     shutil.copy2(SCRIPTS / "build_runtime_component_package.py", root / "scripts" / "build_runtime_component_package.py")
     shutil.copy2(SCRIPTS / "build_runtime_component_release.py", root / "scripts" / "build_runtime_component_release.py")
@@ -199,12 +200,12 @@ def test_runtime_component_release_builder_fails_when_payload_is_missing(
 ) -> None:
     _create_release_gate_repo(tmp_path)
     _create_component_manifests_and_payloads(tmp_path)
-    shutil.rmtree(tmp_path / "runtime" / "packages" / "ocr-gpu")
+    shutil.rmtree(tmp_path / "runtime" / "packages" / "tesseract-ocr-tools")
 
-    with pytest.raises(FileNotFoundError, match="ocr-gpu"):
+    with pytest.raises(FileNotFoundError, match="tesseract-ocr-tools"):
         release_builder.build_runtime_components(
             tmp_path,
             tmp_path / "dist",
-            components=["ocr-gpu"],
+            components=["tesseract-ocr-tools"],
             private_key=_raw_private_key(Ed25519PrivateKey.generate()),
         )

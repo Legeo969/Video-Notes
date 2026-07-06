@@ -139,6 +139,156 @@ def test_diagnostics_runtime_handlers_manage_local_components(
     assert not (runtime_dir / "components" / "sample-tools").exists()
 
 
+def test_diagnostics_components_install_uses_bundled_package_source(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    manifest_dir = runtime_dir / "manifests"
+    package_dir = runtime_dir / "packages" / "ocr-cpu"
+    manifest_dir.mkdir(parents=True)
+    package_dir.mkdir(parents=True)
+    (package_dir / "tool.exe").write_text("ok", encoding="utf-8")
+    (manifest_dir / "ocr-cpu.json").write_text(
+        json.dumps(
+            {
+                "component": "ocr-cpu",
+                "version": "1.0.0",
+                "platform": "windows-x86_64",
+                "engine_api": 1,
+                "files": ["tool.exe"],
+                "provides": ["ocr"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    handlers = create_diagnostics_handlers(runtime_dir=str(runtime_dir))
+
+    installed = handlers["components.install"]({"component": "ocr-cpu"})
+
+    assert installed["ok"] is True
+    assert (runtime_dir / "components" / "ocr-cpu" / "tool.exe").is_file()
+
+
+def test_diagnostics_components_install_download_tools_fetches_ytdlp_exe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    manifest_dir = runtime_dir / "manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "download-tools.json").write_text(
+        json.dumps(
+            {
+                "component": "download-tools",
+                "version": "1.0.0",
+                "platform": "windows-x86_64",
+                "engine_api": 1,
+                "files": ["yt-dlp.exe"],
+                "provides": ["download"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_download(_url: str, target: Path, *, max_bytes: int) -> None:
+        target.write_text("exe", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "src.api.handlers.diagnostics._download_executable",
+        fake_download,
+    )
+    handlers = create_diagnostics_handlers(runtime_dir=str(runtime_dir))
+
+    installed = handlers["components.install"]({"component": "download-tools"})
+
+    assert installed["ok"] is True
+    assert (runtime_dir / "components" / "download-tools" / "yt-dlp.exe").is_file()
+
+
+def test_diagnostics_components_install_fetches_whisper_cpp_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    manifest_dir = runtime_dir / "manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "whisper-cpp-tools.json").write_text(
+        json.dumps(
+            {
+                "component": "whisper-cpp-tools",
+                "version": "1.0.0",
+                "platform": "windows-x86_64",
+                "engine_api": 1,
+                "files": ["whisper-cli.exe", "whisper.dll"],
+                "provides": ["transcription-native"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_download(_url: str, target_dir: Path, files: list[str], *, max_bytes: int) -> None:
+        for name in files:
+            (target_dir / name).write_text("native", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "src.api.handlers.diagnostics._download_whisper_cpp_tools",
+        fake_download,
+    )
+    handlers = create_diagnostics_handlers(runtime_dir=str(runtime_dir))
+
+    installed = handlers["components.install"]({"component": "whisper-cpp-tools"})
+
+    assert installed["ok"] is True
+    assert (runtime_dir / "components" / "whisper-cpp-tools" / "whisper-cli.exe").is_file()
+    assert (runtime_dir / "components" / "whisper-cpp-tools" / "whisper.dll").is_file()
+
+
+def test_diagnostics_components_install_uses_system_tesseract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    manifest_dir = runtime_dir / "manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "tesseract-ocr-tools.json").write_text(
+        json.dumps(
+            {
+                "component": "tesseract-ocr-tools",
+                "version": "1.0.0",
+                "platform": "windows-x86_64",
+                "engine_api": 1,
+                "files": ["tesseract.exe", "tessdata/"],
+                "provides": ["ocr", "ocr-native"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "system-tesseract"
+    source.mkdir()
+    (source / "tesseract.exe").write_text("exe", encoding="utf-8")
+    (source / "tessdata").mkdir()
+    (source / "tessdata" / "eng.traineddata").write_text("data", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "src.api.handlers.diagnostics.resolve_tool",
+        lambda *args, **kwargs: str(source / "tesseract.exe"),
+    )
+    handlers = create_diagnostics_handlers(runtime_dir=str(runtime_dir))
+
+    installed = handlers["components.install"]({"component": "tesseract-ocr-tools"})
+
+    assert installed["ok"] is True
+    assert (runtime_dir / "components" / "tesseract-ocr-tools" / "tesseract.exe").is_file()
+    assert (
+        runtime_dir
+        / "components"
+        / "tesseract-ocr-tools"
+        / "tessdata"
+        / "eng.traineddata"
+    ).is_file()
+
+
 def test_diagnostics_components_install_accepts_zip_package(
     tmp_path: Path,
 ) -> None:

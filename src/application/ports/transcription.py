@@ -10,6 +10,7 @@ class TranscriptionGateway(Protocol):
         self,
         audio_path: str,
         *,
+        backend: str = "whisper_cpp",
         model_size: str = "large-v3",
         language: str | None = None,
         model_dir: str | None = None,

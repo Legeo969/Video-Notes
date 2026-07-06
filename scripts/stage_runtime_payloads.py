@@ -98,7 +98,10 @@ def _default_source_roots(
     ffmpeg = _resolve_source(repo, ffmpeg_dir) if ffmpeg_dir else _detect_ffmpeg_dir()
     roots = {
         "base-engine": python,
+        "download-tools": repo / "runtime" / "packages" / "download-tools",
         "ffmpeg-tools": ffmpeg,
+        "whisper-cpp-tools": repo / "runtime" / "packages" / "whisper-cpp-tools",
+        "tesseract-ocr-tools": repo / "runtime" / "packages" / "tesseract-ocr-tools",
         "transcription-cpu": site,
         "transcription-cuda": site,
         "ocr-cpu": site,

@@ -58,9 +58,7 @@ if (-not $SkipInstall) {
   & $VenvPython -m pip install -r requirements\sidecar.txt -r requirements\build.txt
   Assert-NativeSuccess "sidecar dependency installation"
   if ($IncludeCuda) {
-    Write-Host "Installing CUDA runtime dependencies for GPU sidecar..." -ForegroundColor Cyan
-    & $VenvPython -m pip install -r requirements\cuda.txt
-    Assert-NativeSuccess "sidecar CUDA dependency installation"
+    Write-Warning "-IncludeCuda is ignored for the sidecar; CUDA now belongs to the transcription-cuda runtime component."
   }
 }
 
@@ -69,16 +67,6 @@ $templateYaml = (Join-Path $Root "src\application\notes\templates") + $separator
 $templateMd = (Join-Path $Root "templates") + $separator + "templates"
 $source = Join-Path $DistRoot "python-engine.exe"
 $destination = Join-Path $BinaryDir "python-engine-$TargetTriple.exe"
-$cudaCollectArgs = @()
-if ($IncludeCuda) {
-  $cudaCollectArgs = @(
-    "--collect-binaries", "nvidia.cublas",
-    "--collect-binaries", "nvidia.cuda_nvrtc",
-    "--collect-binaries", "nvidia.cuda_runtime",
-    "--collect-binaries", "nvidia.cudnn"
-  )
-}
-
 # Never accept a stale sidecar from an earlier failed build.
 Remove-Item -Force $source -ErrorAction SilentlyContinue
 Remove-Item -Force $destination -ErrorAction SilentlyContinue
@@ -108,7 +96,6 @@ Write-Host "Building isolated Python sidecar for $TargetTriple..." -ForegroundCo
   --exclude-module matplotlib `
   --exclude-module pytest `
   --exclude-module IPython `
-  @cudaCollectArgs `
   --add-data $templateYaml `
   --add-data $templateMd `
   src\engine.py

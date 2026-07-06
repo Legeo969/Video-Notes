@@ -28,11 +28,10 @@ acceptance = _load_script("verify_release_acceptance.py")
 
 REQUIRED_COMPONENTS = {
     "base-engine",
+    "download-tools",
     "ffmpeg-tools",
-    "transcription-cpu",
-    "transcription-cuda",
-    "ocr-cpu",
-    "ocr-gpu",
+    "whisper-cpp-tools",
+    "tesseract-ocr-tools",
 }
 
 
@@ -51,6 +50,7 @@ def _copy_release_scripts(root: Path) -> None:
         "verify_release_gate.py",
         "verify_runtime_payloads.py",
         "verify_installed_runtime.py",
+        "verify_release_candidate.py",
         "prepare_runtime_payload_sources.ps1",
         "stage_runtime_payloads.py",
         "generate_component_release_keys.py",
@@ -208,7 +208,7 @@ def test_release_acceptance_passes_with_all_evidence(tmp_path: Path) -> None:
 
 def test_release_acceptance_fails_when_payloads_are_missing(tmp_path: Path) -> None:
     _create_minimal_release_repo(tmp_path, signed=True)
-    shutil.rmtree(tmp_path / "runtime" / "packages" / "ocr-gpu")
+    shutil.rmtree(tmp_path / "runtime" / "packages" / "tesseract-ocr-tools")
 
     report = acceptance.verify_release_acceptance(
         tmp_path,

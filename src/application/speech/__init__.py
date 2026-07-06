@@ -78,6 +78,7 @@ class SpeechTranscriber:
         model_dir: str | None = None,
         device: str = "auto",
         compute_type: str = "auto",
+        backend: str = "whisper_cpp",
         gateway: TranscriptionGateway | None = None,
     ):
         """初始化。
@@ -90,6 +91,7 @@ class SpeechTranscriber:
         self._model_dir = model_dir
         self._device = device or "auto"
         self._compute_type = compute_type or "auto"
+        self._backend = backend or "whisper_cpp"
         self._gateway = gateway or self._default_gateway()
 
     @staticmethod
@@ -122,6 +124,7 @@ class SpeechTranscriber:
 
         full_text, seg_list = self._gateway.transcribe_with_segments(
             audio_path,
+            backend=self._backend,
             model_size=self._model_size,
             language=language,
             model_dir=self._model_dir,

@@ -31,7 +31,7 @@
 
     <div class="engine-chip" class:offline={!engineOnline}>
       <span class="engine-dot"></span>
-      <span>{engineOnline ? "引擎在线" : "引擎离线"}</span>
+      <span>{engineOnline ? "Native 引擎在线" : "引擎离线"}</span>
     </div>
 
     <button class="command-chip" type="button" title="前往笔记库搜索" onclick={() => navigate("notes")}>

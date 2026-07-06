@@ -4,19 +4,8 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-execute",
-    "shell:allow-spawn",
     "dialog:default",
     "notification:default",
-    "clipboard-manager:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/python-engine",
-          "sidecar": true
-        }
-      ]
-    }
+    "clipboard-manager:default"
   ]
 }

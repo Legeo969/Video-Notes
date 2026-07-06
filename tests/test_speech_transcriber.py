@@ -33,6 +33,7 @@ def test_speech_transcriber_uses_injected_gateway() -> None:
         (
             "audio.wav",
             {
+                "backend": "whisper_cpp",
                 "model_size": "base",
                 "language": "en",
                 "model_dir": "/models",

@@ -36,6 +36,7 @@ class FrameService:
         max_frames: int = 30,
         transcript_segments: list[dict] | None = None,
         ocr_enabled: bool = False,
+        ocr_backend: str = "tesseract",
     ) -> list[dict]:
         frames = self._frame_gateway.extract_frames(
             video_path,
@@ -46,9 +47,9 @@ class FrameService:
             transcript_segments=transcript_segments,
         )
         if ocr_enabled and frames:
-            self._analyze_ocr(frames)
+            self._analyze_ocr(frames, backend=ocr_backend)
         return frames
 
-    def _analyze_ocr(self, frames: list[dict]) -> None:
+    def _analyze_ocr(self, frames: list[dict], *, backend: str) -> None:
         gateway = self._ocr_gateway or self._default_ocr_gateway()
-        gateway.analyze(frames)
+        gateway.analyze(frames, backend=backend)

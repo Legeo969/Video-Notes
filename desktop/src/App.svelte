@@ -24,7 +24,7 @@
 
   function setEngineFailure(payload: { error?: string | null; startup_log?: string }) {
     engineOnline = false;
-    engineError = payload.error || "Python 处理引擎未能启动。";
+    engineError = payload.error || "处理引擎未能启动。";
     startupLog = payload.startup_log || startupLog;
   }
 
@@ -60,7 +60,7 @@
           engineError = "";
         });
         const stopDisconnected = await onEngineEvent("engine.disconnected", () => {
-          setEngineFailure({ error: "处理引擎连接已断开，请重新连接。" });
+          setEngineFailure({ error: "旧版处理引擎连接已断开；native engine 仍可用于设置和插件管理。" });
         });
         if (disposed) {
           stopFailed(); stopStarted(); stopDisconnected();
@@ -112,7 +112,7 @@
         <section class="engine-alert" role="alert">
           <div class="alert-symbol"><Icon name="alert" size={18} /></div>
           <div class="alert-copy">
-            <div class="alert-title-row"><strong>处理引擎暂不可用</strong><span>界面仍可浏览</span></div>
+            <div class="alert-title-row"><strong>处理能力暂不可用</strong><span>界面仍可浏览</span></div>
             <p>{engineError}</p>
             {#if alertExpanded && startupLog}<code>{startupLog}</code>{/if}
             {#if startupLog}<button class="detail-link" onclick={() => alertExpanded = !alertExpanded}>{alertExpanded ? "收起诊断信息" : "查看诊断信息"}</button>{/if}

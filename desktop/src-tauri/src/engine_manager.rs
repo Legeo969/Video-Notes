@@ -2,8 +2,9 @@ use crate::process_tree::ProcessTree;
 use crate::protocol;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -299,10 +300,6 @@ impl EngineManager {
         })
     }
 
-    pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
-        self.client()?.call(method, params).await
-    }
-
     /// Gracefully shut down the engine.
     pub fn shutdown(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -312,11 +309,6 @@ impl EngineManager {
         self.child_stdin.take();
         self.connection_lost.store(true, Ordering::SeqCst);
         self.process_tree.take(); // drops ProcessTree → TerminateJobObject
-    }
-
-    /// Record a lifecycle/readiness failure for the status API and UI banner.
-    pub fn mark_error(&mut self, message: impl Into<String>) {
-        self.last_error = Some(message.into());
     }
 
     /// Most recent engine startup/runtime failure, safe to expose to the UI.
@@ -554,11 +546,47 @@ fn configure_private_engine_env(
 ) {
     let data_dir = working_dir;
     let state_dir = data_dir.join("state");
+    let settings_path = persistent_settings_path(app_handle, data_dir);
     cmd.env("VIDEO_NOTES_DATA_DIR", data_dir)
         .env("VIDEO_NOTES_STATE_DIR", &state_dir)
         .env("VIDEO_NOTES_JOBS_DIR", data_dir.join("jobs"))
-        .env("VIDEO_NOTES_SETTINGS_PATH", state_dir.join("settings.json"))
+        .env("VIDEO_NOTES_RUNTIME_DIR", data_dir.join("runtime"))
+        .env("VIDEO_NOTES_SETTINGS_PATH", settings_path)
         .env("VIDEO_NOTES_DEFAULT_OUTPUT_DIR", default_export_dir(app_handle));
+}
+
+fn persistent_settings_path(app_handle: &AppHandle, data_dir: &Path) -> PathBuf {
+    let config_dir = if let Some(base) = std::env::var_os("APPDATA") {
+        PathBuf::from(base).join("Video Notes AI")
+    } else {
+        app_handle
+            .path()
+            .app_config_dir()
+            .unwrap_or_else(|_| data_dir.join("config"))
+    };
+    let settings_path = config_dir.join("settings.json");
+    migrate_legacy_settings(&data_dir.join("state").join("settings.json"), &settings_path);
+    settings_path
+}
+
+fn migrate_legacy_settings(legacy_path: &Path, settings_path: &Path) {
+    if settings_path.exists() || !legacy_path.is_file() {
+        return;
+    }
+    if let Some(parent) = settings_path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            log::warn!("Failed to create settings directory {:?}: {}", parent, error);
+            return;
+        }
+    }
+    if let Err(error) = fs::copy(legacy_path, settings_path) {
+        log::warn!(
+            "Failed to migrate settings from {:?} to {:?}: {}",
+            legacy_path,
+            settings_path,
+            error
+        );
+    }
 }
 
 fn default_export_dir(app_handle: &AppHandle) -> PathBuf {

@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.infrastructure.video.frame_quality import is_blurry, check_brightness, is_low_contrast
+from src.utils.external_tools import resolve_tool
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,9 @@ def _get_duration(video_path: str) -> float | None:
     优先使用 ffprobe，失败时回退到 PyAV (av) 库。
     """
     # ── 方法 1: ffprobe ──
+    ffprobe = resolve_tool("ffprobe", components=["ffmpeg-tools"], provides="ffmpeg")
     cmd = [
-        "ffprobe",
+        ffprobe or "ffprobe",
         "-nostdin", "-hide_banner", "-loglevel", "error",
         "-show_entries", "format=duration",
         "-of", "csv=p=0",
@@ -98,8 +100,9 @@ def _detect_scenes_ffmpeg(video_path: str, threshold: float = 0.3) -> list[float
     通过 select='gt(scene,{threshold})' 过滤帧间变化超过阈值的帧，
     搭配 showinfo 输出 pts_time。结果包含每个检测到的切分帧的时间戳。
     """
+    ffmpeg = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
     cmd = [
-        "ffmpeg",
+        ffmpeg or "ffmpeg",
         "-nostdin", "-hide_banner", "-loglevel", "error",
         "-i", video_path,
         "-vf", f"select='gt(scene,{threshold})',showinfo",
@@ -295,8 +298,9 @@ def _extract_frame_at_time(
     """
     filename = f"frame_{base_name}_{index:04d}.jpg"
     out_path = os.path.join(output_dir, filename)
+    ffmpeg = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
     cmd = [
-        "ffmpeg",
+        ffmpeg or "ffmpeg",
         "-nostdin", "-hide_banner", "-loglevel", "error",
         "-ss", str(time_sec),
         "-i", video_path,

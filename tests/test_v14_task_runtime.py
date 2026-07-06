@@ -71,12 +71,14 @@ def test_request_snapshot_excludes_secrets_and_rehydrates_current_credentials(tm
     request = PipelineRequest(
         input="video.mp4",
         output_dir=str(tmp_path / "output"),
+        transcription_backend="whisper_cpp",
         whisper_model="small",
         gpt_model="snapshot-model",
         provider="mimo",
         api_key="sk-should-never-be-persisted",
         frame_mode="auto",
         max_frames=17,
+        ocr_backend="tesseract",
         vision_enabled=True,
         vision_provider="openai_compat",
         vision_model="snapshot-vision",
@@ -92,9 +94,11 @@ def test_request_snapshot_excludes_secrets_and_rehydrates_current_credentials(tm
 
     restored = pipeline_request_from_snapshot(snapshot, settings_path=str(settings_path))
     assert restored.whisper_model == "small"
+    assert restored.transcription_backend == "whisper_cpp"
     assert restored.gpt_model == "snapshot-model"
     assert restored.frame_mode == "auto"
     assert restored.max_frames == 17
+    assert restored.ocr_backend == "tesseract"
     assert restored.vision_model == "snapshot-vision"
     assert restored.api_key == "sk-current-notes"
     assert restored.vision_api_key == "sk-current-vision"

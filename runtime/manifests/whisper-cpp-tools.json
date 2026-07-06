@@ -1,0 +1,32 @@
+{
+  "component": "whisper-cpp-tools",
+  "version": "1.5.0",
+  "platform": "windows-x86_64",
+  "engine_api": 1,
+  "description": "whisper.cpp native CLI transcription tools",
+  "sha256": "",
+  "signature": "",
+  "size_mb": 50,
+  "requires": {
+    "base-engine": ">=1.5.0 <2.0.0"
+  },
+  "provides": [
+    "transcription-native"
+  ],
+  "files": [
+    "whisper-cli.exe",
+    "whisper.dll",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu-alderlake.dll",
+    "ggml-cpu-cannonlake.dll",
+    "ggml-cpu-cascadelake.dll",
+    "ggml-cpu-haswell.dll",
+    "ggml-cpu-icelake.dll",
+    "ggml-cpu-sandybridge.dll",
+    "ggml-cpu-skylakex.dll",
+    "ggml-cpu-sse42.dll",
+    "ggml-cpu-x64.dll"
+  ],
+  "package_sha256": ""
+}

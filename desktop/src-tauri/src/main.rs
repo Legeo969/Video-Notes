@@ -2,11 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine_manager;
+mod native_engine;
 mod process_tree;
 mod protocol;
 mod startup_diagnostics;
 
 use engine_manager::EngineManager;
+use native_engine::NativeEngine;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
@@ -14,7 +16,11 @@ use tokio::sync::Mutex;
 #[tauri::command]
 async fn get_engine_info(
     engine: tauri::State<'_, Arc<Mutex<EngineManager>>>,
+    native_engine: tauri::State<'_, NativeEngine>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(result) = native_engine.call("system.info", serde_json::json!({})) {
+        return result;
+    }
     let client = {
         let mut mgr = engine.lock().await;
         if !mgr.is_running() {
@@ -28,9 +34,18 @@ async fn get_engine_info(
 #[tauri::command]
 async fn engine_call(
     engine: tauri::State<'_, Arc<Mutex<EngineManager>>>,
+    native_engine: tauri::State<'_, NativeEngine>,
     method: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    if let Some(result) = native_engine.call(&method, params.clone()) {
+        return result;
+    }
+    if !python_fallback_enabled() {
+        return Err(format!(
+            "{method} is not available in the Rust native engine yet. Python fallback is disabled."
+        ));
+    }
     let client = {
         let mut mgr = engine.lock().await;
         if !mgr.is_running() {
@@ -48,22 +63,29 @@ async fn get_engine_status(
     let mut mgr = engine.lock().await;
     let running = mgr.is_running();
     Ok(serde_json::json!({
-        "running": running,
+        "running": true,
+        "native_running": true,
+        "python_running": running,
         "error": mgr.last_error(),
         "startup_log": startup_diagnostics::log_path().to_string_lossy(),
     }))
 }
 
+fn python_fallback_enabled() -> bool {
+    std::env::var("VIDEO_NOTES_ENABLE_PYTHON_FALLBACK")
+        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
 fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             startup_diagnostics::append("Tauri setup started");
 
-            // Resolve the engine command and arguments (env var → dev → sidecar)
+            // Resolve the optional legacy engine command for explicit fallback.
             let (engine_command, engine_args, engine_working_dir) =
                 engine_manager::resolve_engine_path(app.handle());
 
@@ -84,10 +106,11 @@ fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
                 engine_working_dir,
             );
             let engine = Arc::new(Mutex::new(engine));
+            let native_engine = NativeEngine::new(app.handle());
 
-            let engine_clone = engine.clone();
             let app_handle = app.handle().clone();
             app.manage(engine);
+            app.manage(native_engine);
 
             // Be explicit about the main window on release startup. This also
             // recovers from stale minimized/hidden state in some Windows shells.
@@ -102,57 +125,11 @@ fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
                 startup_diagnostics::append("Main webview window was not created");
             }
 
-            // Use Tauri's runtime instead of tokio::spawn directly. Calling
-            // tokio::spawn from synchronous setup can panic in release builds
-            // when no Tokio context is entered, which previously looked like
-            // "double-click does nothing" because the console is hidden.
-            tauri::async_runtime::spawn(async move {
-                let result = async {
-                    let client = {
-                        let mut mgr = engine_clone.lock().await;
-                        mgr.start().await?;
-                        mgr.client()?
-                    };
-
-                    // Spawning a process is not the same as a ready engine.
-                    // Verify one real RPC before clearing the UI error banner.
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(20),
-                        client.call("system.info", serde_json::json!({})),
-                    )
-                    .await
-                    .map_err(|_| "Engine readiness check timed out after 20 seconds".to_string())??;
-                    Ok::<(), String>(())
-                }
-                .await;
-
-                match result {
-                    Ok(()) => {
-                        startup_diagnostics::append("Python engine started and passed readiness check");
-                        let _ = app_handle.emit(
-                            "engine:started",
-                            serde_json::json!({ "running": true }),
-                        );
-                    }
-                    Err(error) => {
-                        {
-                            let mut mgr = engine_clone.lock().await;
-                            mgr.mark_error(error.clone());
-                            mgr.shutdown();
-                        }
-                        startup_diagnostics::append(format!(
-                            "Python engine failed readiness check: {error}"
-                        ));
-                        let _ = app_handle.emit(
-                            "engine:start_failed",
-                            serde_json::json!({
-                                "error": error,
-                                "startup_log": startup_diagnostics::log_path().to_string_lossy(),
-                            }),
-                        );
-                    }
-                }
-            });
+            startup_diagnostics::append("Rust native engine is ready");
+            let _ = app_handle.emit(
+                "engine:started",
+                serde_json::json!({ "running": true, "engine_kind": "rust-native" }),
+            );
 
             startup_diagnostics::append("Tauri setup completed");
             Ok(())

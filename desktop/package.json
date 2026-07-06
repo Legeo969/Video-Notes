@@ -14,7 +14,6 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.0.0",
-    "@tauri-apps/plugin-shell": "^2.0.0",
     "dompurify": "^3.4.11",
     "marked": "^18.0.5"
   },

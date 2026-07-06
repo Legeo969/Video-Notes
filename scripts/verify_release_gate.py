@@ -23,11 +23,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 REQUIRED_COMPONENTS = {
     "base-engine",
+    "download-tools",
     "ffmpeg-tools",
-    "transcription-cpu",
-    "transcription-cuda",
-    "ocr-cpu",
-    "ocr-gpu",
+    "whisper-cpp-tools",
+    "tesseract-ocr-tools",
 }
 
 
@@ -342,9 +341,12 @@ def _check_runtime_payload_source_preparer(repo: Path, errors: list[GateIssue]) 
         "payload-source-map.json": "runtime payload source preparation must write a source map",
         "python3.dll": "base-engine source preparation must collect python3.dll",
         "python$($pythonInfo.version_nodot).dll": "base-engine source preparation must collect the versioned Python DLL",
-        "requirements\\sidecar.txt": "transcription source preparation must use isolated sidecar requirements",
+        "requirements\\sidecar.txt": "source preparation must use isolated sidecar requirements",
+        "requirements\\transcription-cpu.txt": "transcription source preparation must use isolated transcription requirements",
         "requirements\\ocr-cpu.txt": "OCR CPU source preparation must use OCR CPU requirements",
         "requirements\\ocr-gpu.txt": "OCR GPU source preparation must use OCR GPU requirements",
+        "whisper-bin-x64.zip": "source preparation must fetch official whisper.cpp native tools",
+        "tesseract.exe": "source preparation must collect Tesseract native OCR tools",
         "stage_runtime_payloads.py": "source preparation must optionally stage payloads",
         "verify_runtime_payloads.py": "source preparation must optionally verify payload readiness",
     }
@@ -362,9 +364,12 @@ def _check_runtime_payload_stager(repo: Path, errors: list[GateIssue]) -> None:
     required_tokens = {
         "stage_runtime_payloads": "runtime component payloads must have a staging helper",
         "base-engine": "payload stager must know the base-engine source root",
+        "download-tools": "payload stager must know the download-tools source root",
         "ffmpeg-tools": "payload stager must know the ffmpeg-tools source root",
-        "transcription-cpu": "payload stager must know transcription source roots",
-        "ocr-cpu": "payload stager must know OCR source roots",
+        "whisper-cpp-tools": "payload stager must know the whisper.cpp source root",
+        "tesseract-ocr-tools": "payload stager must know the Tesseract source root",
+        "transcription-cpu": "payload stager must know optional transcription source roots",
+        "ocr-cpu": "payload stager must know optional OCR source roots",
         "--clean": "payload stager must require an explicit replacement mode",
         "source-map": "payload stager must support explicit source roots",
     }

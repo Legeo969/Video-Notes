@@ -2,14 +2,14 @@
 
 import logging
 import os
-import glob
 import uuid
 import time
 import shutil
 import re
-import yt_dlp
+import subprocess
 
-from src.infrastructure.video.yt_dlp_compat import apply_yt_dlp_compat
+from src.utils.external_tools import require_tool, resolve_tool
+from src.utils.subprocess_flags import hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def _canonicalize_bilibili_url(url: str) -> str:
     return text
 
 
-def _site_http_headers(url: str) -> dict:
+def _site_header_args(url: str) -> list[str]:
     """Headers required by stricter public-video sites.
 
     A browser-exported cookies.txt can still fail on Bilibili with HTTP 412 if
@@ -49,17 +49,15 @@ def _site_http_headers(url: str) -> dict:
     headers for metadata and media downloads that we know work with yt-dlp CLI.
     """
     if "bilibili.com" not in (url or "").lower():
-        return {}
-    return {
-        "http_headers": {
-            "User-Agent": _BROWSER_USER_AGENT,
-            "Referer": "https://www.bilibili.com/",
-            "Origin": "https://www.bilibili.com",
-        },
-    }
+        return []
+    return [
+        "--add-header", f"User-Agent:{_BROWSER_USER_AGENT}",
+        "--add-header", "Referer:https://www.bilibili.com/",
+        "--add-header", "Origin:https://www.bilibili.com",
+    ]
 
 
-def _cookie_options(cookie_spec: str | None, job_dir: str) -> dict:
+def _cookie_args(cookie_spec: str | None, job_dir: str) -> list[str]:
     """Return yt-dlp cookie options for login-gated public video sites.
 
     ``cookie_spec`` may be a path to a Netscape cookies.txt file or a raw
@@ -68,19 +66,19 @@ def _cookie_options(cookie_spec: str | None, job_dir: str) -> dict:
     so yt-dlp receives them through its normal cookie jar path.
     """
     if not cookie_spec:
-        return {}
+        return []
     text = str(cookie_spec).strip().strip('"')
     if not text:
-        return {}
+        return []
 
     expanded = os.path.abspath(os.path.expandvars(os.path.expanduser(text)))
     if os.path.isfile(expanded):
-        return {"cookiefile": expanded}
+        return ["--cookies", expanded]
 
     # Raw cookie header pasted from the browser.  Keep this file in the job
     # temp directory and never copy it to final note output.
     if "=" not in text:
-        return {}
+        return []
     cookie_path = os.path.join(job_dir, "cookies.generated.txt")
     lines = [
         "# Netscape HTTP Cookie File",
@@ -99,10 +97,10 @@ def _cookie_options(cookie_spec: str | None, job_dir: str) -> dict:
         # .bilibili.com domain also works for www.bilibili.com video pages.
         lines.append(f".bilibili.com\tTRUE\t/\tFALSE\t0\t{name}\t{value}")
     if len(lines) <= 2:
-        return {}
+        return []
     with open(cookie_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
-    return {"cookiefile": cookie_path}
+    return ["--cookies", cookie_path]
 
 
 def _friendly_download_error(url: str, exc: Exception) -> RuntimeError:
@@ -163,36 +161,60 @@ def _make_job_dir(output_dir: str) -> str:
     return job_dir
 
 
+def _tool_args(url: str, job_dir: str, cookies: str | None) -> list[str]:
+    args = _site_header_args(url) + _cookie_args(cookies, job_dir)
+    ffmpeg = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
+    if ffmpeg:
+        args.extend(["--ffmpeg-location", os.path.dirname(ffmpeg)])
+    return args
+
+
+def _run_ytdlp(cmd: list[str], url: str) -> None:
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            **hidden_subprocess_kwargs(),
+        )
+    except FileNotFoundError as exc:
+        raise _friendly_download_error(url, exc) from exc
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(message or f"yt-dlp exited with code {result.returncode}")
+
+
 def download_audio(url: str, output_dir: str = "./output", cookies: str | None = None) -> str:
     """直接下载音频（跳过视频下载和 FFmpeg 提取步骤）
 
-    使用 yt-dlp Python API，不依赖外部命令，
-    确保在打包 exe 中也能正常工作。
+    使用 yt-dlp standalone executable，不依赖 yt-dlp Python package。
     每次下载使用独立临时子目录，避免并发或同名视频覆盖。
     """
     os.makedirs(output_dir, exist_ok=True)
     job_dir = _make_job_dir(output_dir)
     url = _canonicalize_bilibili_url(url)
-    apply_yt_dlp_compat(url)
 
     logger.info(f"📥 正在下载音频: {url}")
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": os.path.join(job_dir, "%(id)s-%(title).80s.%(ext)s"),
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "wav",
-        }],
-        "quiet": True,
-        "no_warnings": True,
-    }
-    ydl_opts.update(_site_http_headers(url))
-    ydl_opts.update(_cookie_options(cookies, job_dir))
+    try:
+        ytdlp = require_tool("yt-dlp", components=["download-tools"], provides="download")
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise _friendly_download_error(url, e)
+    cmd = [
+        ytdlp,
+        url,
+        "--format", "bestaudio/best",
+        "--output", os.path.join(job_dir, "%(id)s-%(title).80s.%(ext)s"),
+        "--extract-audio",
+        "--audio-format", "wav",
+        "--no-warnings",
+        "--no-progress",
+        *_tool_args(url, job_dir, cookies),
+    ]
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        _run_ytdlp(cmd, url)
     except Exception as e:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise _friendly_download_error(url, e)
@@ -232,26 +254,29 @@ def download_video(url: str, output_dir: str = "./output", cookies: str | None =
     os.makedirs(output_dir, exist_ok=True)
     job_dir = _make_job_dir(output_dir)
     url = _canonicalize_bilibili_url(url)
-    apply_yt_dlp_compat(url)
 
     logger.info(f"📥 正在下载视频: {url}")
 
-    ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": os.path.join(job_dir, "%(id)s-%(title).80s.%(ext)s"),
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
-        "noprogress": True,
-    }
-    ydl_opts.update(_site_http_headers(url))
-    ydl_opts.update(_cookie_options(cookies, job_dir))
+    try:
+        ytdlp = require_tool("yt-dlp", components=["download-tools"], provides="download")
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise _friendly_download_error(url, e)
+    cmd = [
+        ytdlp,
+        url,
+        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--output", os.path.join(job_dir, "%(id)s-%(title).80s.%(ext)s"),
+        "--merge-output-format", "mp4",
+        "--no-warnings",
+        "--no-progress",
+        *_tool_args(url, job_dir, cookies),
+    ]
 
     last_err = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            _run_ytdlp(cmd, url)
             break
         except Exception as e:
             last_err = e

@@ -48,17 +48,21 @@ def test_tauri_settings_contract_round_trip(settings_home: Path):
     assert handlers["settings.update"]({
         "patches": {
             "output_dir": "D:/notes",
+            "transcription_backend": "whisper_cpp",
             "whisper_model": "small",
             "whisper_model_dir": "D:/models",
             "ocr_enabled": True,
+            "ocr_backend": "tesseract",
             "template": "study",
         }
     }) is True
     loaded = handlers["settings.get"]({})
     assert loaded["output_dir"] == "D:/notes"
+    assert loaded["transcription_backend"] == "whisper_cpp"
     assert loaded["whisper_model_dir"] == "D:/models"
     assert loaded["model_dir"] == "D:/models"
     assert loaded["ocr_enabled"] is True
+    assert loaded["ocr_backend"] == "tesseract"
     assert loaded["template"] == "study"
     assert loaded["active_provider"] == "Local"
     assert loaded["bindings"]["llm"]["provider"] == "Local"
@@ -171,6 +175,7 @@ def test_local_whisper_models_are_normalized_and_selectable(settings_home: Path)
     direct_medium = model_root / "medium"
     direct_medium.mkdir()
     (direct_medium / "config.json").write_text("{}", encoding="utf-8")
+    (model_root / "ggml-small.bin").write_text("model", encoding="utf-8")
 
     handlers["settings.update"]({
         "whisper_model_dir": str(model_root),
@@ -178,10 +183,11 @@ def test_local_whisper_models_are_normalized_and_selectable(settings_home: Path)
     })
 
     local = handlers["settings.models.local"]({})
-    assert [item["id"] for item in local] == ["large-v3-turbo", "medium", "tiny"]
+    assert [item["id"] for item in local] == ["large-v3-turbo", "medium", "small", "tiny"]
     paths = {item["id"]: item["path"] for item in local}
     assert paths["large-v3-turbo"].endswith("faster-whisper-large-v3-turbo")
     assert paths["tiny"].endswith("faster-whisper-tiny")
     assert paths["medium"].endswith("medium")
+    assert paths["small"].endswith("ggml-small.bin")
     # Compatibility endpoint still includes the configured model.
     assert "medium" in handlers["settings.models.scan"]({})

@@ -110,6 +110,8 @@
     <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
   {:else if name === "database"}
     <ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+  {:else if name === "package"}
+    <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3z" /><path d="m4.5 8 7.5 4 7.5-4M12 12v8.5" />
   {:else if name === "save"}
     <path d="M5 3h12l4 4v14H3V3z" /><path d="M7 3v6h10V3M8 21v-8h8v8" />
   {:else if name === "more"}

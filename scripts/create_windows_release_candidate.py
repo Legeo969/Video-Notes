@@ -17,11 +17,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_COMPONENTS = (
     "base-engine",
+    "download-tools",
     "ffmpeg-tools",
-    "ocr-cpu",
-    "ocr-gpu",
-    "transcription-cpu",
-    "transcription-cuda",
+    "whisper-cpp-tools",
+    "tesseract-ocr-tools",
 )
 PRIVATE_KEY_NAME = "component-release-private.key"
 

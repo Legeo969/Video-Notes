@@ -13,9 +13,11 @@ import json
 import logging
 import os
 import platform
-import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,8 +31,12 @@ from src.infrastructure.system.component_manager import (
     SignatureVerifier,
 )
 from src.infrastructure.system.signing import create_release_signature_verifier
+from src.utils.external_tools import resolve_tool
+from src.utils.runtime_components import activate_runtime_components, installed_component_paths
 
 logger = logging.getLogger(__name__)
+YTDLP_EXE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+WHISPER_CPP_WINDOWS_URL = "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip"
 
 
 def _result(name: str, status: str, detail: str) -> dict[str, str]:
@@ -45,6 +51,58 @@ def _module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError, AttributeError):
         return False
+
+
+def _download_executable(url: str, target: Path, *, max_bytes: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    total = 0
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            with tmp.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("download exceeds maximum size")
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _download_whisper_cpp_tools(
+    url: str,
+    target_dir: Path,
+    files: list[str],
+    *,
+    max_bytes: int,
+) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = target_dir / "whisper-bin-x64.zip"
+    _download_executable(url, zip_path, max_bytes=max_bytes)
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            names = {item.filename.replace("\\", "/"): item for item in archive.infolist()}
+            for filename in files:
+                member = names.get(f"Release/{filename}") or names.get(filename)
+                if member is None:
+                    raise FileNotFoundError(f"whisper.cpp archive missing {filename}")
+                output = target_dir / filename
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, output.open("wb") as dest:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+    finally:
+        zip_path.unlink(missing_ok=True)
 
 
 def create_diagnostics_handlers(
@@ -65,7 +123,7 @@ def create_diagnostics_handlers(
         return _result("Python", "pass", f"{platform.python_version()} ({sys.executable})")
 
     def _check_ffmpeg() -> dict[str, str]:
-        executable = shutil.which("ffmpeg")
+        executable = resolve_tool("ffmpeg", components=["ffmpeg-tools"], provides="ffmpeg")
         if not executable:
             return _result("FFmpeg", "fail", "未在 PATH 中找到 ffmpeg")
         try:
@@ -82,7 +140,30 @@ def create_diagnostics_handlers(
         except Exception as exc:
             return _result("FFmpeg", "fail", str(exc))
 
+    def _check_ytdlp() -> dict[str, str]:
+        executable = resolve_tool("yt-dlp", components=["download-tools"], provides="download")
+        if not executable:
+            return _result("yt-dlp", "fail", "未找到 yt-dlp.exe，请安装 download-tools 插件")
+        try:
+            completed = subprocess.run(
+                [executable, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return _result("yt-dlp", "pass", completed.stdout.strip() or executable)
+            return _result("yt-dlp", "fail", f"退出码 {completed.returncode}")
+        except Exception as exc:
+            return _result("yt-dlp", "fail", str(exc))
+
     def _check_cuda() -> dict[str, str]:
+        activate_runtime_components(
+            components=["transcription-cuda", "transcription-cpu"],
+            provides="transcription",
+            runtime_root=runtime_root,
+        )
         if not _module_available("ctranslate2"):
             return _result("CUDA", "warn", "未安装 ctranslate2，将无法使用 faster-whisper")
         try:
@@ -96,16 +177,57 @@ def create_diagnostics_handlers(
             return _result("CUDA", "warn", str(exc))
 
     def _check_whisper() -> dict[str, str]:
+        components = installed_component_paths(
+            components=["transcription-cuda", "transcription-cpu"],
+            provides="transcription",
+            runtime_root=runtime_root,
+        )
+        activate_runtime_components(
+            components=["transcription-cuda", "transcription-cpu"],
+            provides="transcription",
+            runtime_root=runtime_root,
+        )
         if not _module_available("faster_whisper"):
-            return _result("faster-whisper", "fail", "未安装 faster-whisper")
+            return _result("faster-whisper", "fail", "未安装转写组件")
+        if components:
+            names = ", ".join(path.name for path in components)
+            return _result("faster-whisper", "pass", f"已安装转写组件: {names}")
         return _result("faster-whisper", "pass", "Python 模块可导入")
+
+    def _check_whisper_cpp() -> dict[str, str]:
+        executable = (
+            resolve_tool(
+                "whisper-cli",
+                components=["whisper-cpp-tools"],
+                provides="transcription-native",
+            )
+            or resolve_tool(
+                "main",
+                components=["whisper-cpp-tools"],
+                provides="transcription-native",
+            )
+        )
+        if executable:
+            return _result("whisper.cpp", "pass", executable)
+        return _result("whisper.cpp", "warn", "未安装 whisper-cpp-tools")
 
     def _check_ocr() -> dict[str, str]:
         # OCR is optional.  Report capability without importing model weights.
+        tesseract = resolve_tool(
+            "tesseract",
+            components=["tesseract-ocr-tools"],
+            provides="ocr-native",
+        )
+        if tesseract:
+            return _result("OCR", "pass", f"Tesseract native: {tesseract}")
+        ocr_components = installed_component_paths(provides="ocr", runtime_root=runtime_root)
+        activate_runtime_components(provides="ocr", runtime_root=runtime_root)
         candidates = ["paddleocr", "easyocr", "rapidocr_onnxruntime"]
         available = [name for name in candidates if _module_available(name)]
         if available:
             return _result("OCR", "pass", "可用后端：" + ", ".join(available))
+        if ocr_components:
+            return _result("OCR", "warn", "OCR 组件已安装，但 Python 模块未通过校验")
         return _result("OCR", "warn", "未检测到可选 OCR 后端")
 
     def _check_settings() -> dict[str, str]:
@@ -133,8 +255,10 @@ def create_diagnostics_handlers(
         return [
             _check_python(),
             _check_ffmpeg(),
+            _check_ytdlp(),
             _check_cuda(),
             _check_whisper(),
+            _check_whisper_cpp(),
             _check_ocr(),
             _check_settings(),
             _check_output_dir(),
@@ -272,10 +396,49 @@ def create_diagnostics_handlers(
         manifest_path = str(params.get("manifest_path") or "").strip()
         if not source and manifest_path:
             source = str(Path(manifest_path).expanduser().resolve().parent)
-        if not source:
-            raise InvalidParams("source_dir is required for component install")
         try:
             manifest = _manifest_from_params(params)
+            if not source:
+                bundled_source = runtime_root / "packages" / manifest.component
+                if bundled_source.is_dir():
+                    source = str(bundled_source)
+            if not source and manifest.component == "download-tools":
+                download_url = str(params.get("download_url") or YTDLP_EXE_URL).strip()
+                with tempfile.TemporaryDirectory(dir=runtime_root / "components") as temp_dir:
+                    temp_source = Path(temp_dir)
+                    _download_executable(
+                        download_url,
+                        temp_source / "yt-dlp.exe",
+                        max_bytes=int(params.get("max_bytes") or 100 * 1024 * 1024),
+                    )
+                    return component_manager.install_component(
+                        manifest,
+                        temp_source,
+                        require_signature=False,
+                    )
+            if not source and manifest.component == "whisper-cpp-tools":
+                download_url = str(params.get("download_url") or WHISPER_CPP_WINDOWS_URL).strip()
+                with tempfile.TemporaryDirectory(dir=runtime_root / "components") as temp_dir:
+                    temp_source = Path(temp_dir)
+                    _download_whisper_cpp_tools(
+                        download_url,
+                        temp_source,
+                        manifest.files,
+                        max_bytes=int(params.get("max_bytes") or 300 * 1024 * 1024),
+                    )
+                    return component_manager.install_component(
+                        manifest,
+                        temp_source,
+                        require_signature=False,
+                    )
+            if not source and manifest.component == "tesseract-ocr-tools":
+                tesseract = resolve_tool("tesseract")
+                if tesseract:
+                    candidate = Path(tesseract).resolve().parent
+                    if (candidate / "tessdata").is_dir():
+                        source = str(candidate)
+            if not source:
+                raise InvalidParams("source_dir is required for component install")
             return component_manager.install_component(
                 manifest,
                 source,

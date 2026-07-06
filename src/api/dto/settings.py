@@ -29,6 +29,7 @@ class SettingsResponse(BaseModel):
     """完整设置快照。"""
 
     output_dir: str = "./output"
+    transcription_backend: str = "whisper_cpp"
     whisper_model: str = "large-v3"
     providers: list[ProviderProfile] = []
     bindings: dict[str, BindingInfo] = {}  # llm / vision
@@ -37,6 +38,7 @@ class SettingsResponse(BaseModel):
     ai_model: str | None = None
     base_url: str | None = None
     vision_enabled: bool = False
+    ocr_backend: str = "tesseract"
     vision_provider: str | None = None
     vision_model: str | None = None
     vision_base_url: str | None = None
@@ -47,11 +49,13 @@ class SettingsUpdateRequest(BaseModel):
     """设置更新请求。"""
 
     output_dir: str | None = None
+    transcription_backend: str | None = None
     whisper_model: str | None = None
     provider: str | None = None
     ai_model: str | None = None
     base_url: str | None = None
     vision_enabled: bool | None = None
+    ocr_backend: str | None = None
     vision_provider: str | None = None
     vision_model: str | None = None
     vision_base_url: str | None = None

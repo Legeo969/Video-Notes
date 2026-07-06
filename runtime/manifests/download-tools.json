@@ -1,0 +1,20 @@
+{
+  "component": "download-tools",
+  "version": "1.5.0",
+  "platform": "windows-x86_64",
+  "engine_api": 1,
+  "description": "yt-dlp standalone executable",
+  "sha256": "",
+  "signature": "",
+  "size_mb": 20,
+  "requires": {
+    "base-engine": ">=1.5.0 <2.0.0"
+  },
+  "provides": [
+    "download"
+  ],
+  "files": [
+    "yt-dlp.exe"
+  ],
+  "package_sha256": ""
+}

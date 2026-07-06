@@ -20,5 +20,5 @@ class FrameExtractionGateway(Protocol):
 
 
 class OcrGateway(Protocol):
-    def analyze(self, frames: list[dict]) -> None:
+    def analyze(self, frames: list[dict], *, backend: str = "tesseract") -> None:
         """Populate OCR text on extracted frame dictionaries."""

@@ -12,7 +12,7 @@ import json
 import re
 import subprocess
 from src.utils.subprocess_flags import hidden_subprocess_kwargs
-import sys
+from src.utils.external_tools import resolve_tool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -173,24 +173,14 @@ class CollectionPlaylistImporter:
         Raises:
             RuntimeError: yt-dlp 不可用 或 playlist 解析失败
         """
-        ytdlp_bin, ytdlp_is_module = self._find_ytdlp()
-
-        if ytdlp_is_module:
-            cmd = [
-                sys.executable, "-m", "yt_dlp", url,
-                "--flat-playlist",
-                "--dump-single-json",
-                "--no-warnings",
-                "--no-check-certificate",
-            ]
-        else:
-            cmd = [
-                ytdlp_bin, url,
-                "--flat-playlist",
-                "--dump-single-json",
-                "--no-warnings",
-                "--no-check-certificate",
-            ]
+        ytdlp_bin = self._find_ytdlp()
+        cmd = [
+            ytdlp_bin, url,
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            "--no-check-certificate",
+        ]
 
         if cookie_file and os.path.isfile(cookie_file):
             cmd.extend(["--cookies", cookie_file])
@@ -205,8 +195,8 @@ class CollectionPlaylistImporter:
             )
         except FileNotFoundError:
             raise RuntimeError(
-                "yt-dlp 不可用。请安装 yt-dlp: pip install yt-dlp\n"
-                "或从 https://github.com/yt-dlp/yt-dlp 下载"
+                "yt-dlp 不可用。请在设置 > 插件中安装 download-tools，"
+                "或从 https://github.com/yt-dlp/yt-dlp 下载 yt-dlp.exe"
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError("playlist 解析超时（120s），请检查 URL 和网络连接")
@@ -250,21 +240,11 @@ class CollectionPlaylistImporter:
         return items
 
     @staticmethod
-    def _find_ytdlp() -> tuple[str, bool]:
+    def _find_ytdlp() -> str:
         """查找 yt-dlp 可执行文件路径。
 
-        Returns:
-            (命令路径, 是否为 Python 模块方式调用)
         """
-        # 优先使用 Python 包中的 yt-dlp（通过 python -m yt_dlp）
-        try:
-            import yt_dlp  # noqa: F401
-            return sys.executable, True
-        except ImportError:
-            pass
-
-        # 回退到系统 PATH 中的 yt-dlp 命令
-        return "yt-dlp", False
+        return resolve_tool("yt-dlp", components=["download-tools"], provides="download") or "yt-dlp"
 
     @staticmethod
     def is_playlist_url(url: str) -> bool:

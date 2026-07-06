@@ -2,7 +2,10 @@ param(
   [string]$OutputDir = ".build\runtime-payload-sources",
   [string]$PythonExe = "python",
   [string]$FfmpegDir = "",
+  [string]$WhisperCppDir = "",
+  [string]$TesseractDir = "",
   [switch]$SkipInstall,
+  [switch]$IncludeTranscriptionCpu,
   [switch]$IncludeCuda,
   [switch]$IncludeOcrCpu,
   [switch]$IncludeOcrGpu,
@@ -119,6 +122,45 @@ function Resolve-FfmpegTools {
   return $ffmpegDirPath
 }
 
+function Resolve-WhisperCppTools {
+  param([Parameter(Mandatory = $true)][string]$Destination)
+  if ($WhisperCppDir.Trim()) {
+    $candidate = Resolve-PathStrict $WhisperCppDir
+    $releaseDir = Join-Path $candidate "Release"
+    if (Test-Path (Join-Path $releaseDir "whisper-cli.exe")) {
+      return $releaseDir
+    }
+    return $candidate
+  }
+  if ($SkipInstall) {
+    throw "-SkipInstall was requested, but -WhisperCppDir was not provided."
+  }
+  $zipPath = Join-Path $OutputRoot "whisper-bin-x64.zip"
+  $extractRoot = Join-Path $OutputRoot "whisper-cpp-extract"
+  if (Test-Path $extractRoot) {
+    Remove-Item -LiteralPath $extractRoot -Recurse -Force
+  }
+  Write-Host "Downloading whisper.cpp standalone tools..." -ForegroundColor Cyan
+  Invoke-WebRequest -Uri "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip" -OutFile $zipPath
+  Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+  $releaseDir = Join-Path $extractRoot "Release"
+  if (-not (Test-Path (Join-Path $releaseDir "whisper-cli.exe"))) {
+    throw "whisper.cpp release archive did not contain Release\whisper-cli.exe"
+  }
+  return $releaseDir
+}
+
+function Resolve-TesseractTools {
+  if ($TesseractDir.Trim()) {
+    return Resolve-PathStrict $TesseractDir
+  }
+  $tesseract = Get-Command tesseract -ErrorAction SilentlyContinue
+  if (-not $tesseract) {
+    throw "tesseract.exe was not found. Pass -TesseractDir with tesseract.exe and tessdata."
+  }
+  return Split-Path -Parent $tesseract.Source
+}
+
 if (-not (Get-Command $PythonExe -ErrorAction SilentlyContinue)) {
   throw "$PythonExe not found"
 }
@@ -145,17 +187,62 @@ $ffmpegDirPath = Resolve-FfmpegTools
 Copy-RequiredItem (Join-Path $ffmpegDirPath "ffmpeg.exe") (Join-Path $ffmpegSource "ffmpeg.exe")
 Copy-RequiredItem (Join-Path $ffmpegDirPath "ffprobe.exe") (Join-Path $ffmpegSource "ffprobe.exe")
 
-$sidecarRequirements = @("requirements\sidecar.txt")
-if ($IncludeCuda) {
-  $sidecarRequirements += "requirements\cuda.txt"
+$downloadToolsSource = Join-Path $OutputRoot "download-tools"
+New-Item -ItemType Directory -Force $downloadToolsSource | Out-Null
+$ytdlpExe = Join-Path $downloadToolsSource "yt-dlp.exe"
+if (-not (Test-Path $ytdlpExe)) {
+  if ($SkipInstall) {
+    throw "-SkipInstall was requested, but yt-dlp.exe does not exist: $ytdlpExe"
+  }
+  Write-Host "Downloading yt-dlp standalone executable..." -ForegroundColor Cyan
+  Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile $ytdlpExe
 }
-$sidecarSite = New-IsolatedVenv "sidecar" $sidecarRequirements
+
+$whisperCppSource = Join-Path $OutputRoot "whisper-cpp-tools"
+New-Item -ItemType Directory -Force $whisperCppSource | Out-Null
+$whisperCppDirPath = Resolve-WhisperCppTools $whisperCppSource
+foreach ($item in @(
+  "whisper-cli.exe",
+  "whisper.dll",
+  "ggml.dll",
+  "ggml-base.dll",
+  "ggml-cpu-alderlake.dll",
+  "ggml-cpu-cannonlake.dll",
+  "ggml-cpu-cascadelake.dll",
+  "ggml-cpu-haswell.dll",
+  "ggml-cpu-icelake.dll",
+  "ggml-cpu-sandybridge.dll",
+  "ggml-cpu-skylakex.dll",
+  "ggml-cpu-sse42.dll",
+  "ggml-cpu-x64.dll"
+)) {
+  Copy-RequiredItem (Join-Path $whisperCppDirPath $item) (Join-Path $whisperCppSource $item)
+}
+
+$tesseractSource = Join-Path $OutputRoot "tesseract-ocr-tools"
+New-Item -ItemType Directory -Force $tesseractSource | Out-Null
+$tesseractDirPath = Resolve-TesseractTools
+Copy-RequiredItem (Join-Path $tesseractDirPath "tesseract.exe") (Join-Path $tesseractSource "tesseract.exe")
+Copy-RequiredItem (Join-Path $tesseractDirPath "tessdata") (Join-Path $tesseractSource "tessdata")
+
+$sidecarSite = New-IsolatedVenv "sidecar" @("requirements\sidecar.txt")
+$transcriptionCpuSite = Join-Path $OutputRoot "transcription-cpu-site"
+if ($IncludeTranscriptionCpu) {
+  $transcriptionCpuSite = New-IsolatedVenv "transcription-cpu" @("requirements\transcription-cpu.txt")
+}
+$transcriptionCudaSite = Join-Path $OutputRoot "transcription-cuda-site"
+if ($IncludeCuda) {
+  $transcriptionCudaSite = New-IsolatedVenv "transcription-cuda" @("requirements\transcription-cpu.txt", "requirements\cuda.txt")
+}
 
 $sourceMap = [ordered]@{
   "base-engine" = $baseSource
+  "download-tools" = $downloadToolsSource
   "ffmpeg-tools" = $ffmpegSource
-  "transcription-cpu" = $sidecarSite
-  "transcription-cuda" = $sidecarSite
+  "whisper-cpp-tools" = $whisperCppSource
+  "tesseract-ocr-tools" = $tesseractSource
+  "transcription-cpu" = $transcriptionCpuSite
+  "transcription-cuda" = $transcriptionCudaSite
 }
 
 if ($IncludeOcrCpu) {
@@ -179,8 +266,23 @@ $sourceMap | ConvertTo-Json -Depth 3 | Set-Content -Path $mapPath -Encoding utf8
 Write-Host "Runtime payload source map: $mapPath" -ForegroundColor Green
 
 if ($StagePayloads) {
-  & python "$PSScriptRoot\stage_runtime_payloads.py" --source-map $mapPath --clean
+  $componentsToStage = @(
+    "base-engine",
+    "download-tools",
+    "ffmpeg-tools",
+    "whisper-cpp-tools",
+    "tesseract-ocr-tools"
+  )
+  if ($IncludeTranscriptionCpu) { $componentsToStage += "transcription-cpu" }
+  if ($IncludeCuda) { $componentsToStage += "transcription-cuda" }
+  if ($IncludeOcrCpu) { $componentsToStage += "ocr-cpu" }
+  if ($IncludeOcrGpu) { $componentsToStage += "ocr-gpu" }
+  $componentArgs = @()
+  foreach ($component in $componentsToStage) {
+    $componentArgs += @("--component", $component)
+  }
+  & python "$PSScriptRoot\stage_runtime_payloads.py" --source-map $mapPath --clean @componentArgs
   Assert-NativeSuccess "runtime payload staging"
-  & python "$PSScriptRoot\verify_runtime_payloads.py"
+  & python "$PSScriptRoot\verify_runtime_payloads.py" @componentArgs
   Assert-NativeSuccess "runtime payload readiness"
 }

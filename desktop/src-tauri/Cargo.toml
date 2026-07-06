@@ -18,7 +18,6 @@ license = "MIT"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"

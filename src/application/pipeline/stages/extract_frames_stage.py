@@ -31,6 +31,7 @@ class ExtractFramesStage:
             "frame_mode": ctx.request.frame_mode,
             "max_frames": ctx.request.max_frames,
             "ocr_enabled": ctx.request.ocr_enabled,
+            "ocr_backend": ctx.request.ocr_backend,
         }
 
     def run(self, ctx: ProcessingContext, state: dict[str, Any]) -> StageResult:
@@ -58,6 +59,7 @@ class ExtractFramesStage:
                 max_frames=ctx.request.max_frames,
                 transcript_segments=_seg_dicts,
                 ocr_enabled=ctx.request.ocr_enabled,
+                ocr_backend=ctx.request.ocr_backend,
             )
 
         return StageResult(
