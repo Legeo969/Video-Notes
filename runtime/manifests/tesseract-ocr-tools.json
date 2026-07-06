@@ -1,6 +1,6 @@
 {
   "component": "tesseract-ocr-tools",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "Tesseract native executable OCR tools",

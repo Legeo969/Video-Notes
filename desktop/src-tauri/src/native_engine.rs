@@ -6,7 +6,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -3290,18 +3290,16 @@ fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
 }
 
 fn download_file_with_curl(url: &str, target: &Path) -> Result<(), String> {
-    let output = Command::new("curl.exe")
-        .args([
-            "-L",
-            "--fail",
-            "--retry",
-            "2",
-            "--output",
-            &target.to_string_lossy(),
-            url,
-        ])
-        .output()
-        .map_err(|error| format!("failed to run curl.exe: {error}"))?;
+    let args = vec![
+        "-L".to_string(),
+        "--fail".to_string(),
+        "--retry".to_string(),
+        "2".to_string(),
+        "--output".to_string(),
+        target.to_string_lossy().to_string(),
+        url.to_string(),
+    ];
+    let output = command_output("curl.exe", &args)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -3315,16 +3313,14 @@ fn download_file_with_powershell(url: &str, target: &Path) -> Result<(), String>
         powershell_quote(url),
         powershell_quote(&target.to_string_lossy())
     );
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .output()
-        .map_err(|error| format!("failed to run powershell.exe: {error}"))?;
+    let args = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-Command".to_string(),
+        script,
+    ];
+    let output = command_output("powershell.exe", &args)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -3378,37 +3374,72 @@ fn extract_zip_archive(archive: &Path, target: &Path) -> Result<(), String> {
         powershell_quote(&archive.to_string_lossy()),
         powershell_quote(&target.to_string_lossy())
     );
-    let powershell = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .output()
-        .map_err(|error| format!("failed to run powershell.exe: {error}"))?;
-    if powershell.status.success() {
-        return Ok(());
+    let powershell_args = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-Command".to_string(),
+        script,
+    ];
+    let powershell_result = command_output("powershell.exe", &powershell_args);
+    if let Ok(output) = &powershell_result {
+        if output.status.success() {
+            return Ok(());
+        }
     }
-    let tar = Command::new("tar.exe")
-        .args([
-            "-xf",
-            &archive.to_string_lossy(),
-            "-C",
-            &target.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| format!("failed to run tar.exe after PowerShell unzip failed: {error}"))?;
-    if tar.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "PowerShell unzip failed: {}; tar fallback failed: {}",
-            String::from_utf8_lossy(&powershell.stderr).trim(),
-            String::from_utf8_lossy(&tar.stderr).trim()
-        ))
+    let tar_args = vec![
+        "-xf".to_string(),
+        archive.to_string_lossy().to_string(),
+        "-C".to_string(),
+        target.to_string_lossy().to_string(),
+    ];
+    let tar_result = command_output("tar.exe", &tar_args);
+    if let Ok(output) = &tar_result {
+        if output.status.success() {
+            return Ok(());
+        }
     }
+    let powershell_error = match powershell_result {
+        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        Err(error) => error,
+    };
+    let tar_error = match tar_result {
+        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        Err(error) => error,
+    };
+    Err(format!(
+        "PowerShell unzip failed: {powershell_error}; tar fallback failed: {tar_error}"
+    ))
+}
+
+fn command_output(name: &str, args: &[String]) -> Result<Output, String> {
+    let mut errors = Vec::new();
+    for candidate in executable_candidates(name) {
+        match Command::new(&candidate).args(args).output() {
+            Ok(output) => return Ok(output),
+            Err(error) => errors.push(format!("{}: {error}", candidate.display())),
+        }
+    }
+    Err(format!("failed to run {name}; tried {}", errors.join("; ")))
+}
+
+fn executable_candidates(name: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from(name)];
+    if cfg!(target_os = "windows") {
+        if let Ok(system_root) = std::env::var("SystemRoot").or_else(|_| std::env::var("WINDIR")) {
+            let system32 = PathBuf::from(&system_root).join("System32");
+            candidates.push(system32.join(name));
+            if name.eq_ignore_ascii_case("powershell.exe") {
+                candidates.push(
+                    system32
+                        .join("WindowsPowerShell")
+                        .join("v1.0")
+                        .join("powershell.exe"),
+                );
+            }
+        }
+    }
+    candidates
 }
 
 fn powershell_quote(value: &str) -> String {

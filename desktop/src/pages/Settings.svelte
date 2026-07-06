@@ -504,6 +504,11 @@
     return "pending";
   }
 
+  function componentHelpUrl(component: RuntimeComponent) {
+    if (component.component === "tesseract-ocr-tools") return "https://github.com/UB-Mannheim/tesseract/wiki";
+    return "";
+  }
+
   async function refreshComponents() {
     componentsLoading = true;
     try {
@@ -918,7 +923,7 @@
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>使用 Tesseract native executable。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>PaddleOCR HTTP 不需要安装；仅 Tesseract 本地后端需要。</p></div></div>
               {#if componentsLoading && ocrComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if ocrComponents.length === 0}
@@ -941,12 +946,18 @@
                       {#if component.missing_files?.length}
                         <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
                       {/if}
+                      {#if component.component === "tesseract-ocr-tools" && !component.installed}
+                        <div class="plugin-warning plugin-note"><Icon name="info" size={14} /><span>使用 PaddleOCR HTTP 时可忽略；只有选择 Tesseract 本地后端才需要系统 Tesseract。</span></div>
+                      {/if}
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                          {#if componentHelpUrl(component)}
+                            <a class="btn btn-secondary" href={componentHelpUrl(component)} target="_blank" rel="noreferrer"><Icon name="external" size={14} />下载页</a>
+                          {/if}
                         {/if}
                       </div>
                     </article>
@@ -1394,6 +1405,7 @@
   .plugin-path { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-subtle); }
   .plugin-path code { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .plugin-warning { display: flex; align-items: center; gap: 7px; padding: 9px 10px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
+  .plugin-note { color: var(--text-secondary); background: var(--bg-subtle); }
   .plugin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
   .plugin-actions .btn { min-height: 40px; }
   .plugin-empty-state { display: flex; align-items: center; gap: 12px; min-height: 78px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
