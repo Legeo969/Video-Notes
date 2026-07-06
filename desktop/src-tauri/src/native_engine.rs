@@ -788,6 +788,7 @@ impl NativeEngine {
                 "component_path": component_path.to_string_lossy(),
                 "provides": manifest.get("provides").cloned().unwrap_or_else(|| json!([])),
                 "missing_files": missing,
+                "downloadable": manifest_string(&manifest, "download_url").is_some(),
             }));
         }
         Ok(json!(result))

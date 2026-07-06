@@ -317,7 +317,7 @@ const mockResponses: Record<string, (params: any) => any> = {
   "components.list": () => [
     {
       component: "download-tools",
-      version: "1.5.0",
+      version: "1.5.4",
       description: "yt-dlp standalone executable",
       installed: false,
       installed_version: null,
@@ -326,10 +326,11 @@ const mockResponses: Record<string, (params: any) => any> = {
       component_path: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\runtime\\components\\download-tools",
       provides: ["download"],
       missing_files: ["yt-dlp.exe"],
+      downloadable: true,
     },
     {
       component: "ffmpeg-tools",
-      version: "1.5.0",
+      version: "1.5.4",
       description: "FFmpeg + FFprobe tools",
       installed: false,
       installed_version: null,
@@ -338,10 +339,11 @@ const mockResponses: Record<string, (params: any) => any> = {
       component_path: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\runtime\\components\\ffmpeg-tools",
       provides: ["ffmpeg"],
       missing_files: ["ffmpeg.exe", "ffprobe.exe"],
+      downloadable: true,
     },
     {
       component: "whisper-cpp-tools",
-      version: "1.5.0",
+      version: "1.5.4",
       description: "whisper.cpp native CLI transcription tools",
       installed: false,
       installed_version: null,
@@ -350,10 +352,11 @@ const mockResponses: Record<string, (params: any) => any> = {
       component_path: "C:\\Users\\mock\\AppData\\Local\\Video Notes AI\\runtime\\components\\whisper-cpp-tools",
       provides: ["transcription-native"],
       missing_files: ["whisper-cli.exe"],
+      downloadable: true,
     },
     {
       component: "tesseract-ocr-tools",
-      version: "1.5.0",
+      version: "1.5.4",
       description: "Tesseract native executable OCR tools",
       installed: false,
       installed_version: null,

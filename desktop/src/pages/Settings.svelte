@@ -56,6 +56,7 @@
     component_path?: string;
     provides?: string[];
     missing_files?: string[];
+    downloadable?: boolean;
   }
 
   interface SettingsBag {
@@ -520,14 +521,14 @@
     }
   }
 
-  async function installComponent(component: RuntimeComponent) {
+  async function installComponent(component: RuntimeComponent, updating = false) {
     componentAction = `install:${component.component}`;
     try {
       await engineCall("components.install", { component: component.component });
-      showToast(`${component.component} 已安装`, "success");
+      showToast(`${component.component} ${updating ? "已更新" : "已安装"}`, "success");
       await refreshComponents();
     } catch (e: any) {
-      showToast(`安装 ${component.component} 失败：${e?.message ?? e}`, "error");
+      showToast(`${updating ? "更新" : "安装"} ${component.component} 失败：${e?.message ?? e}`, "error");
     } finally {
       componentAction = null;
     }
@@ -873,6 +874,9 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          {#if component.downloadable}
+                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
+                          {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
@@ -911,6 +915,9 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          {#if component.downloadable}
+                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
+                          {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
@@ -952,6 +959,9 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
+                          {#if component.downloadable}
+                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
+                          {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
