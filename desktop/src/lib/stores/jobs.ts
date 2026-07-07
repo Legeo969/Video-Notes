@@ -6,7 +6,7 @@ export const jobs = writable<JobInfo[]>([]);
 export const jobsLoading = writable(false);
 export const jobsError = writable("");
 export const activeJobs = derived(jobs, ($jobs) =>
-  $jobs.filter((job) => ["pending", "running", "pausing", "cancelling"].includes(job.status))
+  $jobs.filter((job) => ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status))
 );
 
 let eventUnlisten: (() => void) | null = null;

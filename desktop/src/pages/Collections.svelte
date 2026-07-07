@@ -235,7 +235,7 @@
         {/if}
 
         <div class="items-toolbar">
-          <div><h3>媒体条目</h3><span>每个条目都可独立处理和恢复</span></div>
+          <div><h3>媒体条目</h3><span>每个条目都可独立处理</span></div>
           <span class="item-counter">{detail.items.length} 项</span>
         </div>
 
@@ -324,7 +324,7 @@
   .collection-alert span { flex: 1; }
   .collection-alert button { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; color: inherit; background: transparent; cursor: pointer; }
 
-  .collection-workspace { display: grid; grid-template-columns: 280px minmax(0,1fr); min-height: 600px; overflow: hidden; }
+  .collection-workspace { display: grid; grid-template-columns: minmax(240px, 280px) minmax(0,1fr); min-height: 600px; overflow: hidden; }
   .collection-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-subtle); }
   .collection-search { margin: 14px 13px 8px; }
   .collection-search input { min-height: 35px; font-size: 14px; }
@@ -405,14 +405,14 @@
   .delete-content p { margin-top: 7px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
 
   @media (max-width: 1100px) {
-    .collection-workspace { grid-template-columns: 245px minmax(0,1fr); }
+    .collection-workspace { grid-template-columns: minmax(220px, 245px) minmax(0,1fr); }
   }
 
   .collections-page { max-width: 1320px; }
   .collection-metrics { gap: 9px; margin-bottom: 13px; }
   .metric { min-height: 64px; padding: 11px 13px; border-radius: 13px; }
   .metric-icon { width: 35px; height: 35px; border-radius: 10px; }
-  .collection-workspace { grid-template-columns: 258px minmax(0,1fr); min-height: 570px; border-radius: 16px; box-shadow: var(--shadow-sm); }
+  .collection-workspace { grid-template-columns: minmax(230px, 258px) minmax(0,1fr); min-height: 570px; border-radius: 16px; box-shadow: var(--shadow-sm); }
   .collection-sidebar { background: var(--bg-sidebar); }
   .collection-search { margin: 12px 11px 7px; }
   .collection-list { padding: 0 6px; }
@@ -427,34 +427,52 @@
 
   /* UI v7 — collection management workspace */
   .collections-page { max-width: 1240px; }
-  .collection-metrics { gap: 14px; margin-bottom: 18px; }
-  .metric { min-height: 88px; padding: 17px 18px; }
-  .metric-icon { width: 44px; height: 44px; }
-  .metric strong { font-size: 24px; }
-  .metric small { font-size: 12px; }
-  .collection-workspace { grid-template-columns: 320px minmax(0,1fr); min-height: 590px; border-radius: 16px; box-shadow: var(--shadow-sm); }
-  .collection-sidebar { padding: 16px 12px; }
-  .collection-search input { min-height: 42px; font-size: 13px; }
-  .sidebar-label { padding: 14px 10px 9px; font-size: 11px; }
-  .collection-item { grid-template-columns: 42px minmax(0,1fr); gap: 11px; padding: 12px; }
-  .collection-folder { width: 40px; height: 40px; }
-  .collection-copy strong { font-size: 14px; }
-  .collection-copy small { font-size: 11px; }
-  .collection-detail { padding: 24px; }
-  .detail-header { padding-bottom: 20px; }
-  .detail-folder { width: 48px; height: 48px; }
-  .detail-title-wrap h2 { font-size: 24px; }
-  .detail-title-wrap p, .detail-title-wrap span { font-size: 12px; }
-  .detail-progress-strip { padding: 15px; }
-  .items-toolbar h3 { font-size: 16px; }
-  .items-toolbar span { font-size: 12px; }
-  .items-head { font-size: 11px; }
-  .media-row { min-height: 66px; padding: 12px 14px; }
-  .row-copy strong { font-size: 14px; }
-  .row-copy small, .row-status > span:first-child, .row-status em { font-size: 11px; }
+  .collection-metrics { gap: 12px; margin-bottom: 16px; }
+  .metric { min-height: 76px; padding: 14px 16px; border-radius: 12px; }
+  .metric-icon { width: 38px; height: 38px; border-radius: 10px; }
+  .metric strong { font-size: 22px; }
+  .metric small { font-size: 11px; color: var(--text-tertiary); }
+  .collection-workspace { grid-template-columns: 290px minmax(0,1fr); min-height: 560px; border-radius: 14px; box-shadow: var(--shadow-sm); }
+  .collection-sidebar { padding: 14px 11px; }
+  .collection-search input { min-height: 38px; font-size: 12px; }
+  .sidebar-label { padding: 12px 9px 8px; font-size: 10px; }
+  .collection-item { grid-template-columns: 38px minmax(0,1fr); gap: 10px; padding: 10px; }
+  .collection-folder { width: 36px; height: 36px; }
+  .collection-copy strong { font-size: 13px; }
+  .collection-copy small { font-size: 10px; }
+  .collection-detail { padding: 22px; }
+  .detail-header { padding-bottom: 18px; }
+  .detail-folder { width: 44px; height: 44px; border-radius: 13px; }
+  .detail-title-wrap h2 { font-size: 22px; }
+  .detail-title-wrap p, .detail-title-wrap span { font-size: 11px; }
+  .detail-progress-strip { padding: 13px; }
+  .items-toolbar h3 { font-size: 14px; }
+  .items-toolbar span { font-size: 11px; }
+  .items-head { font-size: 10px; }
+  .media-row { min-height: 58px; padding: 10px 12px; }
+  .row-copy strong { font-size: 13px; }
+  .row-copy small, .row-status > span:first-child, .row-status em { font-size: 10px; }
 
   @media (max-width: 1180px) {
-    .collection-workspace { grid-template-columns: 280px minmax(0,1fr); }
+    .collection-workspace { grid-template-columns: minmax(240px, 270px) minmax(0,1fr); }
+  }
+
+  @media (max-width: 960px) {
+    .collection-workspace { grid-template-columns: 1fr; min-height: auto; }
+    .collection-sidebar { border-right: 0; border-bottom: 1px solid var(--border-color); max-height: 45vh; overflow: hidden; }
+    .collection-list { max-height: 260px; }
+    .detail-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .detail-actions { width: 100%; flex-wrap: wrap; }
+    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 34px; }
+    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 34px; gap: 5px; padding: 7px 2px; }
+    .detail-progress-strip { grid-template-columns: 85px 1fr; }
+    .collection-metrics { grid-template-columns: repeat(3, 1fr); }
+    .detail-actions .btn { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+  }
+
+  @media (max-width: 600px) {
+    .collection-metrics { grid-template-columns: 1fr; }
+    .metric { min-height: 56px; }
   }
 
 </style>

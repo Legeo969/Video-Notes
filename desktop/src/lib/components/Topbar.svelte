@@ -168,4 +168,9 @@
     .command-chip span, .command-chip kbd { display: none; }
     .activity-chip span:last-child { display: none; }
   }
+  @media (max-width: 1050px) {
+    .topbar { height: 56px; min-height: 56px; padding: 0 14px; gap: 10px; }
+    .topbar-actions { gap: 6px; }
+    .engine-chip { display: none; }
+  }
 </style>

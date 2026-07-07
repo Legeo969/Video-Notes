@@ -71,3 +71,4 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/*.fingerprint
 desktop/.svelte-kit/
+.slim/deepwork/

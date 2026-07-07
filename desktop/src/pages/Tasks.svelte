@@ -15,7 +15,7 @@
   let searchQuery = $state("");
 
   let filteredJobs = $derived.by(() => {
-    let result = filter === "all" ? $jobs : $jobs.filter((job) => job.status === filter);
+    let result = filter === "all" ? $jobs : $jobs.filter((job) => filter === "active" ? isActive(job) : job.status === filter);
     const query = searchQuery.trim().toLowerCase();
     if (query) {
       result = result.filter((job) => titleOf(job).toLowerCase().includes(query) || job.input.toLowerCase().includes(query));
@@ -26,7 +26,7 @@
   let selectedJob = $derived(selectedJobId === null ? undefined : $jobs.find((job) => job.id === selectedJobId));
   let counts = $derived.by(() => ({
     all: $jobs.length,
-    running: $jobs.filter((job) => ["running", "pending", "pausing", "cancelling"].includes(job.status)).length,
+    active: $jobs.filter(isActive).length,
     paused: $jobs.filter((job) => job.status === "paused").length,
     interrupted: $jobs.filter((job) => job.status === "interrupted").length,
     failed: $jobs.filter((job) => job.status === "failed").length,
@@ -34,7 +34,7 @@
   }));
 
   const statusText: Record<string, string> = {
-    pending: "等待启动", running: "运行中", pausing: "正在暂停", cancelling: "正在取消",
+    pending: "等待启动", running: "运行中", pausing: "暂停请求中", cancelling: "正在取消",
     paused: "已暂停", interrupted: "异常中断", failed: "失败", cancelled: "已取消", completed: "已完成",
   };
 
@@ -46,7 +46,7 @@
 
   const filters = [
     { id: "all", label: "全部", icon: "list" },
-    { id: "running", label: "运行中", icon: "activity" },
+    { id: "active", label: "活动任务", icon: "activity" },
     { id: "paused", label: "已暂停", icon: "pause" },
     { id: "interrupted", label: "异常中断", icon: "alert" },
     { id: "failed", label: "失败", icon: "x" },
@@ -75,17 +75,25 @@
 
   function durationCaption(job: JobInfo) {
     if (job.elapsed_sec !== undefined && job.elapsed_sec !== null) return `已用 ${formatDuration(job.elapsed_sec)}`;
-    return ["pending", "running", "pausing", "cancelling"].includes(job.status) ? "统计中" : "—";
+    return ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status) ? "统计中" : "—";
   }
 
   function sourceKind(input: string) { return input.startsWith("http") ? "link" : "video"; }
 
+  function isActive(job: JobInfo) {
+    return ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status);
+  }
+
   function canDelete(job: JobInfo) {
-    return !["pending", "running", "pausing", "cancelling"].includes(job.status);
+    return !["pending", "running", "pausing", "cancelling", "paused"].includes(job.status);
+  }
+
+  function canRetry(job: JobInfo) {
+    return ["completed", "failed", "cancelled", "interrupted"].includes(job.status);
   }
 
   async function action(method: "process.pause" | "process.cancel" | "process.resume" | "process.retry", job: JobInfo) {
-    if (method === "process.cancel" && !window.confirm("取消会清理该任务的断点工作区。确定继续吗？")) return;
+    if (method === "process.cancel" && !window.confirm("确定取消该任务吗？")) return;
     actionJobId = job.id;
     localError = "";
     try {
@@ -100,12 +108,12 @@
 
   async function removeJob(job: JobInfo) {
     if (!canDelete(job)) {
-      localError = "任务仍在运行或等待启动，请先取消后再删除。";
+      localError = "任务仍处于活动状态，需完成、失败、取消或中断后才能删除记录。";
       return;
     }
     const name = titleOf(job);
     const confirmed = window.confirm(
-      `确定删除任务「${name}」吗？\n\n这会删除任务记录、断点工作区和临时文件；已经导出的笔记文件不会被删除。`
+      `确定删除任务「${name}」吗？\n\n这会删除当前任务列表中的记录；临时工作区可在设置的存储管理中清理，已经导出的笔记文件不会被删除。`
     );
     if (!confirmed) return;
 
@@ -149,7 +157,7 @@
   <PageHeader
     eyebrow="任务运行中心"
     title="任务中心"
-    description="集中查看所有处理任务的实时进度、运行阶段、错误详情和断点恢复状态。"
+    description="集中查看本机任务记录的实时进度、运行阶段和错误详情。"
     icon="tasks"
   >
     {#snippet actions()}
@@ -163,8 +171,8 @@
     <button class="metric-card surface" class:active={filter === "all"} onclick={() => filter = "all"}>
       <span class="metric-icon all"><Icon name="list" size={19} /></span><div><strong>{counts.all}</strong><span>全部任务</span></div>
     </button>
-    <button class="metric-card surface" class:active={filter === "running"} onclick={() => filter = "running"}>
-      <span class="metric-icon running"><Icon name="activity" size={19} /></span><div><strong>{counts.running}</strong><span>正在运行</span></div>
+    <button class="metric-card surface" class:active={filter === "active"} onclick={() => filter = "active"}>
+      <span class="metric-icon running"><Icon name="activity" size={19} /></span><div><strong>{counts.active}</strong><span>活动任务</span></div>
     </button>
     <button class="metric-card surface" class:active={filter === "paused"} onclick={() => filter = "paused"}>
       <span class="metric-icon paused"><Icon name="pause" size={19} /></span><div><strong>{counts.paused}</strong><span>已暂停</span></div>
@@ -207,7 +215,7 @@
 
         <section class="task-list" aria-label="任务列表">
           {#if $jobsLoading && $jobs.length === 0}
-            <div class="loading-state"><span class="loading-ring"></span><strong>正在读取任务记录</strong><p>正在连接持久化任务数据库…</p></div>
+            <div class="loading-state"><span class="loading-ring"></span><strong>正在读取任务记录</strong><p>正在读取本机任务状态…</p></div>
           {:else if filteredJobs.length === 0}
             <EmptyState
               icon={searchQuery ? "search" : "tasks"}
@@ -231,14 +239,14 @@
 
                 <div class="row-actions">
                   {#if ["running", "pending"].includes(job.status)}
-                    <button class="icon-btn" title="暂停" disabled={actionJobId === job.id} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
+                    <button class="icon-btn" title="阶段结束后暂停" disabled={actionJobId === job.id} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
                     <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
-                  {:else if ["paused", "interrupted", "failed"].includes(job.status) && job.can_resume !== false}
-                    <button class="btn btn-primary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />断点继续</button>
-                    {#if ["interrupted", "failed"].includes(job.status)}
-                      <button class="icon-btn" title="从头重跑" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={15} /></button>
-                    {/if}
-                  {:else if job.status === "cancelled"}
+                  {:else if ["pausing", "paused"].includes(job.status)}
+                    <button class="btn btn-primary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />继续</button>
+                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                  {:else if job.status === "cancelling"}
+                    <button class="icon-btn danger-action" title="再次请求取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                  {:else if canRetry(job)}
                     <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />重新运行</button>
                   {:else}
                     <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
@@ -263,14 +271,14 @@
 
           <div class="detail-actions">
             {#if ["running", "pending"].includes(selectedJob.status)}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />暂停</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />阶段结束后暂停</button>
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
-            {:else if ["paused", "interrupted", "failed"].includes(selectedJob.status) && selectedJob.can_resume !== false}
-              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />断点继续</button>
-              {#if ["interrupted", "failed"].includes(selectedJob.status)}
-                <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />从头重跑</button>
-              {/if}
-            {:else if selectedJob.status === "cancelled"}
+            {:else if ["pausing", "paused"].includes(selectedJob.status)}
+              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />继续</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
+            {:else if selectedJob.status === "cancelling"}
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />再次取消</button>
+            {:else if canRetry(selectedJob)}
               <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />重新运行</button>
             {/if}
             {#if canDelete(selectedJob)}
@@ -292,7 +300,7 @@
             <h3>执行信息</h3>
             <dl>
               <div><dt>当前阶段</dt><dd>{stageText[selectedJob.stage] || selectedJob.stage}</dd></div>
-              <div><dt>最后断点</dt><dd>{stageText[selectedJob.last_active_stage || ""] || selectedJob.last_active_stage || "—"}</dd></div>
+              <div><dt>最后阶段</dt><dd>{stageText[selectedJob.last_active_stage || ""] || selectedJob.last_active_stage || "—"}</dd></div>
               <div><dt>执行次数</dt><dd>第 {selectedJob.attempt || 1} 次</dd></div>
               <div><dt>抽帧数量</dt><dd>{selectedJob.frames_count || 0} 帧</dd></div>
               <div><dt>开始时间</dt><dd>{formatTime(selectedJob.created_at)}</dd></div>
@@ -313,7 +321,7 @@
             <div class="detail-error"><div><Icon name="alert" size={16} /><strong>错误详情</strong></div><p>{selectedJob.error_message}</p></div>
           {/if}
 
-          <div class="snapshot-note"><Icon name="shield" size={16} /><p>任务参数以无密钥快照保存；继续任务时会恢复原始模型配置，并重新读取当前安全凭据。</p></div>
+          <div class="snapshot-note"><Icon name="shield" size={16} /><p>暂停会在当前处理阶段结束后的安全边界生效；取消为协作式取消，导出的笔记文件会保留在输出目录。</p></div>
         </aside>
       {/if}
     </div>
@@ -322,58 +330,58 @@
 
 <style>
   .tasks-page { max-width: 1440px; }
-  .metrics-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+  .metrics-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px; }
   .metric-card { display: flex; align-items: center; gap: 11px; padding: 14px; color: var(--text-primary); cursor: pointer; text-align: left; transition: transform .15s, border-color .15s, box-shadow .15s; }
-  .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-sm); }
+  .metric-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
   .metric-card.active { border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-glow); }
-  .metric-icon { display: grid; place-items: center; width: 39px; height: 39px; flex: 0 0 auto; border-radius: 12px; }
+  .metric-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; }
   .metric-icon.all { color: var(--accent-color); background: var(--accent-soft); }
   .metric-icon.running { color: var(--info-color); background: var(--info-soft); }
   .metric-icon.paused { color: var(--warning-color); background: var(--warning-soft); }
   .metric-icon.failed { color: var(--danger-color); background: var(--danger-soft); }
   .metric-icon.completed { color: var(--success-color); background: var(--success-soft); }
   .metric-card div { display: flex; flex-direction: column; }
-  .metric-card strong { font-size: 24px; line-height: 1.05; letter-spacing: -.03em; }
-  .metric-card span:not(.metric-icon) { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
+  .metric-card strong { font-size: 22px; line-height: 1.05; letter-spacing: -.03em; }
+  .metric-card span:not(.metric-icon) { margin-top: 2px; color: var(--text-tertiary); font-size: 13px; }
 
   .task-workspace { overflow: hidden; }
-  .task-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
-  .filter-tabs { display: flex; align-items: center; gap: 3px; min-width: 0; }
-  .filter-tabs button { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 6px 9px; border: 0; border-radius: 8px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 14px; font-weight: 650; }
+  .task-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .filter-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .filter-tabs button { display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 9px; border: 0; border-radius: 7px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 620; }
   .filter-tabs button:hover { color: var(--text-primary); background: var(--bg-hover); }
   .filter-tabs button.active { color: var(--accent-color); background: var(--accent-soft); }
-  .filter-tabs em { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; color: var(--text-tertiary); background: var(--bg-muted); font-size: 12px; font-style: normal; }
+  .filter-tabs em { display: grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 99px; color: var(--text-tertiary); background: var(--bg-muted); font-size: 11px; font-style: normal; }
   .filter-tabs button.active em { color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card)); }
   .task-search { width: 240px; flex: 0 0 auto; }
-  .task-search input { min-height: 34px; padding-top: 6px; padding-bottom: 6px; font-size: 14px; }
-  .search-clear { position: absolute; right: 6px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
-  .workspace-alert { margin: 12px 14px 0; }
+  .task-search input { min-height: 32px; padding-top: 5px; padding-bottom: 5px; font-size: 13px; }
+  .search-clear { position: absolute; right: 6px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
+  .workspace-alert { margin: 12px 16px 0; }
 
   .task-layout { display: grid; grid-template-columns: minmax(0,1fr); min-height: 420px; }
-  .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 330px; }
+  .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 340px; }
   .task-list-area { min-width: 0; }
-  .table-head { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(220px, 1.2fr) 115px 90px 112px; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); background: color-mix(in srgb, var(--bg-subtle) 75%, transparent); font-size: 12px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
-  .task-list { min-height: 360px; }
-  .task-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) 112px; border-bottom: 1px solid var(--border-color); transition: background .14s; }
+  .table-head { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(220px, 1.2fr) 115px 90px 112px; gap: 12px; padding: 8px 18px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); background: color-mix(in srgb, var(--bg-subtle) 70%, transparent); font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .task-list { min-height: 360px; padding: 4px 0; }
+  .task-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) 112px; margin: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent); border-radius: 10px; transition: background .14s; }
   .task-row:last-child { border-bottom: 0; }
   .task-row:hover, .task-row.selected { background: var(--accent-faint); }
-  .task-row.selected { box-shadow: inset 3px 0 0 var(--accent-color); }
-  .task-main { display: grid; grid-template-columns: 38px minmax(170px,1.25fr) minmax(210px,1.2fr) 115px 90px; align-items: center; gap: 12px; min-width: 0; padding: 13px 0 13px 16px; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
-  .media-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
+  .task-row.selected { box-shadow: inset 3px 0 0 var(--accent-color); border-color: transparent; }
+  .task-main { display: grid; grid-template-columns: 38px minmax(170px,1.25fr) minmax(210px,1.2fr) 115px 90px; align-items: center; gap: 12px; min-width: 0; padding: 12px 8px 12px 12px; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+  .media-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
   .task-identity { display: flex; min-width: 0; flex-direction: column; }
   .task-identity strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-  .task-identity small { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .stage-cell { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+  .task-identity small { margin-top: 2px; overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-cell { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
   .stage-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .stage-label strong { overflow: hidden; color: var(--text-secondary); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-label strong { overflow: hidden; color: var(--text-tertiary); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
   .stage-label em { color: var(--text-primary); font-size: 13px; font-style: normal; font-weight: 700; }
-  .stage-cell .progress-track { height: 5px; }
-  .inline-error { overflow: hidden; color: var(--danger-color); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-cell .progress-track { height: 4px; }
+  .inline-error { overflow: hidden; color: var(--danger-color); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .time-cell { display: flex; flex-direction: column; }
-  .time-cell strong { color: var(--text-secondary); font-size: 13px; font-weight: 580; }
-  .time-cell small { margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
+  .time-cell strong { color: var(--text-tertiary); font-size: 12px; font-weight: 550; }
+  .time-cell small { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
   .status-cell { display: flex; align-items: center; }
-  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-right: 14px; }
+  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding-right: 10px; }
   .danger-action { color: var(--danger-color); }
 
   .loading-state { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); }
@@ -438,60 +446,60 @@
 
   /* UI v7 — desktop-density and readability pass */
   .tasks-page { max-width: 1240px; }
-  .metrics-row { gap: 14px; margin-bottom: 18px; }
-  .metric-card { min-height: 88px; gap: 14px; padding: 17px 18px; border-radius: 14px; }
-  .metric-icon { width: 44px; height: 44px; border-radius: 12px; }
-  .metric-card strong { font-size: 26px; }
-  .metric-card span:not(.metric-icon) { margin-top: 5px; font-size: 13px; }
+  .metrics-row { gap: 12px; margin-bottom: 16px; }
+  .metric-card { min-height: 76px; gap: 12px; padding: 14px 15px; border-radius: 13px; }
+  .metric-icon { width: 38px; height: 38px; border-radius: 10px; }
+  .metric-card strong { font-size: 23px; }
+  .metric-card span:not(.metric-icon) { margin-top: 3px; font-size: 12px; }
 
   .task-workspace { border-radius: 16px; box-shadow: var(--shadow-sm); }
-  .task-toolbar { padding: 14px 16px; background: var(--bg-card); }
-  .filter-tabs { gap: 5px; flex-wrap: wrap; }
-  .filter-tabs button { min-height: 36px; padding: 7px 11px; font-size: 13px; }
-  .filter-tabs em { min-width: 20px; height: 20px; font-size: 11px; }
-  .task-search { width: 280px; }
-  .task-search input { min-height: 40px; font-size: 13px; }
+  .task-toolbar { padding: 12px 15px; background: var(--bg-card); }
+  .filter-tabs { gap: 4px; flex-wrap: wrap; }
+  .filter-tabs button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+  .filter-tabs em { min-width: 18px; height: 18px; font-size: 10px; }
+  .task-search { width: 260px; }
+  .task-search input { min-height: 36px; font-size: 12px; }
 
-  .task-layout { min-height: 520px; }
-  .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 360px; }
-  .table-head { grid-template-columns: minmax(240px,1.25fr) minmax(230px,1.2fr) 130px 100px 120px; gap: 14px; padding: 12px 18px; font-size: 11px; }
-  .task-list { min-height: 440px; }
-  .task-row { grid-template-columns: minmax(0,1fr) 120px; }
-  .task-main { grid-template-columns: 44px minmax(190px,1.25fr) minmax(220px,1.2fr) 130px 100px; gap: 14px; padding: 16px 0 16px 18px; }
-  .media-icon { width: 42px; height: 42px; border-radius: 12px; }
-  .task-identity strong { font-size: 14px; }
-  .task-identity small { margin-top: 4px; font-size: 11px; }
-  .stage-label strong, .stage-label em { font-size: 12px; }
-  .inline-error { font-size: 11px; }
-  .time-cell strong { font-size: 12px; }
-  .time-cell small { font-size: 11px; }
-  .row-actions { padding-right: 16px; }
+  .task-layout { min-height: 480px; }
+  .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 350px; }
+  .table-head { grid-template-columns: minmax(240px,1.25fr) minmax(230px,1.2fr) 125px 95px 115px; gap: 13px; padding: 10px 18px; font-size: 10px; }
+  .task-list { min-height: 400px; }
+  .task-row { grid-template-columns: minmax(0,1fr) 115px; }
+  .task-main { grid-template-columns: 42px minmax(190px,1.25fr) minmax(220px,1.2fr) 125px 95px; gap: 13px; padding: 14px 0 14px 16px; }
+  .media-icon { width: 40px; height: 40px; border-radius: 11px; }
+  .task-identity strong { font-size: 13px; }
+  .task-identity small { margin-top: 3px; font-size: 10px; }
+  .stage-label strong, .stage-label em { font-size: 11px; }
+  .inline-error { font-size: 10px; }
+  .time-cell strong { font-size: 11px; }
+  .time-cell small { font-size: 10px; }
+  .row-actions { padding-right: 14px; }
 
-  .loading-state { min-height: 440px; }
-  .loading-state strong { font-size: 15px; }
-  .loading-state p { margin-top: 6px; font-size: 13px; }
+  .loading-state { min-height: 400px; }
+  .loading-state strong { font-size: 14px; }
+  .loading-state p { margin-top: 5px; font-size: 12px; }
 
-  .detail-panel { padding: 20px; }
-  .detail-title span, .detail-section h3 { font-size: 11px; }
-  .detail-title h2 { font-size: 15px; }
-  .detail-status-card { padding: 15px; }
-  .detail-status-card > div:first-child > span:last-child { font-size: 11px; }
-  dl div { padding: 8px 0; font-size: 12px; }
-  .detail-section code { max-height: 100px; padding: 11px; font-size: 11px; }
-  .detail-error strong { font-size: 12px; }
-  .detail-error p, .snapshot-note p { font-size: 11px; }
+  .detail-panel { padding: 18px; }
+  .detail-title span, .detail-section h3 { font-size: 10px; }
+  .detail-title h2 { font-size: 14px; }
+  .detail-status-card { padding: 14px; }
+  .detail-status-card > div:first-child > span:last-child { font-size: 10px; }
+  dl div { padding: 7px 0; font-size: 11px; }
+  .detail-section code { max-height: 90px; padding: 10px; font-size: 10px; }
+  .detail-error strong { font-size: 11px; }
+  .detail-error p, .snapshot-note p { font-size: 10px; }
 
   .task-layout.with-detail .table-head { display: none; }
-  .task-layout.with-detail .task-list { min-height: 440px; }
-  .task-layout.with-detail .task-row { grid-template-columns: minmax(0,1fr); row-gap: 10px; padding: 15px 16px 15px 18px; }
+  .task-layout.with-detail .task-list { min-height: 400px; }
+  .task-layout.with-detail .task-row { grid-template-columns: minmax(0,1fr); row-gap: 8px; padding: 13px 15px 13px 16px; }
   .task-layout.with-detail .task-main {
-    grid-template-columns: 42px minmax(0,1fr) auto;
+    grid-template-columns: 40px minmax(0,1fr) auto;
     grid-template-areas:
       "icon identity status"
       "icon stage stage"
       "icon time time";
     align-items: start;
-    gap: 7px 12px;
+    gap: 6px 11px;
     padding: 0;
   }
   .task-layout.with-detail .media-icon { grid-area: icon; }
@@ -509,6 +517,47 @@
     .metrics-row { grid-template-columns: repeat(3, 1fr); }
     .task-layout.with-detail { grid-template-columns: 1fr; }
     .detail-panel { border-left: 0; border-top: 1px solid var(--border-color); }
+  }
+
+  @media (max-width: 1050px) {
+    .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    .task-toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+    .task-search { width: 100%; }
+  }
+
+  @media (max-width: 960px) {
+    .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    .task-toolbar { flex-wrap: wrap; gap: 8px; }
+    .filter-tabs { gap: 2px; flex-wrap: wrap; }
+    .filter-tabs button { padding: 5px 7px; font-size: 12px; }
+    .task-search { width: 100%; }
+    .task-layout.with-detail { grid-template-columns: 1fr; }
+    .detail-panel { border-left: 0; border-top: 1px solid var(--border-color); }
+    .task-main { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 10px; padding: 12px 0 12px 14px; }
+    .table-head { display: none; }
+    .time-cell { display: none; }
+    .stage-cell { min-width: 0; }
+    .detail-actions { flex-wrap: wrap; }
+    .detail-actions .btn { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+    .detail-panel { padding: 16px; }
+  }
+
+  @media (max-width: 900px) {
+    .metric-card { min-height: 60px; padding: 10px 12px; }
+    .metric-card strong { font-size: 18px; }
+    .task-main { padding: 10px 0 10px 12px; }
+    .row-actions { padding-right: 10px; }
+    .detail-panel { padding: 14px; }
+    .detail-actions .btn { min-height: 30px; padding: 5px 8px; font-size: 11px; }
+    .task-layout.with-detail .task-main { grid-template-columns: 36px minmax(0,1fr) auto; }
+    .task-layout.with-detail .row-actions { padding: 0 0 0 48px; }
+    .detail-section code { max-height: 80px; }
+  }
+
+  @media (max-width: 600px) {
+    .metrics-row { grid-template-columns: repeat(2, 1fr); }
+    .metric-card { min-height: 60px; padding: 10px; }
+    .metric-card strong { font-size: 18px; }
   }
 
 </style>

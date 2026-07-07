@@ -74,5 +74,17 @@
   .theme-button { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px 7px; border: 0; border-radius: 8px; color: var(--text-tertiary); background: transparent; cursor: pointer; font-size: 13px; }
   .theme-button:hover { color: var(--text-primary); background: var(--bg-hover); }
   .version { color: var(--text-tertiary); font-size: 12px; }
-  @media (max-width: 1180px) { .sidebar { width: 224px; min-width: 224px; } }
+  @media (max-width: 1180px) { .sidebar { width: 220px; min-width: 220px; } }
+  @media (max-width: 1050px) {
+    .sidebar { width: 64px; min-width: 64px; padding: 18px 8px 14px; }
+    .brand-copy, nav p.nav-label, .nav-item > span:nth-child(2), .nav-item em, .engine-row div, .theme-button span, .version { display: none; }
+    .brand { justify-content: center; padding: 0; }
+    .nav-item { grid-template-columns: 1fr; justify-items: center; padding: 8px; min-height: 42px; }
+    .nav-item.active::before { left: -4px; height: 14px; }
+    .engine-card { padding: 8px; }
+    .engine-row { grid-template-columns: 1fr; justify-items: center; }
+    .engine-status-dot { width: 6px; height: 6px; }
+    footer { justify-content: center; }
+    .theme-button { padding: 6px; }
+  }
 </style>

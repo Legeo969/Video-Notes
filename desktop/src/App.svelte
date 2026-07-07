@@ -147,4 +147,5 @@
   .alert-copy code { display: block; margin-top: 7px; padding: 7px 9px; border-radius: 7px; background: var(--bg-card); color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
   .detail-link { margin-top: 5px; border: 0; color: var(--danger-color); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; }
   @media (max-width: 1100px) { .page-host { padding: 24px 24px 38px; } .engine-alert { width: calc(100% - 40px); } }
+  @media (max-width: 960px) { .page-host { padding: 16px 12px 28px; } .engine-alert { width: calc(100% - 24px); } }
 </style>

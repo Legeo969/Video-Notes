@@ -36,8 +36,6 @@
 
   interface StorageStatus {
     export_dir: string;
-    state_dir: string;
-    db_path: string;
     jobs_root: string;
     legacy_jobs_root: string;
     vault_path: string;
@@ -59,6 +57,8 @@
     installed_version?: string | null;
     status: string;
     size_mb?: number;
+    latest_version?: string | null;
+    update_available?: boolean;
     component_path?: string;
     provides?: string[];
     missing_files?: string[];
@@ -91,14 +91,14 @@
     vision_model: "",
   });
 
-  const providerPresetModels = new Set(["gpt-4o-mini", "gpt-4o", "gemini-2.5-flash", "claude-sonnet-4-5", "gpt-5.5"]);
-
   const providerTypeOptions = [
     {
       id: "openai_compat",
       label: "OpenAI Compatible",
       hint: "Chat Completions 兼容接口，例如 OpenAI 兼容网关、阿里云百炼兼容模式。",
       defaultBaseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4o-mini",
+      defaultVisionModel: "gpt-4o-mini",
       supported: true,
     },
     {
@@ -106,6 +106,8 @@
       label: "Google Gemini",
       hint: "Google Generative Language API，使用 gemini-* 模型。",
       defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      defaultModel: "gemini-2.5-flash",
+      defaultVisionModel: "gemini-2.5-flash",
       supported: true,
     },
     {
@@ -113,6 +115,8 @@
       label: "Anthropic Messages",
       hint: "Anthropic /v1/messages 接口，使用 claude-* 模型。",
       defaultBaseUrl: "https://api.anthropic.com/v1",
+      defaultModel: "claude-sonnet-4-5",
+      defaultVisionModel: "claude-sonnet-4-5",
       supported: true,
     },
     {
@@ -120,14 +124,9 @@
       label: "OpenAI Responses",
       hint: "OpenAI /v1/responses 接口，适合新版 OpenAI API 调用。",
       defaultBaseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-5.5",
+      defaultVisionModel: "gpt-5.5",
       supported: true,
-    },
-    {
-      id: "chatgpt_codex",
-      label: "ChatGPT Codex (Plus/Pro)",
-      hint: "ChatGPT 计划中的 Codex 交互能力，不是普通 API Key 端点；此项仅做配置占位，不能用于自动笔记任务。",
-      defaultBaseUrl: "",
-      supported: false,
     },
   ];
 
@@ -135,6 +134,7 @@
   providerTypeLabels.mimo = "OpenAI Compatible";
   providerTypeLabels.dashscope = "OpenAI Compatible";
   providerTypeLabels.openai = "OpenAI Compatible";
+  providerTypeLabels.llama_cpp = "OpenAI Compatible";
   const whisperModelDownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
 
   const tabs = [
@@ -142,7 +142,7 @@
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
     { id: "plugins", label: "插件", icon: "package", hint: "转写 / OCR 可选组件" },
-    { id: "storage", label: "存储管理", icon: "database", hint: "缓存、数据库与导出" },
+    { id: "storage", label: "存储管理", icon: "database", hint: "缓存、工作区与导出" },
     { id: "diagnostics", label: "系统诊断", icon: "stethoscope", hint: "依赖与运行环境" },
   ];
 
@@ -172,6 +172,7 @@
   let scanning = $state(false);
   let testingProvider = $state<string | null>(null);
   let testingOcr = $state(false);
+  let testingVision = $state(false);
   let doctorRunning = $state(false);
   let bundlingDiagnostics = $state(false);
   let storageLoading = $state(false);
@@ -302,7 +303,7 @@
     editingProviderName = p.name;
     providerForm = {
       name: p.name,
-      provider: p.provider,
+      provider: p.provider === "llama_cpp" ? "openai_compat" : p.provider,
       api_key: "",
       base_url: p.base_url,
       model: p.model,
@@ -322,25 +323,7 @@
   const selectedProviderType = $derived(providerTypeOptions.find((item) => item.id === providerForm.provider) ?? providerTypeOptions[0]);
   let providerTypeUnsupported = $derived(!selectedProviderType.supported);
 
-  function handleProviderTypeChange() {
-    const option = providerTypeOptions.find((item) => item.id === providerForm.provider);
-    if (!option) return;
-    providerModelOptions = [];
-    if (!providerForm.base_url.trim() && option.defaultBaseUrl) {
-      providerForm.base_url = option.defaultBaseUrl;
-    }
-    const nextModel =
-      option.id === "google_gemini" ? "gemini-2.5-flash" :
-      option.id === "anthropic_messages" ? "claude-sonnet-4-5" :
-      option.id === "openai_responses" ? "gpt-5.5" :
-      "";
-    if (!providerForm.model.trim() || providerPresetModels.has(providerForm.model.trim())) {
-      providerForm.model = nextModel;
-    }
-    if (!providerForm.vision_model.trim() || providerPresetModels.has(providerForm.vision_model.trim())) {
-      providerForm.vision_model = nextModel;
-    }
-  }
+  function handleProviderTypeChange() { providerModelOptions = []; }
 
   async function discoverProviderModels() {
     discoveringProviderModels = true;
@@ -370,7 +353,7 @@
 
   async function saveProvider() {
     if (!providerForm.name.trim()) { showToast("供应商名称不能为空", "error"); return; }
-    if (providerTypeUnsupported) { showToast("ChatGPT Codex (Plus/Pro) 不是可直接调用的 API 端点，不能保存为自动笔记供应商。", "error"); return; }
+    if (providerTypeUnsupported) { showToast("该 API 类型暂不可用于自动笔记任务。", "error"); return; }
     if (!providerForm.model.trim()) { showToast("文本模型不能为空", "error"); return; }
     providerSaving = true;
     try {
@@ -451,6 +434,28 @@
       showToast(`OCR 测试异常：${e?.message ?? e}`, "error");
     } finally {
       testingOcr = false;
+    }
+  }
+
+  async function testVisionConnection() {
+    if (!settings.active_provider) {
+      showToast("没有活动供应商，请先设置并激活 AI 供应商", "error");
+      return;
+    }
+    testingVision = true;
+    try {
+      const result: any = await engineCall("settings.vision.test", {
+        name: settings.active_provider,
+      });
+      if (result?.success) {
+        showToast(`视觉模型 [${result.model}] 可用：${result?.result ?? ""}`, "success");
+      } else {
+        showToast(`视觉模型测试失败：${result?.message ?? "未知错误"}${result?.error ? `（${result.error}）` : ""}`, "error");
+      }
+    } catch (e: any) {
+      showToast(`视觉模型测试异常：${e?.message ?? e}`, "error");
+    } finally {
+      testingVision = false;
     }
   }
 
@@ -607,7 +612,7 @@
   <PageHeader
     eyebrow="应用偏好设置"
     title="设置"
-    description="管理转录模型、AI 供应商、笔记模板和本地运行环境。所有 API Key 均保存在本机安全存储中。"
+    description="管理转录模型、AI 供应商、笔记模板和本地运行环境。"
     icon="settings"
   >
     {#snippet actions()}
@@ -640,8 +645,8 @@
             <div class="setting-group">
               <div class="group-head"><div class="group-icon"><Icon name="folder" size={18} /></div><div><h3>文件与模型目录</h3><p>配置笔记产物与本地模型的存储位置。</p></div></div>
               <div class="form-grid two-cols">
-                <div class="field"><label class="field-label" for="vault_path">Obsidian 笔记库 <small>可选，归档到 vault\video-notes</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="folder" size={15} /></span><input id="vault_path" type="text" bind:value={settings.vault_path} oninput={markDirty} placeholder="D:\Note_Obsidian" /></div></div>
-                <div class="field"><label class="field-label" for="whisper_model_dir">Whisper 模型目录 <small>可选</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="database" size={15} /></span><input id="whisper_model_dir" type="text" bind:value={settings.whisper_model_dir} oninput={markDirty} placeholder="留空使用默认缓存目录" /></div></div>
+                <div class="field"><label class="field-label" for="vault_path">Obsidian 笔记库 <small>可选，归档到 vault\video-notes</small></label><div class="input-wrap has-icon path-input"><span class="input-icon"><Icon name="folder" size={15} /></span><input id="vault_path" type="text" bind:value={settings.vault_path} title={settings.vault_path} oninput={markDirty} placeholder="D:\Note_Obsidian" /></div></div>
+                <div class="field"><label class="field-label" for="whisper_model_dir">Whisper 模型目录 <small>可选</small></label><div class="input-wrap has-icon path-input"><span class="input-icon"><Icon name="database" size={15} /></span><input id="whisper_model_dir" type="text" bind:value={settings.whisper_model_dir} title={settings.whisper_model_dir} oninput={markDirty} placeholder="留空使用默认缓存目录" /></div></div>
               </div>
             </div>
 
@@ -676,7 +681,7 @@
                   <span class="selection-status"><Icon name={selectedWhisperAvailable ? "check" : "alert"} size={15} /></span>
                   <div>
                     <strong>{selectedWhisperAvailable ? `当前默认：${selectedWhisperModel?.label}` : `当前配置不可用：${settings.whisper_model}`}</strong>
-                    <small>{selectedWhisperAvailable ? selectedWhisperModel?.path || "本地模型已就绪" : "请在下方选择一个标记为“已安装”的模型"}</small>
+                    <small class="model-path" title={selectedWhisperModel?.path || ""}>{selectedWhisperAvailable ? selectedWhisperModel?.path || "本地模型已就绪" : "请在下方选择一个标记为“已安装”的模型"}</small>
                   </div>
                   <span class="installed-count">{localWhisperModels.length} 个已安装</span>
                 </div>
@@ -712,7 +717,7 @@
                   <label class="field-label" for="whisper_device">Whisper 运行设备</label>
                   <select id="whisper_device" bind:value={settings.whisper_device} onchange={markDirty}>
                     <option value="auto">自动：优先 CUDA，可降级 CPU</option>
-                    <option value="cuda">CUDA / GPU：不可用时报错</option>
+                    <option value="cuda">仅 CUDA / GPU：不可用则任务失败</option>
                     <option value="cpu">CPU</option>
                   </select>
                 </div>
@@ -735,7 +740,7 @@
               </div>
               <div class="runtime-settings-grid">
                 <div class="field">
-                  <label class="field-label" for="ocr_backend">OCR 后端</label>
+                  <label class="field-label" for="ocr_backend">OCR 引擎选择</label>
                   <select id="ocr_backend" bind:value={settings.ocr_backend} onchange={markDirty}>
                     <option value="tesseract">Tesseract native executable</option>
                     <option value="paddleocr_http">PaddleOCR HTTP service</option>
@@ -761,6 +766,18 @@
                     disabled={testingOcr || ((settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http") && !settings.ocr_http_endpoint.trim())}
                   >
                     <Icon name="activity" size={15} />{testingOcr ? "测试中" : "测试 OCR"}
+                  </button>
+                </div>
+                <div class="field vision-test-field">
+                  <span class="field-label">视觉模型测试</span>
+                  <button
+                    type="button"
+                    class="btn btn-secondary vision-test-btn"
+                    onclick={testVisionConnection}
+                    disabled={testingVision || !settings.active_provider}
+                    title={settings.active_provider ? `测试活动供应商 ${settings.active_provider} 的视觉模型` : "请先设置活动 AI 供应商"}
+                  >
+                    <Icon name="eye" size={15} />{testingVision ? "测试中" : "测试 Vision"}
                   </button>
                 </div>
               </div>
@@ -873,7 +890,7 @@
                         <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
                       </div>
                       <div class="plugin-meta">
-                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
@@ -884,12 +901,14 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.downloadable}
+                          {#if component.update_available}
                             <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
                           {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
-                        {:else}
+                        {:else if component.downloadable}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                        {:else if componentHelpUrl(component)}
+                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
                         {/if}
                       </div>
                     </article>
@@ -914,7 +933,7 @@
                         <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
                       </div>
                       <div class="plugin-meta">
-                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
@@ -925,12 +944,14 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.downloadable}
+                          {#if component.update_available}
                             <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
                           {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
-                        {:else}
+                        {:else if component.downloadable}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                        {:else if componentHelpUrl(component)}
+                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
                         {/if}
                       </div>
                     </article>
@@ -955,7 +976,7 @@
                         <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
                       </div>
                       <div class="plugin-meta">
-                        <div><span>版本</span><strong>{component.installed_version || component.version}</strong></div>
+                        <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
@@ -969,15 +990,14 @@
                       <div class="plugin-actions">
                         {#if component.installed}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.downloadable}
+                          {#if component.update_available}
                             <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
                           {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
-                        {:else}
+                        {:else if component.downloadable}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
-                          {#if componentHelpUrl(component)}
-                            <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />下载页</button>
-                          {/if}
+                        {:else if componentHelpUrl(component)}
+                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
                         {/if}
                       </div>
                     </article>
@@ -990,7 +1010,7 @@
         {:else if activeTab === "storage"}
           <section class="settings-pane">
             <div class="pane-head actions-head">
-              <div><span>STORAGE</span><h2>存储管理</h2><p>查看 AppData 状态、任务记录、数据库和用户可见导出目录。</p></div>
+              <div><span>STORAGE</span><h2>存储管理</h2><p>查看 AppData 状态、本机任务记录、工作区缓存和用户可见导出目录。</p></div>
               <button class="btn btn-secondary" type="button" onclick={refreshStorageStatus} disabled={storageLoading}><Icon name="refresh" size={15} />{storageLoading ? "刷新中" : "刷新"}</button>
             </div>
 
@@ -999,19 +1019,18 @@
               {#if storageStatus}
                 <div class="storage-grid">
                   <div><span>导出目录</span><strong>{formatBytes(storageStatus.sizes.exports)}</strong><small>{storageStatus.export_dir}</small></div>
-                  <div><span>应用数据库</span><strong>{formatBytes(storageStatus.sizes.db)}</strong><small>{storageStatus.db_path}</small></div>
-                  <div><span>任务记录</span><strong>{storageStatus.tasks?.total ?? 0} 个</strong><small>运行中 {storageStatus.tasks?.running ?? 0} · 已完成 {storageStatus.tasks?.completed ?? 0} · 异常 {storageStatus.tasks?.failed ?? 0}</small></div>
-                  <div><span>工作区缓存</span><strong>{formatBytes((storageStatus.sizes.jobs ?? 0) + (storageStatus.sizes.legacy_jobs ?? 0))}</strong><small>{storageStatus.jobs_root}</small></div>
+                  <div><span>本机任务记录</span><strong>{storageStatus.tasks?.total ?? 0} 个</strong><small>活动 {storageStatus.tasks?.running ?? 0} · 已完成 {storageStatus.tasks?.completed ?? 0} · 异常 {storageStatus.tasks?.failed ?? 0}</small></div>
+                  <div><span>工作区缓存</span><strong>{formatBytes((storageStatus.sizes.jobs ?? 0) + (storageStatus.sizes.legacy_jobs ?? 0))}</strong><small>{storageStatus.jobs_root}{(storageStatus.sizes.legacy_jobs ?? 0) > 0 ? ` · legacy: ${storageStatus.legacy_jobs_root}` : ""}</small></div>
                   <div><span>运行时组件</span><strong>{formatBytes(storageStatus.sizes.runtime)}</strong><small>插件、外部工具和已安装组件</small></div>
                   <div><span>Obsidian Vault</span><strong>{storageStatus.vault_path ? "已配置" : "未配置"}</strong><small>{storageStatus.vault_path || "未配置"}</small></div>
                 </div>
               {:else}
-                <div class="storage-empty-state"><span class="loading-ring compact"></span><div><strong>尚未读取存储状态</strong><small>点击刷新以查看本机缓存、数据库和导出目录占用。</small></div></div>
+                <div class="storage-empty-state"><span class="loading-ring compact"></span><div><strong>尚未读取存储状态</strong><small>点击刷新以查看本机缓存、工作区和导出目录占用。</small></div></div>
               {/if}
             </div>
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="trash" size={18} /></div><div><h3>工作区缓存清理</h3><p>只清理 AppData 中的临时工作区，不会删除任务中心记录或已经导出的笔记文件。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="trash" size={18} /></div><div><h3>工作区缓存清理</h3><p>只清理 AppData 中的临时工作区，不会删除当前任务记录、已经导出的笔记或 assets 图片。</p></div></div>
               <div class="storage-actions">
                 <button class="btn btn-secondary" type="button" onclick={cleanupOrphanWorkspaces} disabled={storageLoading}><Icon name="trash" size={14} />清理孤儿任务缓存</button>
                 <button class="btn btn-secondary" type="button" onclick={cleanupCompletedWorkspaces} disabled={storageLoading}><Icon name="check" size={14} />清理已完成任务缓存</button>
@@ -1161,6 +1180,8 @@
   .group-head p { margin-top: 3px; color: var(--text-secondary); font-size: 12px; }
   .form-grid { display: grid; gap: 14px; }
   .form-grid.two-cols { grid-template-columns: 1fr 1fr; }
+  .path-input input { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .path-input input:focus { text-overflow: clip; }
 
   .model-cards { display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; }
   .model-card { position: relative; display: flex; min-height: 105px; flex-direction: column; align-items: flex-start; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .14s, background .14s, box-shadow .14s; }
@@ -1188,27 +1209,27 @@
   .toggle-copy strong { font-size: 14px; }
   .toggle-copy small { margin-top: 3px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
-  .provider-overview { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin: 18px 0; }
-  .provider-overview > div { display: grid; grid-template-columns: 38px minmax(0,1fr); grid-template-rows: auto auto; align-items: center; column-gap: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
-  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
+  .provider-overview { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin: 16px 0; }
+  .provider-overview > div { display: grid; grid-template-columns: 34px minmax(0,1fr); grid-template-rows: auto auto; align-items: center; column-gap: 9px; padding: 10px; border-radius: 10px; background: var(--bg-subtle); }
+  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
   .overview-icon.active { color: var(--success-color); background: var(--success-soft); }
   .overview-icon.secure { color: var(--warning-color); background: var(--warning-soft); }
-  .provider-overview strong { overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-overview small { color: var(--text-tertiary); font-size: 12px; }
+  .provider-overview strong { overflow: hidden; color: var(--text-primary); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-overview small { color: var(--text-tertiary); font-size: 11px; }
   .provider-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
   .provider-search { width: 280px; }
   .provider-search input { min-height: 35px; font-size: 13px; }
   .provider-toolbar > span { color: var(--text-tertiary); font-size: 12px; }
-  .provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
-  .provider-card { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: var(--shadow-xs); transition: border-color .14s, box-shadow .14s, transform .14s; }
-  .provider-card:hover { transform: translateY(-1px); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
-  .provider-card.active-provider { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)); box-shadow: 0 0 0 3px var(--accent-glow); }
-  .provider-head { display: grid; grid-template-columns: 42px minmax(0,1fr) 36px; align-items: center; gap: 10px; padding: 14px; }
-  .provider-avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: var(--accent-color); background: var(--accent-soft); }
+  .provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+  .provider-card { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); box-shadow: var(--shadow-xs); transition: border-color .14s, box-shadow .14s; }
+  .provider-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+  .provider-card.active-provider { border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color)); box-shadow: 0 0 0 3px var(--accent-glow); }
+  .provider-head { display: grid; grid-template-columns: 40px minmax(0,1fr) 34px; align-items: center; gap: 10px; padding: 14px 14px 0; }
+  .provider-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
   .provider-name { display: flex; min-width: 0; flex-direction: column; }
   .provider-name > div { display: flex; align-items: center; gap: 7px; min-width: 0; }
   .provider-name h3 { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-name > span { margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
+  .provider-name > span { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
 
   .provider-model-head { grid-template-columns: 30px minmax(0,1fr); align-items: start; }
   .provider-model-head .btn { grid-column: 2; justify-self: start; min-height: 34px; margin-top: 9px; white-space: nowrap; }
@@ -1216,22 +1237,22 @@
   .model-choice { width: 100%; min-height: 40px; padding: 0 36px 0 11px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-card); font: inherit; }
   .model-choice:disabled { color: var(--text-tertiary); background: var(--bg-subtle); cursor: not-allowed; }
   .field-help { display: block; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
-  .provider-models { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 14px 12px; }
-  .provider-models > div { display: flex; min-width: 0; flex-direction: column; padding: 9px; border-radius: 9px; background: var(--bg-subtle); }
-  .provider-models span { display: flex; align-items: center; gap: 5px; color: var(--text-tertiary); font-size: 11px; }
-  .provider-models strong { margin-top: 4px; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-endpoint { display: flex; flex-direction: column; margin: 0 14px 12px; padding: 9px; border: 1px solid var(--border-color); border-radius: 9px; }
-  .provider-endpoint span { color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .08em; }
-  .provider-endpoint code { margin-top: 4px; overflow: hidden; color: var(--text-secondary); font-family: var(--font-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-key { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 14px 13px; }
-  .key-status { display: flex; align-items: center; gap: 7px; color: var(--text-tertiary); }
+  .provider-models { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 14px 0; }
+  .provider-models > div { display: flex; min-width: 0; flex-direction: column; padding: 8px; border-radius: 8px; background: var(--bg-subtle); }
+  .provider-models span { display: flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 11px; }
+  .provider-models strong { margin-top: 3px; overflow: hidden; color: var(--text-primary); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-endpoint { display: flex; flex-direction: column; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
+  .provider-endpoint span { color: var(--text-tertiary); font-size: 10px; font-weight: 750; letter-spacing: .08em; }
+  .provider-endpoint code { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-key { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 14px 0; }
+  .key-status { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); }
   .key-status.configured { color: var(--success-color); }
   .key-status > span { display: flex; flex-direction: column; }
   .key-status strong { color: var(--text-secondary); font-size: 12px; }
-  .key-status small { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
+  .key-status small { margin-top: 1px; color: var(--text-tertiary); font-size: 11px; }
   .text-danger { border: 0; color: var(--danger-color); background: transparent; cursor: pointer; font-size: 11px; }
-  .provider-footer { display: flex; align-items: center; gap: 7px; margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
-  .active-note { display: flex; align-items: center; gap: 5px; margin-left: auto; color: var(--success-color); font-size: 12px; font-weight: 650; }
+  .provider-footer { display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .active-note { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--success-color); font-size: 12px; font-weight: 650; }
   .delete-provider { width: 32px; height: 32px; margin-left: auto; color: var(--text-tertiary); }
   .delete-provider:hover { color: var(--danger-color); background: var(--danger-soft); }
 
@@ -1302,9 +1323,9 @@
   .provider-modal-footer > div { display: flex; gap: 8px; }
 
   @media (max-width: 1120px) {
-    .settings-shell { grid-template-columns: 210px minmax(0,1fr); }
+    .settings-shell { grid-template-columns: minmax(190px, 210px) minmax(0,1fr); }
     .provider-grid, .template-grid { grid-template-columns: 1fr; }
-    .model-cards { grid-template-columns: repeat(3,1fr); }
+    .model-cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   }
 
   .settings-page { max-width: 1280px; }
@@ -1355,18 +1376,18 @@
   .provider-overview strong { font-size: 18px; }
   .provider-overview small { font-size: 11px; }
   .provider-search input { min-height: 42px; font-size: 13px; }
-  .provider-card { border-radius: 14px; }
-  .provider-head { padding: 17px; }
-  .provider-name h3 { font-size: 15px; }
+  .provider-card { border-radius: 13px; }
+  .provider-head { padding: 14px 14px 0; }
+  .provider-name h3 { font-size: 14px; }
   .provider-name > span { font-size: 11px; }
-  .provider-models { padding: 0 17px 14px; }
+  .provider-models { padding: 10px 14px 0; gap: 6px; }
   .provider-models span { font-size: 11px; }
   .provider-models strong { font-size: 13px; }
-  .provider-endpoint { margin: 0 17px 14px; padding: 11px; }
+  .provider-endpoint { margin: 10px 14px 0; padding: 8px 10px; }
   .provider-endpoint span { font-size: 10px; }
   .provider-endpoint code { font-size: 11px; }
-  .provider-key { margin: 0 17px 15px; }
-  .provider-footer { padding: 12px 17px; }
+  .provider-key { margin: 10px 14px 0; }
+  .provider-footer { padding: 10px 14px; }
   .template-card { min-height: 126px; padding: 16px; }
   .template-card-copy strong { font-size: 14px; }
   .template-card-copy p { font-size: 12px; }
@@ -1382,10 +1403,22 @@
     .group-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; min-width: 0; }
   }
 
+  @media (max-width: 900px) {
+    .settings-nav > button { min-height: 36px; padding: 4px 8px; }
+    .tab-icon { width: 24px; height: 24px; }
+    .settings-pane { padding: 16px 12px 20px; }
+    .pane-head h2 { font-size: 18px; }
+    .setting-group { padding: 16px 0; }
+  }
+
   @media (max-width: 1180px) {
     .settings-shell { grid-template-columns: 220px minmax(0,1fr); }
-    .settings-pane { padding: 26px; }
+    .settings-pane { padding: 24px; }
     .provider-grid, .template-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 1050px) {
+    .settings-shell { grid-template-columns: minmax(180px, 210px) minmax(0,1fr); }
   }
 
 
@@ -1420,33 +1453,36 @@
   .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
   .ocr-test-field { justify-content: end; }
   .ocr-test-btn { width: fit-content; min-width: 118px; }
-  .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
-  .plugin-card { display: flex; min-width: 0; flex-direction: column; gap: 13px; padding: 15px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
-  .plugin-card.installed { border-color: color-mix(in srgb, var(--success-color) 28%, var(--border-color)); }
-  .plugin-card-head { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 11px; }
-  .plugin-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--accent-color); background: var(--accent-soft); }
+  .vision-test-field { justify-content: end; }
+  .vision-test-btn { width: fit-content; min-width: 118px; }
+  .plugin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .plugin-card { display: flex; min-width: 0; flex-direction: column; gap: 0; padding: 0; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); box-shadow: var(--shadow-xs); overflow: hidden; }
+  .plugin-card.installed { border-color: color-mix(in srgb, var(--success-color) 25%, var(--border-color)); }
+  .plugin-card-head { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 14px 14px 12px; }
+  .plugin-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
   .plugin-title { display: flex; min-width: 0; flex-direction: column; }
-  .plugin-title strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
-  .plugin-title small { margin-top: 3px; overflow: hidden; color: var(--text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-  .plugin-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-  .plugin-meta > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 10px; border-radius: 10px; background: var(--bg-subtle); }
-  .plugin-meta span, .plugin-path span { color: var(--text-tertiary); font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-  .plugin-meta strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .plugin-path { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-subtle); }
-  .plugin-path code { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-  .plugin-warning { display: flex; align-items: center; gap: 7px; padding: 9px 10px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
+  .plugin-title strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-title small { margin-top: 2px; overflow: hidden; color: var(--text-tertiary); font-size: 12px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-meta { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px; }
+  .plugin-meta > div { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 7px; background: var(--bg-subtle); font-size: 12px; }
+  .plugin-meta span { display: none; }
+  .plugin-meta strong { overflow: hidden; color: var(--text-secondary); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-path { display: flex; min-width: 0; flex-direction: column; gap: 0; margin: 0 14px; padding: 8px 10px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .plugin-path span { display: none; }
+  .plugin-path code { overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-warning { display: flex; align-items: center; gap: 6px; margin: 0 14px; padding: 7px 10px; border-radius: 8px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
   .plugin-note { color: var(--text-secondary); background: var(--bg-subtle); }
-  .plugin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
-  .plugin-actions .btn { min-height: 40px; }
+  .plugin-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .plugin-actions .btn { min-height: 34px; padding: 6px 10px; font-size: 13px; }
   .plugin-empty-state { display: flex; align-items: center; gap: 12px; min-height: 78px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
   .plugin-empty-state > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
   .plugin-empty-state strong { color: var(--text-primary); font-size: 14px; }
   .plugin-empty-state small { font-size: 12px; }
-  .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
-  .storage-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
-  .storage-grid span { color: var(--text-tertiary); font-size: 11px; font-weight: 750; }
-  .storage-grid strong { font-size: 15px; }
-  .storage-grid small { overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+  .storage-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; padding: 12px; border-radius: 10px; background: var(--bg-subtle); }
+  .storage-grid span { color: var(--text-tertiary); font-size: 12px; font-weight: 600; }
+  .storage-grid strong { color: var(--text-primary); font-size: 14px; }
+  .storage-grid small { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .storage-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .storage-empty-state { display: flex; align-items: center; gap: 12px; min-height: 72px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
   .storage-empty-state > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
@@ -1455,4 +1491,36 @@
   @media (max-width: 760px) { .runtime-settings-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .plugin-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .storage-grid { grid-template-columns: 1fr; } }
+
+  /* Responsive: narrow settings */
+  @media (max-width: 960px) {
+    .settings-shell { grid-template-columns: 1fr; min-height: auto; }
+    .settings-nav { flex-direction: row; flex-wrap: wrap; gap: 5px; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--border-color); overflow-x: auto; }
+    .settings-nav-title { display: none; }
+    .settings-nav > button { grid-template-columns: 28px minmax(0, 1fr); min-height: 38px; flex: 0 0 auto; padding: 5px 9px; border-radius: 8px; }
+    .settings-nav > button:last-child { margin-right: 0; }
+    .settings-nav > button :last-child { display: none; }
+    .tab-icon { width: 26px; height: 26px; border-radius: 7px; }
+    .tab-copy strong { font-size: 13px; }
+    .tab-copy small { display: none; }
+    .security-note { display: none; }
+    .form-grid.two-cols { grid-template-columns: 1fr; }
+    .model-cards { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+    .provider-grid { grid-template-columns: 1fr; }
+    .template-grid { grid-template-columns: 1fr; }
+    .plugin-grid { grid-template-columns: 1fr; }
+    .enhancement-settings-grid { grid-template-columns: 1fr; }
+    .provider-overview { grid-template-columns: 1fr; }
+    .runtime-settings-grid { grid-template-columns: 1fr; }
+    .storage-grid { grid-template-columns: 1fr; }
+    .check-head, .check-row { grid-template-columns: minmax(100px, .5fr) 70px minmax(140px, 1fr); gap: 8px; }
+    .settings-pane { padding: 18px 14px 24px; }
+    .pane-head { flex-direction: column; gap: 10px; }
+    .pane-head h2 { font-size: 20px; }
+    .diagnostic-actions { flex-wrap: wrap; }
+    .group-head.with-action { grid-template-columns: 1fr; gap: 10px; }
+    .group-actions { grid-column: 1; justify-content: flex-start; }
+    .provider-toolbar { flex-direction: column; gap: 8px; }
+    .provider-search { width: 100%; }
+  }
 </style>

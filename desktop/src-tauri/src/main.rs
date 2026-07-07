@@ -11,7 +11,12 @@ use tauri::{Emitter, Manager};
 async fn get_engine_info(
     native_engine: tauri::State<'_, NativeEngine>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(result) = native_engine.call("system.info", serde_json::json!({})) {
+    let engine = native_engine.inner().clone();
+    let result =
+        tokio::task::spawn_blocking(move || engine.call("system.info", serde_json::json!({})))
+            .await
+            .map_err(|error| error.to_string())?;
+    if let Some(result) = result {
         return result;
     }
     Err("system.info is not available".to_string())
@@ -23,7 +28,12 @@ async fn engine_call(
     method: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    if let Some(result) = native_engine.call(&method, params.clone()) {
+    let engine = native_engine.inner().clone();
+    let method_for_call = method.clone();
+    let result = tokio::task::spawn_blocking(move || engine.call(&method_for_call, params))
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(result) = result {
         return result;
     }
     Err(format!(

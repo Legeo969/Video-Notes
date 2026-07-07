@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD
+# Video Notes AI 多模态视频理解 PRD / v1.5.8 验收状态
 
 ## 1. 背景
 
@@ -13,150 +13,102 @@
 
 这个链路对纯讲解、字幕清晰、文字密集型视频有效，但对软件教程、节点编辑器、PPT 演示、图表推导、代码/参数操作类视频仍不够。原因是很多关键信息存在于画面结构中，而不是语音或 OCR 文本中。
 
-目标是升级为：
+本规格最初把“多模态视频理解”收敛为两个可执行里程碑：
 
-```text
-视频
-→ 音频转写
-→ 关键帧抽取
-→ OCR 画面文字
-→ 多模态视觉模型分析关键帧
-→ 按时间轴融合 transcript + OCR + vision
-→ 生成带图片引用的学习笔记
-```
+- M1.5：修正并验收当前视觉理解任务链路。
+- M2：补齐设置页视觉模型测试能力。
 
-## 2. 产品目标
+截至 v1.5.8，M1.5/M2 已完成，并继续落地了 timeline context、adaptive frame sampling、segment-level vision、学习型笔记 prompt、清洁 artifact 布局与 storage cleanup。本文保留原始里程碑定义，同时记录当前验收状态与剩余缺口。
 
-1. 让应用能接入 OpenAI-compatible 多模态视觉模型，例如 Qwen-VL/Qwen-Omni、GPT 视觉模型、Gemini、Claude 视觉模型或本地兼容服务。
-2. 让视觉模型真实参与任务管线，而不是只在 UI 中显示开关。
-3. 让生成的笔记能引用相关画面，而不是只在文末堆截图。
-4. 保持主安装包轻量，不内置大模型，不强制用户安装 Python。
-5. 对不支持视觉输入的供应商给出明确错误或降级说明。
+## 2. 目标
+
+1. 让视觉理解真实参与 native task pipeline，而不是只保存 UI 开关。
+2. 让 OCR 和视觉理解可以独立启用。
+3. 让 vision-only 任务也能向笔记生成模型提供可引用图片素材。
+4. 让视觉模型失败时任务降级完成，并把失败原因写入 transcript。
+5. 让用户能在设置页验证当前活动供应商的 `vision_model` 是否支持图片输入。
 
 ## 3. 非目标
 
-1. 第一阶段不做实时视频流理解。
-2. 第一阶段不上传完整视频给模型。
-3. 第一阶段不实现专有 SDK，例如只支持某一家服务商的非兼容 API。
-4. 第一阶段不做自动模型下载。
-5. 第一阶段不保证每个多模态模型都兼容，只保证 OpenAI-compatible `chat/completions` + `image_url` 格式。
+1. 不做实时视频流理解。
+2. 不上传完整视频给模型。
+3. 不实现专有 SDK，只支持 OpenAI-compatible `chat/completions` + `image_url`。
+4. 不做自动模型下载。
+5. 不做自动 provider capability 推断；只使用测试结果、用户配置和明确错误信息。
+6. 不保证所有 OpenAI-compatible 服务都兼容，只要求失败信息可见、任务可降级。
+7. 不保留最终 Markdown 生成缓存；最终笔记每次直接调用当前 provider 生成，避免 OCR/Vision/timeline 非确定性导致缓存污染。
 
-## 4. 目标用户
+## 4. 当前实现状态（v1.5.8）
 
-### 4.1 学习型用户
+当前代码已包含以下能力：
 
-用户观看教程视频，希望自动得到：
+- provider profile 支持 `model` 和 `vision_model`。
+- 设置页支持默认 `vision_enabled` 开关。
+- 创建任务页会提交 `vision_enabled`。
+- native engine 有 `vision_analyzing` 阶段。
+- native engine 会抽取关键帧，并调用 OpenAI-compatible vision model。
+- 视觉失败时会写入 `## Vision` 降级信息。
+- 笔记生成 prompt 已要求只使用提供的 Markdown 图片路径。
+- `settings.vision.test` 已支持在设置页验证当前视觉模型。
+- Whisper JSON segment 可解析为 timeline，并把 transcript、OCR、Vision、frame path 合并为时间轴上下文。
+- 抽帧支持固定/自适应模式：按视频时长、scene change、fps frame number、去重与帧预算生成候选帧。
+- Vision 已从单次多图描述升级为 per-segment summary，并以受限并发执行。
+- 笔记生成 prompt 已优化为学习型结构，强调步骤、参数、术语、复习问题与可复现性。
+- 中间产物已迁移到 `%LOCALAPPDATA%\Video Notes AI\jobs\job-{id}-{timestamp}`。
+- Obsidian/export 目录只保留最终 Markdown 和被引用图片：`assets/{note_stem}/frame-xxx.png`。
+- Storage Management 已支持清理 AppData job workspace，不删除导出的 Markdown 或 Obsidian assets。
+- 删除笔记时会删除对应 `assets/{note_stem}/`。
+- Tauri asset protocol 已启用，Notes 页面可显示本地导出图片。
+- 任务中心已接入 native task actions phase 1：取消、重跑已实现；暂停/继续为阶段边界协作式控制。
 
-- 章节化学习笔记
-- 操作步骤
-- 关键参数
-- 画面截图引用
-- 后续行动项
+当前仍未完成或需实测的缺口：
 
-### 4.2 技术教程用户
+- Task actions phase 1 不支持精确 settings snapshot 重放、跨重启继续或 OS thread suspension；暂停只在当前阶段结束后的安全检查点生效，取消为 cooperative cancel，可能需要等待当前 blocking stage 返回。
+- M7 Provider Capability Matrix 尚未完成：视觉测试结果暂未沉淀为可刷新/清除的 capability cache。
+- OpenAI-compatible provider 差异仍需通过设置页测试和任务降级路径暴露，不做模型名硬编码判断。
 
-用户处理 Houdini、Unreal Engine、Gaea、Blender、代码 IDE、产品后台等视频，希望模型理解：
+## 5. M1.5：视觉理解任务链路修正
 
-- 软件界面
-- 节点关系
-- 参数面板
-- 图表内容
-- 操作顺序
+### 5.1 范围
 
-## 5. 核心用户故事
+M1.5 只修正当前任务链路，不引入新的时间轴数据结构。
 
-1. 作为用户，我希望在设置里配置一个视觉模型，这样处理视频时可以自动理解画面内容。
-2. 作为用户，我希望创建任务时可以打开或关闭视觉理解，避免每个任务都产生额外成本。
-3. 作为用户，我希望任务详情里能看到视觉理解是否真实运行、抽取了多少帧、是否失败。
-4. 作为用户，我希望生成的笔记在相关段落附近插入截图，而不是统一放在文末。
-5. 作为用户，我希望如果视觉模型不支持图片输入，应用能告诉我失败原因。
-6. 作为用户，我希望 OCR 和视觉理解可以独立启用：OCR 负责文字，视觉模型负责画面语义。
-
-## 6. 功能范围
-
-### 6.1 设置页
-
-新增或调整能力：
-
-- AI 供应商配置中保留：
-  - 文本模型
-  - 视觉模型
-- 内容增强区域提供：
-  - OCR 文字识别开关
-  - 视觉理解开关
-  - 视觉模型测试按钮
-
-视觉模型测试逻辑：
+任务流程：
 
 ```text
-使用内置测试图
-→ 调用当前活动供应商的 vision_model
-→ 返回画面理解结果
-→ 显示成功/失败/错误详情
+媒体输入
+→ Whisper 转录
+→ 如果 OCR 或 Vision 任一开启，则抽取关键帧
+→ OCR 可选执行
+→ Vision 可选执行
+→ 写入 transcript
+→ 生成 Markdown 笔记
 ```
 
-验收：
+### 5.2 抽帧规则
 
-- 没有活动供应商时，视觉测试按钮禁用或提示配置供应商。
-- 没有视觉模型时，提示填写 vision_model。
-- 模型不支持图片输入时，显示接口返回错误。
+默认规则：
 
-### 6.2 创建任务页
+- 每 60 秒抽 1 帧。
+- 最多 8 帧。
+- 输出到 `<note-stem>-<job-id>-frames`。
+- OCR 和 Vision 复用同一批帧。
+- 如果 OCR 关闭但 Vision 开启，仍然抽帧。
 
-用户可在单次任务中覆盖默认增强能力：
+本阶段不做：
 
-- OCR 开关
-- OCR 后端选择
-- 视觉理解开关
+- 用户可配置抽帧间隔。
+- 用户可配置最大帧数。
+- 场景变化抽帧。
+- 开头/结尾/章节边界抽帧。
 
-展示真实链路：
+### 5.3 Vision 调用
 
-```text
-媒体 → Whisper 转录 → 可选 OCR → 可选视觉理解 → AI 生成笔记
-```
-
-验收：
-
-- 视觉理解开启后，提交参数必须包含 `vision_enabled: true`。
-- 没有活动供应商时不能启用视觉理解。
-- 摘要栏准确显示视觉理解开启/关闭。
-
-### 6.3 任务管线
-
-#### 6.3.1 抽帧
-
-初版策略：
-
-- 默认每 60 秒抽 1 帧
-- 最多 8 帧
-- OCR 和视觉理解复用同一批帧
-
-后续可配置：
-
-- 抽帧间隔
-- 最大帧数
-- 是否按场景变化抽帧
-- 是否抽取开头/结尾/章节边界帧
-
-#### 6.3.2 OCR
-
-OCR 输出结构：
-
-```markdown
-## OCR
-
-### frame-001.png
-
-识别文字...
-```
-
-#### 6.3.3 Vision
-
-视觉模型输入：
+输入格式：
 
 ```json
 {
-  "model": "<vision_model>",
+  "model": "<vision_model or model>",
   "messages": [
     {
       "role": "user",
@@ -170,48 +122,218 @@ OCR 输出结构：
         }
       ]
     }
-  ]
+  ],
+  "temperature": 0.1
 }
 ```
 
-视觉输出写入 transcript：
+规则：
+
+- 优先使用当前活动 provider 的 `vision_model`。
+- 如果 `vision_model` 为空，回退使用 provider 的 `model`。
+- 单次最多发送 4 张图。
+- 单次超时 120 秒。
+- 使用 `POST <base_url>/chat/completions`。
+
+### 5.4 Transcript 输出
+
+Vision 成功时写入：
 
 ```markdown
 ## Vision
 
-- frame-001.png: 画面展示了...
-- frame-002.png: 这里切换到...
+<vision model returned markdown>
 ```
 
-验收：
+Vision 返回空内容时写入：
 
-- 视觉开启时任务阶段出现 `视觉理解`。
-- 视觉失败时不终止整个任务，但要把失败原因写入 transcript。
-- 视觉成功时，笔记生成上下文包含 Vision 内容。
+```markdown
+## Vision
 
-### 6.4 笔记生成
+No visual details were returned by the vision model.
+```
+
+Vision 失败时写入：
+
+```markdown
+## Vision
+
+Vision unavailable: <provider error>
+```
+
+抽帧失败时写入：
+
+```markdown
+## Vision
+
+Frame extraction unavailable: <ffmpeg error>
+```
+
+### 5.5 笔记生成图片素材
 
 生成模型输入应包含：
 
-- 音频转写
-- OCR 结果
-- Vision 结果
-- 可引用图片素材列表
+- 音频转写。
+- OCR 结果，如果 OCR 开启。
+- Vision 结果，如果 Vision 开启。
+- 可引用图片素材列表，如果 OCR 或 Vision 任一开启且帧目录存在。
 
-图片引用规则：
+关键规则：
 
-1. 只有与段落明确相关时才插图。
-2. 图片必须使用本地相对路径。
-3. 不要把图片集中放到文末。
-4. 不要编造图片路径。
+1. `image_context` 不应依赖 `ocr_enabled`。
+2. `ocr_enabled=false && vision_enabled=true` 时，笔记生成仍应收到图片素材列表。
+3. 图片路径必须是相对 Markdown 路径。
+4. 不允许模型编造图片路径。
+5. 没有明确相关图片时，不强行插图。
+6. 不把图片集中放在文末。
 
 示例：
 
 ```markdown
 在这一步中，讲师创建了 slope mask，并调整了坡度范围。
 
-![frame-003](2-generating-slope-masks-1-frames/frame-003.png)
+![frame-003](lesson-1-frames/frame-003.png)
 ```
+
+### 5.6 UI 行为
+
+创建任务页：
+
+- 视觉理解开关只在存在活动 provider 时可启用。
+- 任务提交时，开启视觉理解必须包含 `vision_enabled: true`。
+- 摘要栏必须显示视觉理解开启或关闭。
+
+任务中心：
+
+- Vision 开启时，任务阶段必须出现 `vision_analyzing`。
+- 抽帧数量显示真实帧数。
+- Vision 失败不应把任务标记为 `failed`。
+- 定位输出文件应打开真实 Markdown 产物所在目录。
+
+### 5.7 M1.5 验收标准
+
+基础链路：
+
+- 关闭 OCR、关闭 Vision：任务可完成。
+- 开启 OCR、关闭 Vision：任务可完成，transcript 包含 `## OCR`。
+- 关闭 OCR、开启 Vision：任务可完成，transcript 包含 `## Vision`，笔记生成输入包含图片素材。
+- 同时开启 OCR 和 Vision：复用同一帧目录，任务可完成。
+
+失败降级：
+
+- provider 未配置时，Vision 写入明确失败原因，任务仍可完成。
+- 模型不支持图片输入时，Vision 写入 provider error，任务仍可完成。
+- 抽帧失败时，OCR 和 Vision 均跳过，任务仍基于转写生成笔记。
+- API 超时时，Vision 写入超时错误，任务仍进入 `generating_notes`。
+
+笔记质量：
+
+- 软件教程笔记能在相关段落附近引用关键画面。
+- vision-only 任务允许插入截图。
+- 没有相关图片时不插图。
+- “转写与 OCR 依据”不输出完整 transcript，只列关键依据。
+
+## 6. M2：视觉模型测试
+
+### 6.1 范围
+
+M2 在设置页增加视觉模型测试能力，用于验证当前活动 provider 的 `vision_model` 是否能处理图片输入。
+
+不进入 M2：
+
+- 批量测试多个模型。
+- 自动识别模型是否视觉模型。
+- provider-specific SDK。
+- 上传用户视频帧作为测试图。
+
+### 6.2 RPC
+
+新增 RPC：
+
+```text
+settings.vision.test
+```
+
+输入：
+
+```json
+{
+  "provider": "optional provider name",
+  "vision_model": "optional model override"
+}
+```
+
+行为：
+
+1. 读取 provider 参数；如果为空，使用当前活动 provider。
+2. 校验 provider 存在。
+3. 校验 provider API key 已配置。
+4. 校验可用模型：优先使用入参 `vision_model`，否则使用 provider 的 `vision_model`，再否则使用 provider 的 `model`。
+5. 使用内置测试图构造 `image_url` data URL。
+6. 调用 `<base_url>/chat/completions`。
+7. 返回成功状态、模型名、简短结果或错误信息。
+
+输出成功：
+
+```json
+{
+  "success": true,
+  "model": "<model>",
+  "message": "Vision model is available",
+  "result": "<short model response>"
+}
+```
+
+输出失败：
+
+```json
+{
+  "success": false,
+  "model": "<model if known>",
+  "message": "<human readable failure>",
+  "error": "<provider or validation error>"
+}
+```
+
+### 6.3 设置页 UI
+
+内容增强区域增加：
+
+- `测试 Vision` 按钮。
+- 测试中 loading 状态。
+- 成功 toast：显示模型名和简短结果。
+- 失败 toast：显示可操作错误信息。
+
+按钮状态：
+
+- 没有活动 provider 时禁用，提示先配置 AI 供应商。
+- 活动 provider 没有 API key 时禁用或测试时返回明确错误。
+- 测试进行中禁用。
+
+### 6.4 错误信息
+
+错误信息必须区分：
+
+- 未配置活动 provider。
+- provider 不存在。
+- API key 未配置。
+- `base_url` 为空。
+- 模型 ID 为空。
+- HTTP request failed。
+- HTTP non-2xx response。
+- response JSON 无 `choices[0].message.content`。
+- 模型不支持 `image_url` 或 base64 data URL。
+
+### 6.5 M2 验收标准
+
+- 设置页能看到 `测试 Vision` 按钮。
+- 无活动 provider 时不能直接测试。
+- 无 API key 时给出明确错误。
+- 无 `vision_model` 但有 `model` 时，用 `model` 回退测试。
+- 兼容模型返回成功 toast。
+- 不兼容模型返回失败 toast，并保留 provider error。
+- 测试不修改 provider 配置。
+- 测试不创建任务、不写入 transcript、不写入 notes。
 
 ## 7. 数据结构
 
@@ -229,9 +351,7 @@ OCR 输出结构：
 }
 ```
 
-### 7.2 任务状态
-
-新增或使用阶段：
+### 7.2 任务阶段
 
 ```text
 resolving
@@ -246,144 +366,101 @@ failed
 
 ### 7.3 产物目录
 
-当配置 Obsidian Vault：
+v1.5.8 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
+
+AppData job workspace：
+
+```text
+%LOCALAPPDATA%\Video Notes AI\jobs\job-{id}-{timestamp}\
+  downloads\
+  frames\
+    frame-001.png
+    frame-002.png
+  transcript.txt
+  whisper.json
+  {note-stem}-{id}-metrics.json
+```
+
+配置 Obsidian Vault 时：
 
 ```text
 <vault>\video-notes\
-  lesson-1.md
-  lesson-1-transcript.txt
-  lesson-1-frames\
+  lesson-1-20260707-220831-1.md
+  assets\lesson-1-20260707-220831-1\
     frame-001.png
     frame-002.png
 ```
 
-未配置 Vault：
+规则：
+
+- Markdown 文件名包含时间戳和 job id，避免覆盖历史导出。
+- 只复制最终 Markdown 实际引用的 frame 到 `assets/{note_stem}/`。
+- transcript、Whisper JSON、metrics、下载源文件、未引用 frame 不写入 Obsidian/export 根目录。
+- Storage cleanup 只清理 AppData job workspace；不删除已导出的 Markdown 和 Obsidian assets。
+- 删除笔记时同步删除对应 `assets/{note_stem}/`。
+
+未配置 Vault 时：
 
 ```text
 Documents\Video Notes AI\exports\
 ```
 
-## 8. 错误处理
+## 8. 测试计划
 
-### 8.1 视觉模型不支持图片
+v1.5.8 已通过的静态/构建验证：
 
-行为：
+- `cargo build`：0 warning / 0 error。
+- `npm run build`：0 warning / 0 error。
+- `npm run tauri build`：已生成 `Video Notes AI_1.5.8_x64-setup.exe`。
 
-- 任务不中断。
-- transcript 写入：
+后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。
 
-```markdown
-## Vision
+### 8.1 Rust native engine
 
-Vision unavailable: <provider error>
-```
+建议覆盖：
 
-- 任务中心显示任务仍可完成。
+- `settings.vision.test` 无活动 provider。
+- `settings.vision.test` 无 API key。
+- `settings.vision.test` 使用 `vision_model`。
+- `settings.vision.test` 无 `vision_model` 时回退 `model`。
+- vision-only 任务生成 `image_context`。
+- Vision 失败后任务仍完成。
 
-### 8.2 抽帧失败
+### 8.2 Svelte UI
 
-行为：
+建议覆盖：
 
-- OCR 和 Vision 均跳过。
-- transcript 写入失败原因。
-- 笔记仍基于转写生成。
+- 创建任务时 `vision_enabled` 正确提交。
+- 无活动 provider 时 Vision 开关不可启用。
+- 设置页 Vision 测试按钮 disabled/loading/success/failure 状态。
 
-### 8.3 API 超时
+### 8.3 手工验收
 
-行为：
+使用 30-60 秒本地视频：
 
-- 单次视觉调用超时时间默认 120 秒。
-- 失败后降级，不阻塞主链路。
+1. 关闭 OCR 和 Vision，确认主链路完成。
+2. 开启 OCR，确认 transcript 包含 `## OCR`。
+3. 关闭 OCR、开启 Vision，确认 transcript 包含 `## Vision`，note 可引用帧图。
+4. 使用不支持图片输入的模型，确认任务不失败且 transcript 记录错误。
+5. 在设置页测试兼容和不兼容模型，确认 toast 信息可理解。
 
-## 9. 性能与成本控制
-
-默认限制：
-
-- 最多 8 张视觉帧
-- 每次视觉调用最多发送 4 张图
-- 图片使用 PNG 抽帧，后续可压缩为 JPEG
-- 视觉模型只在用户显式开启时运行
-
-后续优化：
-
-- 自动缩放图片
-- JPEG 压缩质量设置
-- 按视频长度动态抽帧
-- 按场景变化抽帧
-- 多段视觉摘要再 reduce
-
-## 10. 隐私与本地存储
-
-1. 视频文件不上传，除非用户启用远程 OCR 或远程视觉模型。
-2. 发送给视觉模型的是抽取帧图，不是完整视频。
-3. API Key 保存在本机设置中，不写入任务快照。
-4. 诊断日志不应包含 API Key。
-
-## 11. 验收标准
-
-### 11.1 基础链路
-
-- 关闭 OCR、关闭视觉：任务可完成。
-- 开启 OCR、关闭视觉：任务可完成，transcript 包含 OCR。
-- 关闭 OCR、开启视觉：任务可完成，transcript 包含 Vision。
-- 同时开启 OCR 和视觉：复用抽帧目录，任务可完成。
-
-### 11.2 UI
-
-- 设置页视觉开关与创建任务页视觉开关状态一致。
-- 创建任务页无活动供应商时不能启用视觉理解。
-- 任务中心显示 `视觉理解` 阶段。
-- 抽帧数量显示真实帧数。
-- 完成任务显示真实运行时长。
-- 定位文件能打开真实 Markdown 产物所在目录。
-
-### 11.3 笔记质量
-
-- 软件教程笔记中能引用关键画面。
-- 图片插入位置与段落语义相关。
-- 没有相关图片时不强行插图。
-- “转写与 OCR 依据”不输出完整转录，只输出关键依据。
-
-## 12. 里程碑
-
-### M1：OpenAI-compatible 视觉模型接入
-
-- 抽帧复用
-- 视觉模型调用
-- Vision 写入 transcript
-- UI 恢复视觉开关
-- 任务中心显示视觉阶段
-
-### M2：视觉模型测试
-
-- 设置页增加测试按钮
-- 内置测试图
-- 显示测试结果和错误详情
-
-### M3：时间轴融合
-
-- transcript segment 时间戳
-- OCR frame 时间戳
-- Vision frame 时间戳
-- 生成 timeline multimodal context
-
-### M4：逐帧/分段学习模式
-
-- 按时间段聚合画面
-- 每段生成视觉摘要
-- 汇总成章节式学习笔记
-
-## 13. 风险
+## 9. 风险
 
 1. 不同供应商的 OpenAI-compatible 兼容程度不同。
 2. 部分模型不支持 base64 data URL，只支持公网图片 URL。
 3. 多图输入成本较高。
-4. 视频教程画面变化快时，固定间隔抽帧可能漏掉关键步骤。
-5. 视觉模型可能泛泛描述画面，需要更强 prompt 和时间轴上下文。
+4. 固定 60 秒抽帧可能漏掉快速操作步骤。
+5. 视觉模型可能泛泛描述画面，需要后续优化 prompt 和时间轴上下文。
 
-## 14. 后续设计方向
+## 10. 后续方向
 
-长期目标不是简单“加一个视觉开关”，而是形成统一的多模态时间轴：
+后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.5.8 为准。
+
+### M3：Timeline Context（已完成）
+
+目标：把 transcript、OCR、Vision 从“拼接文本”升级为统一的多模态时间轴。
+
+核心结构：
 
 ```text
 TimelineSegment {
@@ -396,5 +473,171 @@ TimelineSegment {
 }
 ```
 
-最终笔记生成应基于 timeline，而不是把 transcript、OCR、Vision 简单拼接。
+范围：
 
+- transcript segment 带 `start_sec` / `end_sec`。
+- frame 文件带采样时间点。
+- OCR 结果归入最近的 timeline segment。
+- Vision summary 归入对应 frame 所在 segment。
+- note generation 使用 timeline context，而不是整段 transcript 拼接。
+
+验收：
+
+- 生成笔记按视频时间顺序组织步骤。
+- 每个插图都能追溯到 timeline segment。
+- 没有 OCR 或 Vision 时，timeline 仍能基于 transcript 工作。
+- timeline context 由 native engine 内部构建，并通过 metrics / transcript / final note 间接调试；未单独保留长期缓存文件。
+
+### M4：Adaptive Frame Sampling（已完成）
+
+目标：在成本可控的前提下减少漏掉关键画面的概率。
+
+范围：
+
+- 按视频长度动态调整 frame interval。
+- 支持 scene change detection。
+- 保留开头、结尾、章节切换附近帧。
+- 对连续近似画面去重。
+- 暴露 frame sampling 摘要：候选帧数、保留帧数、丢弃原因。
+
+验收：
+
+- 同样帧数预算下，比固定 60 秒抽帧覆盖更多关键步骤。
+- 静态画面视频不会产生大量重复帧。
+- 快速操作视频不会只留下无意义中间帧。
+- 抽帧策略失败时可回退到 M1.5 固定抽帧。
+
+### M4.5：Pipeline Metrics（已完成）
+
+目标：让多模态 pipeline 的阶段耗时和抽帧决策可追踪。
+
+当前输出：
+
+- `StageRecord` / `StageTimer` 记录主要阶段耗时。
+- metrics 文件写入 AppData job workspace。
+- 覆盖阶段：`downloading`、`transcribing`、`extracting_frames`、`vision_analyzing`、`generating_notes`。
+- frame sampling metrics：`duration_sec`、`interval_sec`、`candidate_count`、`kept_count`。
+
+### M4.6：Study-oriented Prompt Optimization（已完成）
+
+目标：减少泛泛总结，把输出约束为可复习、可复现的教程笔记。
+
+当前规则：
+
+- prompt 强调学习目标、步骤、参数、术语、复习问题和 action checklist。
+- 不输出完整 transcript，只保留关键证据。
+- 图片引用必须服务于步骤理解，不作为装饰图。
+- 不设置固定 `max_tokens` 上限，避免长教程被硬截断。
+- 最终 Markdown 生成缓存已移除：不再维护 `generation-cache`，每次用当前 timeline/OCR/Vision 输入直接生成。
+
+### M4.7：Artifact Layout / Storage Cleanup（部分完成）
+
+已完成：
+
+- 中间产物写入 AppData job workspace。
+- Obsidian/export 目录只保留最终 Markdown 和被引用 frame assets。
+- Storage Management 可清理 orphan/completed job workspace。
+- Note deletion 会删除对应 `assets/{note_stem}/`。
+
+未完成：
+
+- task action 后续增强：exact settings snapshot retry、跨重启 resume、运行中 child process 立即 kill 与部分产物清理策略。
+
+### M5：Segment-level Vision Summary（已完成）
+
+目标：让 Vision 输出从“泛泛描述几张图”变成可用于学习笔记的分段语义。
+
+流程：
+
+```text
+frames
+→ group by timeline segment
+→ per-segment vision summary
+→ reduce into timeline context
+→ generate notes
+```
+
+每段 Vision 输出应包含：
+
+```text
+time: 120-180s
+frames: frame-003.png, frame-004.png
+summary: 讲师在节点编辑器中连接 slope mask 到 erosion input，并调整 strength 参数。
+evidence: UI node labels, parameter panel
+```
+
+验收：
+
+- Vision summary 明确描述 UI、参数、节点、图表或对象关系。
+- 每段 summary 可追溯到 frame path。
+- note generation 能使用 segment summary 插入更稳定的图片引用。
+- Vision reduce 失败时，可回退使用原始 per-frame summary。
+
+### M6：Study-oriented Note Generation（已完成）
+
+目标：从“生成一篇 Markdown”升级为“生成可复习、可复现教程步骤的学习产物”。
+
+范围：
+
+- 章节式学习笔记。
+- 操作步骤清单。
+- 关键参数表。
+- 术语表。
+- 复习问题。
+- action checklist。
+- Obsidian-friendly tags / links。
+
+验收：
+
+- 用户只看笔记即可复现主要教程步骤。
+- 参数、节点名、菜单路径不被埋在长段落里。
+- 图片引用服务于步骤理解，不作为装饰图。
+- 不输出完整 transcript，只保留关键证据。
+
+### M7：Provider Capability Matrix（未完成）
+
+目标：沉淀不同 OpenAI-compatible provider/model 的视觉能力，减少用户试错。
+
+能力字段：
+
+```text
+supports_image_url
+supports_base64_data_url
+max_images_per_request
+recommended_image_format
+timeout_sec
+last_tested_at
+last_error
+```
+
+范围：
+
+- `settings.vision.test` 的结果可写入 capability cache。
+- 创建任务前根据 capability 给出提示。
+- 不根据模型名硬编码能力，只使用测试结果和用户配置。
+- capability cache 可被用户刷新或清除。
+
+验收：
+
+- 测试成功后，provider/model 显示最近一次视觉测试结果。
+- 测试失败后，创建任务页能提示潜在不兼容原因。
+- capability cache 不保存 API key。
+- capability 信息过期时不会阻止用户继续运行任务。
+
+### 推荐顺序
+
+已完成顺序：
+
+1. M3 Timeline Context。
+2. M4 Adaptive Frame Sampling。
+3. M4.5 Pipeline Metrics。
+4. M5 Segment-level Vision Summary。
+5. M4.6 / M6 Study-oriented Note Generation。
+6. M4.7B Artifact Layout / Storage Cleanup。
+
+剩余优先级：
+
+1. Task Action Backend Migration 后续增强：settings snapshot、跨重启 resume、可控 child process kill。
+2. M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
+
+理由：核心多模态质量链路已落地；下一步应先补齐任务可恢复与任务控制，再降低 provider 兼容性试错成本。
