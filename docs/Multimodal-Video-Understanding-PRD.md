@@ -27,6 +27,9 @@
 3. 让 vision-only 任务也能向笔记生成模型提供可引用图片素材。
 4. 让视觉模型失败时任务降级完成，并把失败原因写入 transcript。
 5. 让用户能在设置页验证当前活动供应商的 `vision_model` 是否支持图片输入。
+6. 让任务中心成为本机任务记录中心：重启后保留历史记录，可执行取消、暂停、继续、重跑等 phase 1 控制。
+7. 让本地 runtime component 状态可信：安装/更新后不因工具真实版本格式差异误报更新。
+8. 让 AI 供应商配置表单保持空白输入语义，不自动填入与用户意图无关的默认残留值。
 
 ## 3. 非目标
 
@@ -37,6 +40,8 @@
 5. 不做自动 provider capability 推断；只使用测试结果、用户配置和明确错误信息。
 6. 不保证所有 OpenAI-compatible 服务都兼容，只要求失败信息可见、任务可降级。
 7. 不保留最终 Markdown 生成缓存；最终笔记每次直接调用当前 provider 生成，避免 OCR/Vision/timeline 非确定性导致缓存污染。
+8. Task actions phase 1 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume、不做 exact historical settings replay。
+9. Task actions phase 1 不强杀正在运行的 child process；取消是 cooperative cancel，可能等待当前 blocking stage 返回。
 
 ## 4. 当前实现状态（v1.5.8）
 
@@ -60,10 +65,15 @@
 - 删除笔记时会删除对应 `assets/{note_stem}/`。
 - Tauri asset protocol 已启用，Notes 页面可显示本地导出图片。
 - 任务中心已接入 native task actions phase 1：取消、重跑已实现；暂停/继续为阶段边界协作式控制。
+- 任务记录已持久化到 `%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json`，重启后历史任务仍可见。
+- `jobs.json` 写入使用 atomic write，任务控制状态写入避免 stale snapshot 覆盖。
+- 重启前仍 active 的任务会加载为 `interrupted`，不假装继续运行。
+- Runtime component 安装成功后写 `.runtime-component.json` marker，更新判断基于 manifest version，而不是直接比较工具真实版本和 GitHub latest。
+- 新增 AI 供应商表单不再自动填入 OpenAI 默认 Base URL / model / vision model；切换 API 类型也不覆盖用户输入。
 
 当前仍未完成或需实测的缺口：
 
-- Task actions phase 1 不支持精确 settings snapshot 重放、跨重启继续或 OS thread suspension；暂停只在当前阶段结束后的安全检查点生效，取消为 cooperative cancel，可能需要等待当前 blocking stage 返回。
+- Task actions phase 1 不支持精确 settings snapshot 重放、跨重启继续、OS thread suspension 或 child process kill；暂停只在当前阶段结束后的安全检查点生效，取消为 cooperative cancel，可能需要等待当前 blocking stage 返回。
 - M7 Provider Capability Matrix 尚未完成：视觉测试结果暂未沉淀为可刷新/清除的 capability cache。
 - OpenAI-compatible provider 差异仍需通过设置页测试和任务降级路径暴露，不做模型名硬编码判断。
 
@@ -364,7 +374,157 @@ completed
 failed
 ```
 
-### 7.3 产物目录
+Task actions phase 1 额外状态：
+
+```text
+pending       新任务已创建，worker 尚未进入处理阶段
+running       任务正在执行
+pausing       用户已请求暂停，等待当前阶段结束后的安全检查点
+paused        任务已在安全检查点暂停，可继续或取消
+cancelling    用户已请求取消，等待当前 blocking stage 返回或下一检查点
+cancelled     任务已取消，属于终态
+interrupted   应用重启或进程中断后恢复出的终态记录
+```
+
+状态规则：
+
+- `completed` / `failed` / `cancelled` / `interrupted` 是 terminal status。
+- `pending` / `running` / `pausing` / `paused` / `cancelling` 是 active status。
+- app 启动加载历史记录时，active status 一律转为 `interrupted`，避免假装任务仍在运行或可跨重启继续。
+- `paused` 不写 `completed_at`；terminal status 写 `completed_at`。
+- `can_resume=true` 只允许出现在 `paused`。
+
+### 7.3 任务记录持久化
+
+任务记录文件：
+
+```text
+%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json
+```
+
+记录字段：
+
+```json
+{
+  "id": 1,
+  "job_id": "stable uuid",
+  "title": "可选标题",
+  "status": "running | paused | completed | ...",
+  "progress": 70,
+  "progress_message": "生成 Markdown 笔记",
+  "stage": "generating_notes",
+  "input": "D:\\video.mp4",
+  "created_at": "RFC3339",
+  "completed_at": "RFC3339 or null",
+  "error_message": null,
+  "output_path": "最终 Markdown 路径 or null",
+  "transcript_path": "transcript 路径 or null",
+  "frames_count": 8,
+  "can_resume": false
+}
+```
+
+持久化规则：
+
+- `process.start` 创建任务后立即写入记录。
+- `process.pause/cancel/resume/retry/delete` 的状态变更必须持久化成功后才返回成功。
+- background progress 更新可 best-effort 写盘，但不得用旧 snapshot 覆盖更新的 action 状态。
+- `jobs.json` 使用 atomic write，避免半写文件。
+- `next_job_id` 由历史最大 `id + 1` 初始化，避免重启后 id 冲突。
+- 任务记录只保存运行元数据，不保存 API key、cookie 或 provider secret。
+
+### 7.4 Task Actions Phase 1
+
+RPC：
+
+```text
+process.pause
+process.cancel
+process.resume
+process.retry
+```
+
+`process.pause`：
+
+- 允许状态：`pending` / `running`。
+- 立即转为 `pausing`。
+- worker 到达安全检查点后转为 `paused`，并设置 `can_resume=true`。
+- 不暂停当前正在执行的 `ffmpeg` / `whisper-cli` / `yt-dlp` / HTTP request。
+
+`process.resume`：
+
+- 允许状态：`pausing` / `paused`。
+- 清除 pause request，唤醒暂停中的 worker。
+- 任务继续后 `can_resume=false`。
+
+`process.cancel`：
+
+- 允许状态：`pending` / `running` / `pausing` / `paused` / `cancelling`。
+- 立即转为 `cancelling`。
+- 如果 worker 正在 `paused` 等待，取消会唤醒 worker 并在 checkpoint 终止为 `cancelled`。
+- 如果当前阶段正在 blocking 外部命令或 HTTP call，可能需要等该阶段返回后才进入 `cancelled`。
+- cancel 意图优先于当前 stage error；用户取消后不应被后续错误覆盖为 `failed`。
+
+`process.retry`：
+
+- 允许状态：`completed` / `failed` / `cancelled` / `interrupted`。
+- 创建一个新任务，旧任务保持原 terminal 记录。
+- 新任务继承旧任务 `input` / `title`。
+- 新任务使用当前 settings，不保证复现旧任务的 provider/model/OCR/frame 配置。
+
+`process.delete` 防护：
+
+- backend 拒绝删除 active status 任务。
+- 用户需要先取消或等待任务进入 terminal status 后再删除记录。
+
+### 7.5 Runtime Component 状态
+
+组件安装位置：
+
+```text
+%LOCALAPPDATA%\Video Notes AI\runtime\components\{component}
+```
+
+安装成功后写入 marker：
+
+```text
+.runtime-component.json
+```
+
+marker 内容：
+
+```json
+{
+  "component": "ffmpeg-tools",
+  "manifest_version": "1.5.8",
+  "installed_at": "RFC3339"
+}
+```
+
+规则：
+
+- UI 显示的 `installed_version` 仍来自真实工具命令，例如 `ffmpeg -version`。
+- 是否显示“更新”不再直接比较真实工具版本和 GitHub latest tag。
+- `update_available` 优先比较 marker 的 `manifest_version` 与当前 manifest `version`。
+- 无 marker 的已安装组件不因版本文本格式差异误报更新。
+- 缺文件仍显示 `missing_files` / 需修复状态。
+
+### 7.6 Provider 表单行为
+
+新增供应商：
+
+- 表单初始为空。
+- 不自动填入 `https://api.openai.com/v1`。
+- 不自动填入 `gpt-4o-mini` 或其他默认模型。
+- 切换 API 类型不覆盖用户已输入的 Base URL / model / vision model。
+
+编辑供应商：
+
+- 加载已有 provider 的 name、type、base_url、model、vision_model。
+- API key 不明文回填；用户可输入新 key 覆盖。
+- 模型发现功能保留，但发现失败不修改当前表单值。
+
+### 7.7 产物目录
 
 v1.5.8 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
 
@@ -407,11 +567,16 @@ Documents\Video Notes AI\exports\
 
 ## 8. 测试计划
 
-v1.5.8 已通过的静态/构建验证：
+v1.5.8 当前已通过的最终验证：
 
-- `cargo build`：0 warning / 0 error。
-- `npm run build`：0 warning / 0 error。
-- `npm run tauri build`：已生成 `Video Notes AI_1.5.8_x64-setup.exe`。
+- `cargo fmt --check`。
+- `cargo test --no-run`。
+- `scripts\verify_product.ps1`。
+- Svelte frontend build。
+- `svelte-check`：0 error / 0 warning。
+- Rust dev/test compile。
+- Rust tests：30/30 passed。
+- `scripts\build_windows_release.ps1`：已生成 `Video Notes AI_1.5.8_x64-setup.exe`。
 
 后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。
 
@@ -425,6 +590,15 @@ v1.5.8 已通过的静态/构建验证：
 - `settings.vision.test` 无 `vision_model` 时回退 `model`。
 - vision-only 任务生成 `image_context`。
 - Vision 失败后任务仍完成。
+- active job 重启加载后变 `interrupted`。
+- `process.pause` 从 `pending/running` 进入 `pausing`，checkpoint 后进入 `paused`。
+- `process.resume` 从 `paused/pausing` 恢复 running，并清除 `can_resume`。
+- `process.cancel` 从 active status 进入 `cancelling`，checkpoint 后进入 `cancelled`。
+- cancel 后 stage error 不覆盖为 `failed`。
+- `process.retry` 对 terminal job 创建新 job，旧 job 保持 terminal。
+- `process.delete` 拒绝 active/paused job。
+- `jobs.json` atomic write 不产生半写文件；action 状态不会被旧 progress snapshot 覆盖。
+- runtime component 无 marker 时不因工具版本文本差异误报更新；旧 marker manifest version 显示 update。
 
 ### 8.2 Svelte UI
 
@@ -433,6 +607,12 @@ v1.5.8 已通过的静态/构建验证：
 - 创建任务时 `vision_enabled` 正确提交。
 - 无活动 provider 时 Vision 开关不可启用。
 - 设置页 Vision 测试按钮 disabled/loading/success/failure 状态。
+- Tasks “活动任务”计数与筛选列表一致。
+- `pausing` 显示为暂停请求中，不显示为已暂停。
+- `paused` 显示继续/取消，不允许删除 active 记录。
+- 新增 provider 表单为空，不自动填 OpenAI Base URL 或默认模型。
+- 切换 provider type 不覆盖用户输入。
+- `ffmpeg-tools` 更新后不继续显示“更新”，除非 manifest version 变化。
 
 ### 8.3 手工验收
 
@@ -444,6 +624,19 @@ v1.5.8 已通过的静态/构建验证：
 4. 使用不支持图片输入的模型，确认任务不失败且 transcript 记录错误。
 5. 在设置页测试兼容和不兼容模型，确认 toast 信息可理解。
 
+长任务控制验收：
+
+1. 本地长视频转写中点击取消：状态先 `cancelling`，当前 blocking stage 返回后最终 `cancelled`，不能变 `failed`。
+2. URL 下载中点击取消：允许等待 blocking stage 返回，但最终应 `cancelled`。
+3. 转写中点击暂停：状态先 `pausing`，当前阶段结束后进入 `paused`。
+4. `paused` 后点击继续：状态恢复并继续后续阶段。
+5. `paused` 后点击取消：worker 被唤醒并最终 `cancelled`。
+6. app 重启：`pending/running/pausing/cancelling/paused` 记录统一变 `interrupted`。
+7. 对 `failed/cancelled/interrupted/completed` 执行 retry：创建新任务，旧任务保持 terminal。
+8. 对 active job 执行 delete：backend 拒绝，UI 显示错误。
+9. Storage orphan cleanup 不删除 paused/active job workspace。
+10. Tasks / Process / Settings 的活动任务统计口径一致。
+
 ## 9. 风险
 
 1. 不同供应商的 OpenAI-compatible 兼容程度不同。
@@ -451,6 +644,9 @@ v1.5.8 已通过的静态/构建验证：
 3. 多图输入成本较高。
 4. 固定 60 秒抽帧可能漏掉快速操作步骤。
 5. 视觉模型可能泛泛描述画面，需要后续优化 prompt 和时间轴上下文。
+6. Cooperative cancel 不强杀 child process；长时间 `ffmpeg` / `whisper-cli` / `yt-dlp` 或 blocking HTTP call 可能让任务停留在 `cancelling`，直到当前阶段返回。
+7. Retry 使用当前 settings，不保证复现旧任务的 provider/model/OCR/frame 配置。
+8. `paused` 不能跨重启继续；重启后会变 `interrupted`。
 
 ## 10. 后续方向
 
@@ -530,7 +726,7 @@ TimelineSegment {
 - 不设置固定 `max_tokens` 上限，避免长教程被硬截断。
 - 最终 Markdown 生成缓存已移除：不再维护 `generation-cache`，每次用当前 timeline/OCR/Vision 输入直接生成。
 
-### M4.7：Artifact Layout / Storage Cleanup（部分完成）
+### M4.7：Artifact Layout / Storage Cleanup / Task Records（已完成 phase 1）
 
 已完成：
 
@@ -538,10 +734,33 @@ TimelineSegment {
 - Obsidian/export 目录只保留最终 Markdown 和被引用 frame assets。
 - Storage Management 可清理 orphan/completed job workspace。
 - Note deletion 会删除对应 `assets/{note_stem}/`。
+- 本机任务记录写入 `%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json`。
+- 重启后任务中心可读取历史任务；active 任务恢复为 `interrupted`。
+- `process.pause/cancel/resume/retry` phase 1 已接入 backend。
+- Storage cleanup 把 `paused` 视为 active，避免误删可继续任务的 workspace。
+- Tasks / Process / Settings 采用“本机任务记录 / 活动任务”口径。
 
 未完成：
 
 - task action 后续增强：exact settings snapshot retry、跨重启 resume、运行中 child process 立即 kill 与部分产物清理策略。
+- full provider capability cache。
+
+### M4.8：Runtime Component / Provider UX Fixes（已完成）
+
+Runtime component：
+
+- `download-tools` / `ffmpeg-tools` / `whisper-cpp-tools` / `tesseract-ocr-tools` 的状态来自 manifest + installed files + marker。
+- `.runtime-component.json` 记录安装时 manifest version。
+- `ffmpeg-tools` 不再因 nightly version 字符串和 GitHub latest tag 不匹配而持续显示“更新”。
+- 没有 `download_url` 的组件不显示误导性安装按钮。
+
+Provider UX：
+
+- 新增 provider 表单保持空白。
+- 切换 API 类型不覆盖用户输入。
+- OpenAI-compatible 允许空 API key；空 key 不发送 `Authorization: Bearer`。
+- localhost base URL 可规范化为 `/v1`。
+- 移除不可用/误导的 provider 类型入口。
 
 ### M5：Segment-level Vision Summary（已完成）
 
@@ -634,10 +853,14 @@ last_error
 4. M5 Segment-level Vision Summary。
 5. M4.6 / M6 Study-oriented Note Generation。
 6. M4.7B Artifact Layout / Storage Cleanup。
+7. M4.7A Persistent Task Records。
+8. Task Actions Phase 1。
+9. M4.8 Runtime Component / Provider UX Fixes。
 
 剩余优先级：
 
-1. Task Action Backend Migration 后续增强：settings snapshot、跨重启 resume、可控 child process kill。
-2. M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
+1. Task Actions Phase 2：settings snapshot、跨重启 resume、可控 child process kill、partial artifact cleanup policy。
+2. M7-lite 或 M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
+3. 更多真实长视频质量验收：CG / Houdini / Blender / Unreal / software tutorial。
 
-理由：核心多模态质量链路已落地；下一步应先补齐任务可恢复与任务控制，再降低 provider 兼容性试错成本。
+理由：核心多模态质量链路和本机任务控制 phase 1 已落地；下一步应提升长任务取消体验、精确重试能力和 provider 兼容性可见性。
