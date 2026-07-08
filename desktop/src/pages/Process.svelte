@@ -497,9 +497,9 @@
   .enhancement-card:hover { border-color: var(--border-strong); background: var(--bg-subtle); }
   .enhancement-card.enabled { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)); background: var(--accent-faint); }
   .enhancement-card.disabled { opacity: .62; cursor: not-allowed; }
-  .ocr-backend-card { cursor: default; }
+  .ocr-backend-card { cursor: default; flex-wrap: wrap; }
   .ocr-backend-card[aria-disabled="true"] { opacity: .62; }
-  .ocr-backend-card select { width: 142px; min-width: 0; }
+  .ocr-backend-card select { width: 100%; flex: 1 1 0; min-width: 0; }
   .task-preflight { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 11px; color: var(--text-secondary); background: var(--bg-subtle); font-size: 13px; line-height: 1.55; }
   .enhance-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 11px; color: var(--text-secondary); background: var(--bg-muted); }
   .enabled .enhance-icon { color: var(--accent-color); background: var(--accent-soft); }

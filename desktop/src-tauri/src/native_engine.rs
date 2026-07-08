@@ -6,9 +6,9 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
@@ -89,6 +89,7 @@ struct NativeJob {
 struct JobControl {
     cancel_requested: AtomicBool,
     pause_requested: AtomicBool,
+    current_child: Mutex<Option<u32>>,
     lock: Mutex<()>,
     condvar: Condvar,
 }
@@ -98,6 +99,7 @@ impl JobControl {
         Self {
             cancel_requested: AtomicBool::new(false),
             pause_requested: AtomicBool::new(false),
+            current_child: Mutex::new(None),
             lock: Mutex::new(()),
             condvar: Condvar::new(),
         }
@@ -1918,26 +1920,94 @@ impl NativeEngine {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let items = items
+            .into_iter()
+            .filter_map(|item| {
+                let input = item.get("input")?.as_str()?.trim().to_string();
+                if input.is_empty() {
+                    return None;
+                }
+                let title = item
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                Some((input, title))
+            })
+            .collect::<Vec<_>>();
         if items.is_empty() {
             return Err("collection has no processable items".to_string());
         }
-        let mut run_ids = Vec::new();
-        for item in items {
-            let input = item.get("input").and_then(Value::as_str).unwrap_or("");
-            if input.trim().is_empty() {
-                continue;
-            }
-            let title = item.get("title").and_then(Value::as_str).unwrap_or("");
-            let result = self.process_start(json!({ "input": input, "title": title }))?;
-            if let Some(run_id) = result.get("job_id").and_then(Value::as_u64) {
-                run_ids.push(run_id);
-            }
-        }
+        let max_concurrency = params
+            .get("opts")
+            .and_then(|opts| opts.get("max_concurrency"))
+            .or_else(|| params.get("max_concurrency"))
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .clamp(1, 2) as usize;
+        let count = items.len();
+        let batch_job_id = format!("batch-{id}-{}", Utc::now().timestamp());
+        let runner = self.clone();
+        let _ = self.set_collection_status(id, "processing");
+        std::thread::spawn(move || {
+            runner.run_collection_batch(id, items, max_concurrency);
+        });
         Ok(json!({
-            "batch_job_id": format!("batch-{id}-{}", Utc::now().timestamp()),
-            "run_ids": run_ids,
-            "count": run_ids.len(),
+            "batch_job_id": batch_job_id,
+            "run_ids": [],
+            "count": count,
+            "queued_count": count,
+            "max_concurrency": max_concurrency,
         }))
+    }
+
+    fn run_collection_batch(&self, id: u64, items: Vec<(String, String)>, max_concurrency: usize) {
+        let mut pending = items.into_iter();
+        let mut active: Vec<u64> = Vec::new();
+        let mut pending_done = false;
+        loop {
+            while active.len() < max_concurrency && !pending_done {
+                match pending.next() {
+                    Some((input, title)) => {
+                        match self.process_start(json!({ "input": input, "title": title })) {
+                            Ok(result) => {
+                                if let Some(run_id) = result.get("job_id").and_then(Value::as_u64) {
+                                    active.push(run_id);
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    None => pending_done = true,
+                }
+            }
+
+            if active.is_empty() && pending_done {
+                break;
+            }
+
+            if !active.is_empty() {
+                if let Ok(jobs) = self.jobs.lock() {
+                    active.retain(|run_id| {
+                        jobs.iter()
+                            .find(|job| job.id == *run_id)
+                            .map(|job| !is_terminal_status(&job.status))
+                            .unwrap_or(false)
+                    });
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let _ = self.set_collection_status(id, "active");
+    }
+
+    fn set_collection_status(&self, id: u64, status: &str) -> Result<(), String> {
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, id)
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        collection["status"] = json!(status);
+        self.write_collection_store(store)
     }
 
     fn read_collection_store(&self) -> Map<String, Value> {
@@ -2298,9 +2368,13 @@ fn run_native_job(
             None,
             None,
         );
-        match download_with_ytdlp(&input, &workspace_dir, id, &runtime_dir) {
+        match download_with_ytdlp(&input, &workspace_dir, id, &runtime_dir, &control) {
             Ok(path) => path,
             Err(error) => {
+                if is_cancellation_error(&error) {
+                    checkpoint!("cancelled", 18, "任务已取消");
+                    return;
+                }
                 update_job(
                     &jobs,
                     &jobs_state_path,
@@ -2382,8 +2456,13 @@ fn run_native_job(
         &model_dirs,
         &whisper_model,
         &whisper_device,
+        &control,
     ) {
         Ok((text, json)) => (text, json),
+        Err(error) if is_cancellation_error(&error) => {
+            checkpoint!("cancelled", 35, "任务已取消");
+            return;
+        }
         Err(error) => (
             format!(
                 "Native transcript unavailable\n\nSource: {}\n\nReason: {}",
@@ -2422,6 +2501,7 @@ fn run_native_job(
                 frame_interval,
                 max_frames,
                 &frame_mode,
+                &control,
             ),
             _ => extract_ocr_with_tesseract(
                 &input_path,
@@ -2432,6 +2512,7 @@ fn run_native_job(
                 frame_interval,
                 max_frames,
                 &frame_mode,
+                &control,
             ),
         };
         let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
@@ -2457,6 +2538,10 @@ fn run_native_job(
                 transcript.push_str("\n\n## OCR\n\nNo readable text detected in sampled frames.");
             }
             Err(error) => {
+                if is_cancellation_error(&error) {
+                    checkpoint!("cancelled", 55, "任务已取消");
+                    return;
+                }
                 transcript.push_str("\n\n## OCR\n\nOCR unavailable: ");
                 transcript.push_str(&error);
             }
@@ -2518,6 +2603,7 @@ fn run_native_job(
                 frame_interval,
                 max_frames,
                 &frame_mode,
+                &control,
             ) {
                 Ok(result) => {
                     if profile.frame_sampling.is_none() {
@@ -2526,6 +2612,10 @@ fn run_native_job(
                     (result.frames, result.timestamps_sec)
                 }
                 Err(error) => {
+                    if is_cancellation_error(&error) {
+                        checkpoint!("cancelled", 62, "任务已取消");
+                        return;
+                    }
                     transcript.push_str("\n\n## Vision\n\nFrame extraction unavailable: ");
                     transcript.push_str(&error);
                     (Vec::new(), Vec::new())
@@ -3606,6 +3696,126 @@ fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+#[derive(Clone, Copy)]
+enum ControlledOutputMode {
+    Piped,
+    Null,
+}
+
+const CANCELLATION_ERROR_PREFIX: &str = "__VIDEO_NOTES_CANCELLED__";
+
+fn cancellation_error(label: &str) -> String {
+    format!("{CANCELLATION_ERROR_PREFIX}: {label}")
+}
+
+fn is_cancellation_error(error: &str) -> bool {
+    error.starts_with(CANCELLATION_ERROR_PREFIX)
+}
+
+fn read_pipe_thread<R: Read + Send + 'static>(mut reader: R) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn run_controlled_command(
+    mut command: Command,
+    control: &Arc<JobControl>,
+    label: &str,
+    stdout_mode: ControlledOutputMode,
+    stderr_mode: ControlledOutputMode,
+) -> Result<Output, String> {
+    if control.cancel_requested.load(Ordering::SeqCst) {
+        return Err(cancellation_error(label));
+    }
+    match stdout_mode {
+        ControlledOutputMode::Piped => {
+            command.stdout(Stdio::piped());
+        }
+        ControlledOutputMode::Null => {
+            command.stdout(Stdio::null());
+        }
+    }
+    match stderr_mode {
+        ControlledOutputMode::Piped => {
+            command.stderr(Stdio::piped());
+        }
+        ControlledOutputMode::Null => {
+            command.stderr(Stdio::null());
+        }
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to run {label}: {error}"))?;
+    if let Ok(mut current_child) = control.current_child.lock() {
+        *current_child = Some(child.id());
+    }
+    let stdout_reader = child.stdout.take().map(read_pipe_thread);
+    let stderr_reader = child.stderr.take().map(read_pipe_thread);
+
+    let status = loop {
+        if control.cancel_requested.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stdout = stdout_reader
+                .map(|reader| reader.join().unwrap_or_default())
+                .unwrap_or_default();
+            let stderr = stderr_reader
+                .map(|reader| reader.join().unwrap_or_default())
+                .unwrap_or_default();
+            let _ = (stdout, stderr);
+            if let Ok(mut current_child) = control.current_child.lock() {
+                *current_child = None;
+            }
+            return Err(cancellation_error(label));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(75)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Ok(mut current_child) = control.current_child.lock() {
+                    *current_child = None;
+                }
+                return Err(format!("failed to wait for {label}: {error}"));
+            }
+        }
+    };
+
+    let stdout = stdout_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    if let Ok(mut current_child) = control.current_child.lock() {
+        *current_child = None;
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn run_controlled_command_piped(
+    command: Command,
+    control: &Arc<JobControl>,
+    label: &str,
+) -> Result<Output, String> {
+    run_controlled_command(
+        command,
+        control,
+        label,
+        ControlledOutputMode::Piped,
+        ControlledOutputMode::Piped,
+    )
+}
+
 fn executable_name(name: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{name}.exe")
@@ -3750,6 +3960,7 @@ fn transcribe_with_whisper_cpp(
     model_dirs: &[PathBuf],
     whisper_model: &str,
     whisper_device: &str,
+    control: &Arc<JobControl>,
 ) -> Result<(String, Option<String>), String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
         "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
@@ -3769,22 +3980,21 @@ fn transcribe_with_whisper_cpp(
     })?;
 
     let audio_path = output_dir.join(format!("{file_stem}-{id}.wav"));
-    let ffmpeg_output = hidden_command(&ffmpeg)
-        .args([
-            "-y",
-            "-i",
-            &input_path.to_string_lossy(),
-            "-vn",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-c:a",
-            "pcm_s16le",
-            &audio_path.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| format!("failed to run ffmpeg: {error}"))?;
+    let mut ffmpeg_command = hidden_command(&ffmpeg);
+    ffmpeg_command.args([
+        "-y",
+        "-i",
+        &input_path.to_string_lossy(),
+        "-vn",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        &audio_path.to_string_lossy(),
+    ]);
+    let ffmpeg_output = run_controlled_command_piped(ffmpeg_command, control, "ffmpeg")?;
     if !ffmpeg_output.status.success() {
         return Err(format!(
             "ffmpeg failed: {}",
@@ -3793,19 +4003,18 @@ fn transcribe_with_whisper_cpp(
     }
 
     let out_prefix = output_dir.join(format!("{file_stem}-{id}-whisper"));
-    let whisper_output = hidden_command(&whisper)
-        .args([
-            "-m",
-            &model.to_string_lossy(),
-            "-f",
-            &audio_path.to_string_lossy(),
-            "-otxt",
-            "-oj",
-            "-of",
-            &out_prefix.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| format!("failed to run whisper.cpp: {error}"))?;
+    let mut whisper_command = hidden_command(&whisper);
+    whisper_command.args([
+        "-m",
+        &model.to_string_lossy(),
+        "-f",
+        &audio_path.to_string_lossy(),
+        "-otxt",
+        "-oj",
+        "-of",
+        &out_prefix.to_string_lossy(),
+    ]);
+    let whisper_output = run_controlled_command_piped(whisper_command, control, "whisper.cpp")?;
     let _ = fs::remove_file(&audio_path);
     if !whisper_output.status.success() {
         return Err(format!(
@@ -3827,6 +4036,7 @@ fn download_with_ytdlp(
     output_dir: &Path,
     id: u64,
     runtime_dir: &Path,
+    control: &Arc<JobControl>,
 ) -> Result<PathBuf, String> {
     let ytdlp = resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir).ok_or_else(|| {
         "yt-dlp not found; install download-tools or add yt-dlp to PATH".to_string()
@@ -3834,10 +4044,9 @@ fn download_with_ytdlp(
     let download_dir = output_dir.join(format!("download-{id}"));
     fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
     let template = download_dir.join("%(title).180s.%(ext)s");
-    let output = hidden_command(&ytdlp)
-        .args(["--no-playlist", "-o", &template.to_string_lossy(), url])
-        .output()
-        .map_err(|error| format!("failed to run yt-dlp: {error}"))?;
+    let mut command = hidden_command(&ytdlp);
+    command.args(["--no-playlist", "-o", &template.to_string_lossy(), url]);
+    let output = run_controlled_command_piped(command, control, "yt-dlp")?;
     if !output.status.success() {
         return Err(format!(
             "yt-dlp failed: {}",
@@ -3861,6 +4070,7 @@ fn extract_ocr_with_tesseract(
     frame_interval: f64,
     max_frames: u32,
     frame_mode: &str,
+    control: &Arc<JobControl>,
 ) -> Result<OcrExtraction, String> {
     let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
         .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
@@ -3874,13 +4084,12 @@ fn extract_ocr_with_tesseract(
         frame_interval,
         max_frames,
         frame_mode,
+        control,
     )?;
     for frame in &frame_result.frames {
-        let result = hidden_command(&tesseract)
-            .arg(&frame)
-            .arg("stdout")
-            .output()
-            .map_err(|error| format!("failed to run tesseract: {error}"))?;
+        let mut command = hidden_command(&tesseract);
+        command.arg(&frame).arg("stdout");
+        let result = run_controlled_command_piped(command, control, "tesseract")?;
         if result.status.success() {
             let text = String::from_utf8_lossy(&result.stdout).trim().to_string();
             if !text.is_empty() {
@@ -3911,6 +4120,7 @@ fn extract_ocr_with_http(
     frame_interval: f64,
     max_frames: u32,
     frame_mode: &str,
+    control: &Arc<JobControl>,
 ) -> Result<OcrExtraction, String> {
     let endpoint = config.endpoint.trim();
     if endpoint.is_empty() {
@@ -3938,8 +4148,12 @@ fn extract_ocr_with_http(
         frame_interval,
         max_frames,
         frame_mode,
+        control,
     )?;
     for frame in &frame_result.frames {
+        if control.cancel_requested.load(Ordering::SeqCst) {
+            return Err(cancellation_error("OCR HTTP"));
+        }
         let text = if config.backend == "paddleocr_http" {
             ocr_frame_with_paddleocr(&client, &frame, &endpoint, &config.api_key)?
         } else {
@@ -3962,63 +4176,77 @@ fn extract_ocr_with_http(
     })
 }
 
-fn get_video_duration(input_path: &Path, runtime_dir: &Path) -> Option<f64> {
+fn get_video_duration(
+    input_path: &Path,
+    runtime_dir: &Path,
+    control: &Arc<JobControl>,
+) -> Result<Option<f64>, String> {
     let ffprobe = resolve_tool_path("ffprobe", &["ffmpeg-tools"], runtime_dir)
-        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))?;
-    let output = hidden_command(&ffprobe)
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-            &input_path.to_string_lossy(),
-        ])
-        .output()
-        .ok()?;
+        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))
+        .ok_or_else(|| "ffprobe not found for duration probe".to_string())?;
+    let mut command = hidden_command(&ffprobe);
+    command.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "csv=p=0",
+        &input_path.to_string_lossy(),
+    ]);
+    let output = run_controlled_command_piped(command, control, "ffprobe duration")?;
     if !output.status.success() {
-        return None;
+        return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.trim().parse::<f64>().ok()
+    Ok(stdout.trim().parse::<f64>().ok())
 }
 
-fn get_video_fps(input_path: &Path, runtime_dir: &Path) -> Option<f64> {
+fn get_video_fps(
+    input_path: &Path,
+    runtime_dir: &Path,
+    control: &Arc<JobControl>,
+) -> Result<Option<f64>, String> {
     let ffprobe = resolve_tool_path("ffprobe", &["ffmpeg-tools"], runtime_dir)
-        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))?;
-    let output = hidden_command(&ffprobe)
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=r_frame_rate",
-            "-of",
-            "csv=p=0",
-            &input_path.to_string_lossy(),
-        ])
-        .output()
-        .ok()?;
+        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))
+        .ok_or_else(|| "ffprobe not found for fps probe".to_string())?;
+    let mut command = hidden_command(&ffprobe);
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=r_frame_rate",
+        "-of",
+        "csv=p=0",
+        &input_path.to_string_lossy(),
+    ]);
+    let output = run_controlled_command_piped(command, control, "ffprobe fps")?;
     if !output.status.success() {
-        return None;
+        return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
-        return None;
+        return Ok(None);
     }
     // ffprobe returns rational like "30000/1001" or "25/1"
     if let Some(slash) = stdout.find('/') {
-        let num: f64 = stdout[..slash].parse().ok()?;
-        let den: f64 = stdout[slash + 1..].parse().ok()?;
+        let num: f64 = match stdout[..slash].parse() {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let den: f64 = match stdout[slash + 1..].parse() {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
         if den > 0.0 {
-            Some(num / den)
+            Ok(Some(num / den))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        stdout.parse::<f64>().ok()
+        Ok(stdout.parse::<f64>().ok())
     }
 }
 
@@ -4026,26 +4254,30 @@ fn detect_scene_timestamps(
     input_path: &Path,
     runtime_dir: &Path,
     threshold: f64,
+    control: &Arc<JobControl>,
 ) -> Result<Vec<f64>, String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir)
         .ok_or_else(|| "ffmpeg not found for scene detection".to_string())?;
     let threshold_str = format!("select='gt(scene,{threshold})',showinfo");
-    let output = hidden_command(&ffmpeg)
-        .args([
-            "-i",
-            &input_path.to_string_lossy(),
-            "-vf",
-            &threshold_str,
-            "-vsync",
-            "vfr",
-            "-f",
-            "null",
-            "-",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to run ffmpeg for scene detection: {e}"))?;
+    let mut command = hidden_command(&ffmpeg);
+    command.args([
+        "-i",
+        &input_path.to_string_lossy(),
+        "-vf",
+        &threshold_str,
+        "-vsync",
+        "vfr",
+        "-f",
+        "null",
+        "-",
+    ]);
+    let output = run_controlled_command(
+        command,
+        control,
+        "ffmpeg scene detection",
+        ControlledOutputMode::Null,
+        ControlledOutputMode::Piped,
+    )?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         // Check if it failed because there's no video stream (audio-only)
@@ -4180,6 +4412,7 @@ fn extract_sample_frames(
     frame_interval: f64,
     max_frames: u32,
     frame_mode: &str,
+    control: &Arc<JobControl>,
 ) -> Result<FrameSampleResult, String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
         "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
@@ -4189,7 +4422,7 @@ fn extract_sample_frames(
     let pattern = frame_dir.join("frame-%03d.png");
 
     let (interval, duration) = if frame_mode == "adaptive" {
-        let dur = get_video_duration(input_path, runtime_dir).unwrap_or(0.0);
+        let dur = get_video_duration(input_path, runtime_dir, control)?.unwrap_or(0.0);
         if dur <= 0.0 {
             (frame_interval, 0.0)
         } else {
@@ -4209,9 +4442,16 @@ fn extract_sample_frames(
             .collect();
 
         // Step 2: Add scene change timestamps from source video (threshold 0.4)
-        if let Ok(scene_ts) = detect_scene_timestamps(input_path, runtime_dir, 0.4) {
-            for ts in &scene_ts {
-                timestamps_ms.push((ts * 1000.0).round() as u64);
+        match detect_scene_timestamps(input_path, runtime_dir, 0.4, control) {
+            Ok(scene_ts) => {
+                for ts in &scene_ts {
+                    timestamps_ms.push((ts * 1000.0).round() as u64);
+                }
+            }
+            Err(error) => {
+                if is_cancellation_error(&error) {
+                    return Err(error);
+                }
             }
         }
 
@@ -4233,7 +4473,7 @@ fn extract_sample_frames(
         };
 
         // Step 4: Compute frame numbers for ffmpeg select expression
-        let fps = get_video_fps(input_path, runtime_dir).unwrap_or(30.0);
+        let fps = get_video_fps(input_path, runtime_dir, control)?.unwrap_or(30.0);
         let select_terms: Vec<String> = final_ts_ms
             .iter()
             .map(|ts_ms| format!("eq(n,{})", ((*ts_ms as f64 / 1000.0) * fps).round()))
@@ -4241,36 +4481,39 @@ fn extract_sample_frames(
         let select_expr = select_terms.join("+");
 
         // Step 5: Single ffmpeg call with select filter
-        let ffmpeg_output = hidden_command(&ffmpeg)
-            .args([
+        let mut command = hidden_command(&ffmpeg);
+        command.args([
+            "-y",
+            "-i",
+            &input_path.to_string_lossy(),
+            "-vf",
+            &format!("select='{}'", select_expr),
+            "-vsync",
+            "vfr",
+            &pattern.to_string_lossy(),
+        ]);
+        let ffmpeg_output =
+            run_controlled_command_piped(command, control, "ffmpeg adaptive frames")?;
+        if !ffmpeg_output.status.success() {
+            if control.cancel_requested.load(Ordering::SeqCst) {
+                return Err(cancellation_error("ffmpeg adaptive frames"));
+            }
+            // Fallback: try simple rate-limited extraction
+            let fps_str = format!("fps=1/{}", interval);
+            let frames_str = max_frames.to_string();
+            let mut fallback_command = hidden_command(&ffmpeg);
+            fallback_command.args([
                 "-y",
                 "-i",
                 &input_path.to_string_lossy(),
                 "-vf",
-                &format!("select='{}'", select_expr),
-                "-vsync",
-                "vfr",
+                &fps_str,
+                "-frames:v",
+                &frames_str,
                 &pattern.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|error| format!("failed to run ffmpeg for adaptive frames: {error}"))?;
-        if !ffmpeg_output.status.success() {
-            // Fallback: try simple rate-limited extraction
-            let fps_str = format!("fps=1/{}", interval);
-            let frames_str = max_frames.to_string();
-            let fallback = hidden_command(&ffmpeg)
-                .args([
-                    "-y",
-                    "-i",
-                    &input_path.to_string_lossy(),
-                    "-vf",
-                    &fps_str,
-                    "-frames:v",
-                    &frames_str,
-                    &pattern.to_string_lossy(),
-                ])
-                .output()
-                .map_err(|error| format!("failed to run ffmpeg for frames: {error}"))?;
+            ]);
+            let fallback =
+                run_controlled_command_piped(fallback_command, control, "ffmpeg frames")?;
             if !fallback.status.success() {
                 return Err(format!(
                     "ffmpeg frame extraction failed: {}",
@@ -4328,19 +4571,18 @@ fn extract_sample_frames(
     // Fixed mode: rate-limited frame extraction
     let fps_str = format!("fps=1/{}", interval);
     let frames_str = max_frames.to_string();
-    let ffmpeg_output = hidden_command(&ffmpeg)
-        .args([
-            "-y",
-            "-i",
-            &input_path.to_string_lossy(),
-            "-vf",
-            &fps_str,
-            "-frames:v",
-            &frames_str,
-            &pattern.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| format!("failed to run ffmpeg for frames: {error}"))?;
+    let mut command = hidden_command(&ffmpeg);
+    command.args([
+        "-y",
+        "-i",
+        &input_path.to_string_lossy(),
+        "-vf",
+        &fps_str,
+        "-frames:v",
+        &frames_str,
+        &pattern.to_string_lossy(),
+    ]);
+    let ffmpeg_output = run_controlled_command_piped(command, control, "ffmpeg frames")?;
     if !ffmpeg_output.status.success() {
         return Err(format!(
             "ffmpeg frame extraction failed: {}",
@@ -5938,6 +6180,26 @@ mod tests {
         }
     }
 
+    fn shell_command(script: &str) -> Command {
+        if cfg!(target_os = "windows") {
+            let mut command = hidden_command("cmd");
+            command.args(["/C", script]);
+            command
+        } else {
+            let mut command = hidden_command("sh");
+            command.args(["-c", script]);
+            command
+        }
+    }
+
+    fn sleep_command() -> Command {
+        if cfg!(target_os = "windows") {
+            shell_command("ping -n 6 127.0.0.1 > nul")
+        } else {
+            shell_command("sleep 5")
+        }
+    }
+
     #[test]
     fn settings_update_round_trips_defaults() {
         let (engine, root) = temp_engine();
@@ -6153,6 +6415,77 @@ mod tests {
         assert_eq!(engine.jobs.lock().unwrap().len(), 1);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn controlled_command_cancel_before_spawn() {
+        let control = Arc::new(JobControl::new());
+        control.cancel_requested.store(true, Ordering::SeqCst);
+
+        let result =
+            run_controlled_command_piped(shell_command("echo should-not-run"), &control, "test");
+
+        assert!(result.is_err());
+        assert!(is_cancellation_error(&result.unwrap_err()));
+        assert!(control.current_child.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn controlled_command_captures_stdout_and_stderr() {
+        let control = Arc::new(JobControl::new());
+
+        let stdout =
+            run_controlled_command_piped(shell_command("echo stdout-ok"), &control, "stdout")
+                .expect("stdout command succeeds");
+        assert!(stdout.status.success());
+        assert!(String::from_utf8_lossy(&stdout.stdout).contains("stdout-ok"));
+
+        let stderr =
+            run_controlled_command_piped(shell_command("echo stderr-ok 1>&2"), &control, "stderr")
+                .expect("stderr command succeeds");
+        assert!(stderr.status.success());
+        assert!(String::from_utf8_lossy(&stderr.stderr).contains("stderr-ok"));
+    }
+
+    #[test]
+    fn controlled_command_supports_stdout_null_stderr_piped() {
+        let control = Arc::new(JobControl::new());
+
+        let output = run_controlled_command(
+            shell_command("echo hidden-stdout && echo visible-stderr 1>&2"),
+            &control,
+            "mixed",
+            ControlledOutputMode::Null,
+            ControlledOutputMode::Piped,
+        )
+        .expect("mixed command succeeds");
+
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("visible-stderr"));
+    }
+
+    #[test]
+    fn controlled_command_cancelled_child_clears_current_child() {
+        let control = Arc::new(JobControl::new());
+        let run_control = control.clone();
+        let handle = std::thread::spawn(move || {
+            run_controlled_command_piped(sleep_command(), &run_control, "sleep")
+        });
+
+        for _ in 0..50 {
+            if control.current_child.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(control.current_child.lock().unwrap().is_some());
+        control.cancel_requested.store(true, Ordering::SeqCst);
+
+        let result = handle.join().expect("controlled command thread joins");
+        assert!(result.is_err());
+        assert!(is_cancellation_error(&result.unwrap_err()));
+        assert!(control.current_child.lock().unwrap().is_none());
     }
 
     #[test]
@@ -6614,6 +6947,62 @@ mod tests {
             .expect("method handled")
             .expect("list succeeds");
         assert_eq!(list.as_array().unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collection_batch_process_queues_without_starting_all_jobs() {
+        let (engine, root) = temp_engine();
+        let created = engine
+            .call(
+                "collection.create",
+                json!({ "name": "Course", "items": ["a.mp4", "b.mp4", "c.mp4"] }),
+            )
+            .expect("method handled")
+            .expect("create succeeds");
+        let id = created["id"].as_u64().unwrap();
+
+        let queued = engine
+            .call("collection.batch_process", json!({ "id": id }))
+            .expect("method handled")
+            .expect("batch succeeds");
+        assert_eq!(queued["count"], 3);
+        assert_eq!(queued["queued_count"], 3);
+        assert_eq!(queued["max_concurrency"], 1);
+        assert_eq!(queued["run_ids"].as_array().unwrap().len(), 0);
+
+        std::thread::sleep(Duration::from_millis(100));
+        let jobs = engine.jobs.lock().unwrap();
+        assert!(
+            jobs.len() < 3,
+            "batch runner should not synchronously start all jobs"
+        );
+        drop(jobs);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collection_batch_process_clamps_max_concurrency() {
+        let (engine, root) = temp_engine();
+        let created = engine
+            .call(
+                "collection.create",
+                json!({ "name": "Course", "items": ["a.mp4"] }),
+            )
+            .expect("method handled")
+            .expect("create succeeds");
+        let id = created["id"].as_u64().unwrap();
+
+        let queued = engine
+            .call(
+                "collection.batch_process",
+                json!({ "id": id, "opts": { "max_concurrency": 99 } }),
+            )
+            .expect("method handled")
+            .expect("batch succeeds");
+        assert_eq!(queued["max_concurrency"], 2);
 
         let _ = fs::remove_dir_all(root);
     }

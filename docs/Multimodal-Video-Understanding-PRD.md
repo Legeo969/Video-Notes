@@ -30,6 +30,7 @@
 6. 让任务中心成为本机任务记录中心：重启后保留历史记录，可执行取消、暂停、继续、重跑等 phase 1 控制。
 7. 让本地 runtime component 状态可信：安装/更新后不因工具真实版本格式差异误报更新。
 8. 让 AI 供应商配置表单保持空白输入语义，不自动填入与用户意图无关的默认残留值。
+9. 让合集批量处理具备资源保护：导入文件夹只创建合集，批量处理进入后台队列，默认串行，最大并发 2。
 
 ## 3. 非目标
 
@@ -40,8 +41,9 @@
 5. 不做自动 provider capability 推断；只使用测试结果、用户配置和明确错误信息。
 6. 不保证所有 OpenAI-compatible 服务都兼容，只要求失败信息可见、任务可降级。
 7. 不保留最终 Markdown 生成缓存；最终笔记每次直接调用当前 provider 生成，避免 OCR/Vision/timeline 非确定性导致缓存污染。
-8. Task actions phase 1 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume、不做 exact historical settings replay。
-9. Task actions phase 1 不强杀正在运行的 child process；取消是 cooperative cancel，可能等待当前 blocking stage 返回。
+8. Task actions 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume、不做 exact historical settings replay。
+9. Task actions phase 2 只 kill 当前受控 direct child process；不保证终止 grandchildren/process tree，也不 kill blocking HTTP request。
+10. 合集 batch queue 不做持久化与跨重启恢复；已启动的子任务仍按任务中心现有机制持久化。
 
 ## 4. 当前实现状态（v1.5.8）
 
@@ -65,15 +67,17 @@
 - 删除笔记时会删除对应 `assets/{note_stem}/`。
 - Tauri asset protocol 已启用，Notes 页面可显示本地导出图片。
 - 任务中心已接入 native task actions phase 1：取消、重跑已实现；暂停/继续为阶段边界协作式控制。
+- Task actions phase 2 已完成本地 pipeline 命令 direct child kill：yt-dlp、ffmpeg/ffprobe、whisper-cli、tesseract 在受控 helper 内运行，取消时 kill direct child 并回收进程。
 - 任务记录已持久化到 `%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json`，重启后历史任务仍可见。
 - `jobs.json` 写入使用 atomic write，任务控制状态写入避免 stale snapshot 覆盖。
 - 重启前仍 active 的任务会加载为 `interrupted`，不假装继续运行。
 - Runtime component 安装成功后写 `.runtime-component.json` marker，更新判断基于 manifest version，而不是直接比较工具真实版本和 GitHub latest。
 - 新增 AI 供应商表单不再自动填入 OpenAI 默认 Base URL / model / vision model；切换 API 类型也不覆盖用户输入。
+- 合集导入文件夹只创建合集，不自动启动任务；合集批量处理改为后台队列，默认串行处理，最多并发 2。应用重启后不恢复 batch queue，但已启动子任务仍保留在任务中心持久化记录中。
 
 当前仍未完成或需实测的缺口：
 
-- Task actions phase 1 不支持精确 settings snapshot 重放、跨重启继续、OS thread suspension 或 child process kill；暂停只在当前阶段结束后的安全检查点生效，取消为 cooperative cancel，可能需要等待当前 blocking stage 返回。
+- Task actions 仍不支持精确 settings snapshot 重放、跨重启继续、OS thread suspension、mid-command pause、process tree kill 或 HTTP request kill；暂停只在当前阶段结束后的安全检查点生效。
 - M7 Provider Capability Matrix 尚未完成：视觉测试结果暂未沉淀为可刷新/清除的 capability cache。
 - OpenAI-compatible provider 差异仍需通过设置页测试和任务降级路径暴露，不做模型名硬编码判断。
 
@@ -381,7 +385,7 @@ pending       新任务已创建，worker 尚未进入处理阶段
 running       任务正在执行
 pausing       用户已请求暂停，等待当前阶段结束后的安全检查点
 paused        任务已在安全检查点暂停，可继续或取消
-cancelling    用户已请求取消，等待当前 blocking stage 返回或下一检查点
+cancelling    用户已请求取消；本地受控 direct child 会被终止，HTTP/blocking 非受控阶段等待返回或下一检查点
 cancelled     任务已取消，属于终态
 interrupted   应用重启或进程中断后恢复出的终态记录
 ```
@@ -462,7 +466,7 @@ process.retry
 - 允许状态：`pending` / `running` / `pausing` / `paused` / `cancelling`。
 - 立即转为 `cancelling`。
 - 如果 worker 正在 `paused` 等待，取消会唤醒 worker 并在 checkpoint 终止为 `cancelled`。
-- 如果当前阶段正在 blocking 外部命令或 HTTP call，可能需要等该阶段返回后才进入 `cancelled`。
+- 如果当前阶段正在受控本地 direct child process 中执行，会尝试终止并回收该 child；如果处于非受控 blocking 阶段或 HTTP call，可能需要等该阶段返回后才进入 `cancelled`。
 - cancel 意图优先于当前 stage error；用户取消后不应被后续错误覆盖为 `failed`。
 
 `process.retry`：
@@ -626,8 +630,8 @@ v1.5.8 当前已通过的最终验证：
 
 长任务控制验收：
 
-1. 本地长视频转写中点击取消：状态先 `cancelling`，当前 blocking stage 返回后最终 `cancelled`，不能变 `failed`。
-2. URL 下载中点击取消：允许等待 blocking stage 返回，但最终应 `cancelled`。
+1. 本地长视频转写中点击取消：状态先 `cancelling`，当前受控 ffmpeg/whisper direct child 应被终止并最终 `cancelled`，不能变 `failed`。
+2. URL 下载中点击取消：受控 yt-dlp direct child 应被终止并最终 `cancelled`。
 3. 转写中点击暂停：状态先 `pausing`，当前阶段结束后进入 `paused`。
 4. `paused` 后点击继续：状态恢复并继续后续阶段。
 5. `paused` 后点击取消：worker 被唤醒并最终 `cancelled`。
@@ -644,7 +648,7 @@ v1.5.8 当前已通过的最终验证：
 3. 多图输入成本较高。
 4. 固定 60 秒抽帧可能漏掉快速操作步骤。
 5. 视觉模型可能泛泛描述画面，需要后续优化 prompt 和时间轴上下文。
-6. Cooperative cancel 不强杀 child process；长时间 `ffmpeg` / `whisper-cli` / `yt-dlp` 或 blocking HTTP call 可能让任务停留在 `cancelling`，直到当前阶段返回。
+6. Cancel 只终止受控 local direct child；grandchildren/process tree 与 blocking HTTP call 仍可能让任务停留在 `cancelling`，直到非受控阶段返回。
 7. Retry 使用当前 settings，不保证复现旧任务的 provider/model/OCR/frame 配置。
 8. `paused` 不能跨重启继续；重启后会变 `interrupted`。
 
@@ -742,7 +746,7 @@ TimelineSegment {
 
 未完成：
 
-- task action 后续增强：exact settings snapshot retry、跨重启 resume、运行中 child process 立即 kill 与部分产物清理策略。
+- task action 后续增强：exact settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation 与部分产物清理策略。
 - full provider capability cache。
 
 ### M4.8：Runtime Component / Provider UX Fixes（已完成）
@@ -859,7 +863,7 @@ last_error
 
 剩余优先级：
 
-1. Task Actions Phase 2：settings snapshot、跨重启 resume、可控 child process kill、partial artifact cleanup policy。
+1. Task Actions 后续增强：settings snapshot、跨重启 resume、process tree kill / HTTP request cancellation、partial artifact cleanup policy。
 2. M7-lite 或 M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
 3. 更多真实长视频质量验收：CG / Houdini / Blender / Unreal / software tutorial。
 

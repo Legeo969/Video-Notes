@@ -116,8 +116,8 @@
     if (!selectedId) return;
     processing = true; batchJobId = null; batchProgress = "正在提交批量处理…";
     try {
-      const result = await engineCall<{ batch_job_id: string }>("collection.batch_process", { id: selectedId, opts: {} });
-      batchJobId = result.batch_job_id; batchProgress = "批量处理已提交，可在任务中心查看实时进度。";
+      const result = await engineCall<{ batch_job_id: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1 } });
+      batchJobId = result.batch_job_id; batchProgress = "已加入处理队列，默认串行处理；可在任务中心查看当前正在运行的任务。";
       await loadCollections(); await selectCollection(selectedId, true);
     } catch (e) { batchProgress = `批量处理失败：${e}`; }
     finally { processing = false; }
@@ -145,7 +145,7 @@
   }
 
   function statusLabel(status: string): string {
-    const map: Record<string, string> = { completed: "已完成", processing: "处理中", pending: "等待中", failed: "失败", paused: "已暂停", cancelled: "已取消" };
+    const map: Record<string, string> = { active: "可用", completed: "已完成", processing: "处理中", pending: "等待中", failed: "失败", paused: "已暂停", cancelled: "已取消" };
     return map[status] || status;
   }
 

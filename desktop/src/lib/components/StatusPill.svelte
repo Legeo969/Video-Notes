@@ -10,6 +10,7 @@
     interrupted: "异常中断",
     failed: "失败",
     cancelled: "已取消",
+    active: "可用",
     completed: "已完成",
     pass: "通过",
     warn: "警告",

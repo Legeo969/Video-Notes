@@ -86,6 +86,7 @@ select { cursor: pointer; }
 .status-pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .status-pill.status-running, .status-pill.status-pending, .status-pill.status-pausing, .status-pill.status-cancelling { color: var(--info-color); background: var(--info-soft); }
 .status-pill.status-running .status-pill-dot { box-shadow: 0 0 0 4px color-mix(in srgb, var(--info-color) 12%, transparent); animation: pulse-status 1.8s ease-in-out infinite; }
+.status-pill.status-active { color: var(--accent-color); background: var(--accent-soft); }
 .status-pill.status-completed, .status-pill.status-pass { color: var(--success-color); background: var(--success-soft); }
 .status-pill.status-paused, .status-pill.status-warn { color: var(--warning-color); background: var(--warning-soft); }
 .status-pill.status-failed, .status-pill.status-fail, .status-pill.status-interrupted, .status-pill.status-cancelled { color: var(--danger-color); background: var(--danger-soft); }
