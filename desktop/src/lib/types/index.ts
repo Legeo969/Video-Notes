@@ -30,7 +30,10 @@ export interface JobInfo {
   frames_count?: number;
   note_id?: number | null;
   attempt?: number;
-  parent_run_id?: number | null;
+  parent_run_id?: string | null;
+  settings_snapshot?: Record<string, unknown> | null;
+  workspace_dir?: string | null;
+  artifact_cleanup_policy?: string;
   can_resume?: boolean;
   heartbeat_at?: string | null;
 }
@@ -77,6 +80,16 @@ export interface ProviderProfile {
   vision_model?: string;
   models?: string[];
   active?: boolean;
+  capabilities?: Record<
+    string,
+    {
+      text?: "pass" | "fail" | "unknown";
+      vision?: "pass" | "fail" | "unknown";
+      last_tested_at?: string | null;
+      message?: string | null;
+      error?: string | null;
+    }
+  >;
 }
 
 export interface RpcRequest {

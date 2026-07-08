@@ -65,6 +65,7 @@ pub struct NativeEngine {
     jobs: Arc<Mutex<Vec<NativeJob>>>,
     next_job_id: Arc<Mutex<u64>>,
     job_controls: Arc<Mutex<HashMap<u64, Arc<JobControl>>>>,
+    settings_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -84,6 +85,16 @@ struct NativeJob {
     transcript_path: Option<String>,
     frames_count: u32,
     can_resume: bool,
+    #[serde(default)]
+    settings_snapshot: Option<Value>,
+    #[serde(default)]
+    workspace_dir: Option<String>,
+    #[serde(default = "default_job_attempt")]
+    attempt: u32,
+    #[serde(default)]
+    parent_run_id: Option<String>,
+    #[serde(default = "default_artifact_cleanup_policy")]
+    artifact_cleanup_policy: String,
 }
 
 struct JobControl {
@@ -204,6 +215,7 @@ impl NativeEngine {
             jobs: Arc::new(Mutex::new(jobs)),
             next_job_id: Arc::new(Mutex::new(next_job_id)),
             job_controls: Arc::new(Mutex::new(HashMap::new())),
+            settings_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -229,6 +241,7 @@ impl NativeEngine {
             jobs: Arc::new(Mutex::new(jobs)),
             next_job_id: Arc::new(Mutex::new(next_job_id)),
             job_controls: Arc::new(Mutex::new(HashMap::new())),
+            settings_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -253,6 +266,7 @@ impl NativeEngine {
             "settings.providers.set_active" => self.providers_set_active(params),
             "settings.providers.test" => self.provider_test(params),
             "settings.providers.models" => self.provider_models(params),
+            "settings.providers.capabilities.clear" => self.providers_capabilities_clear(params),
             "settings.ocr.test" => self.ocr_test(params),
             "settings.vision.test" => self.vision_test(params),
             "settings.templates.list" => self.templates_list(),
@@ -438,29 +452,30 @@ impl NativeEngine {
             "bilibili_cookie_file",
             "bilibili_cookies",
         ];
-        let mut raw = self.read_settings();
-        for key in allowed {
-            if let Some(value) = patches.get(key) {
-                raw.insert(key.to_string(), value.clone());
+        self.update_settings(|raw| {
+            for key in allowed {
+                if let Some(value) = patches.get(key) {
+                    raw.insert(key.to_string(), value.clone());
+                }
             }
-        }
-        if let Some(value) = raw.get("template").cloned() {
-            raw.entry("template_id".to_string()).or_insert(value);
-        }
-        if let Some(value) = raw.get("whisper_model_dir").cloned() {
-            raw.entry("model_dir".to_string()).or_insert(value);
-        }
-        raw.insert("transcription_backend".to_string(), json!("whisper_cpp"));
-        let backend = string_value(&raw, "ocr_backend")
-            .filter(|value| {
-                matches!(
-                    value.as_str(),
-                    "tesseract" | "paddleocr_http" | "custom_http"
-                )
-            })
-            .unwrap_or_else(|| "tesseract".to_string());
-        raw.insert("ocr_backend".to_string(), json!(backend));
-        self.write_settings(raw)?;
+            if let Some(value) = raw.get("template").cloned() {
+                raw.entry("template_id".to_string()).or_insert(value);
+            }
+            if let Some(value) = raw.get("whisper_model_dir").cloned() {
+                raw.entry("model_dir".to_string()).or_insert(value);
+            }
+            raw.insert("transcription_backend".to_string(), json!("whisper_cpp"));
+            let backend = string_value(raw, "ocr_backend")
+                .filter(|value| {
+                    matches!(
+                        value.as_str(),
+                        "tesseract" | "paddleocr_http" | "custom_http"
+                    )
+                })
+                .unwrap_or_else(|| "tesseract".to_string());
+            raw.insert("ocr_backend".to_string(), json!(backend));
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
@@ -469,19 +484,21 @@ impl NativeEngine {
         let key = string_param(&params, "api_key")
             .or_else(|| string_param(&params, "key"))
             .ok_or_else(|| "api_key is required".to_string())?;
-        let mut raw = self.read_settings();
-        let profile = find_provider_mut(&mut raw, &provider)?;
-        profile.insert("api_key".to_string(), json!(key));
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            let profile = find_provider_mut(raw, &provider)?;
+            profile.insert("api_key".to_string(), json!(key));
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
     fn settings_secret_delete(&self, params: Value) -> Result<Value, String> {
         let provider = required_string(&params, "provider")?;
-        let mut raw = self.read_settings();
-        let profile = find_provider_mut(&mut raw, &provider)?;
-        profile.remove("api_key");
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            let profile = find_provider_mut(raw, &provider)?;
+            profile.remove("api_key");
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
@@ -493,10 +510,6 @@ impl NativeEngine {
 
     fn providers_create(&self, params: Value) -> Result<Value, String> {
         let name = required_string(&params, "name")?;
-        let mut raw = self.read_settings();
-        if find_provider(&raw, &name).is_some() {
-            return Err(format!("Provider '{name}' already exists"));
-        }
         let model = string_param(&params, "model").unwrap_or_default();
         let vision_model = string_param(&params, "vision_model").unwrap_or_default();
         let mut models = clean_models(vec![model.clone(), vision_model.clone()]);
@@ -527,139 +540,208 @@ impl NativeEngine {
                 entry.insert("api_key".to_string(), json!(api_key));
             }
         }
-
-        let providers = raw
-            .entry("providers".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "providers must be an array".to_string())?;
-        providers.push(Value::Object(entry));
-        if string_value(&raw, "active_provider")
-            .unwrap_or_default()
-            .is_empty()
-        {
-            raw.insert("active_provider".to_string(), json!(name));
-            raw.insert(
-                "bindings".to_string(),
-                json!({ "llm": { "provider": name, "model": model } }),
-            );
-        }
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            if find_provider(raw, &name).is_some() {
+                return Err(format!("Provider '{name}' already exists"));
+            }
+            let providers = raw
+                .entry("providers".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "providers must be an array".to_string())?;
+            providers.push(Value::Object(entry));
+            if string_value(raw, "active_provider")
+                .unwrap_or_default()
+                .is_empty()
+            {
+                raw.insert("active_provider".to_string(), json!(name));
+                raw.insert(
+                    "bindings".to_string(),
+                    json!({ "llm": { "provider": name, "model": model } }),
+                );
+            }
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
     fn providers_update(&self, params: Value) -> Result<Value, String> {
         let name = required_string(&params, "name")?;
-        let mut raw = self.read_settings();
-        let profile = find_provider_mut(&mut raw, &name)?;
-        if let Some(provider_type) =
-            string_param(&params, "provider").or_else(|| string_param(&params, "type"))
-        {
+        self.update_settings(|raw| {
+            let profile = find_provider_mut(raw, &name)?;
+            let old_model = profile
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let old_vision_model = profile
+                .get("vision_model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if let Some(provider_type) =
+                string_param(&params, "provider").or_else(|| string_param(&params, "type"))
+            {
+                profile.insert(
+                    "type".to_string(),
+                    json!(normalise_provider_type(Some(&provider_type))),
+                );
+            }
+            if let Some(base_url) = string_param(&params, "base_url") {
+                profile.insert(
+                    "base_url".to_string(),
+                    json!(normalise_provider_base_url(&base_url)),
+                );
+            }
+            if let Some(model) = string_param(&params, "model") {
+                profile.insert("model".to_string(), json!(model));
+            }
+            if let Some(vision_model) = string_param(&params, "vision_model") {
+                profile.insert("vision_model".to_string(), json!(vision_model));
+            }
+            let model = profile
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let vision_model = profile
+                .get("vision_model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             profile.insert(
-                "type".to_string(),
-                json!(normalise_provider_type(Some(&provider_type))),
+                "models".to_string(),
+                json!(clean_models(vec![model, vision_model])),
             );
-        }
-        if let Some(base_url) = string_param(&params, "base_url") {
-            profile.insert(
-                "base_url".to_string(),
-                json!(normalise_provider_base_url(&base_url)),
-            );
-        }
-        if let Some(model) = string_param(&params, "model") {
-            profile.insert("model".to_string(), json!(model));
-        }
-        if let Some(vision_model) = string_param(&params, "vision_model") {
-            profile.insert("vision_model".to_string(), json!(vision_model));
-        }
-        let model = profile
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let vision_model = profile
-            .get("vision_model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        profile.insert(
-            "models".to_string(),
-            json!(clean_models(vec![model, vision_model])),
-        );
-        self.write_settings(raw)?;
+            let new_model = profile
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let new_vision_model = profile
+                .get("vision_model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if old_model != new_model || old_vision_model != new_vision_model {
+                profile.remove("capabilities");
+            }
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
     fn providers_delete(&self, params: Value) -> Result<Value, String> {
         let name = required_string(&params, "name")?;
-        let mut raw = self.read_settings();
-        let providers = raw
-            .entry("providers".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "providers must be an array".to_string())?;
-        let old_len = providers.len();
-        providers.retain(|profile| {
-            profile
-                .get("name")
-                .and_then(Value::as_str)
-                .map(|value| !value.eq_ignore_ascii_case(&name))
-                .unwrap_or(true)
-        });
-        if providers.len() == old_len {
-            return Err(format!("Provider '{name}' not found"));
-        }
-        if string_value(&raw, "active_provider")
-            .map(|value| value.eq_ignore_ascii_case(&name))
-            .unwrap_or(false)
-        {
-            raw.insert("active_provider".to_string(), json!(""));
-        }
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            let providers = raw
+                .entry("providers".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "providers must be an array".to_string())?;
+            let old_len = providers.len();
+            providers.retain(|profile| {
+                profile
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|value| !value.eq_ignore_ascii_case(&name))
+                    .unwrap_or(true)
+            });
+            if providers.len() == old_len {
+                return Err(format!("Provider '{name}' not found"));
+            }
+            if string_value(raw, "active_provider")
+                .map(|value| value.eq_ignore_ascii_case(&name))
+                .unwrap_or(false)
+            {
+                raw.insert("active_provider".to_string(), json!(""));
+            }
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
     fn providers_set_active(&self, params: Value) -> Result<Value, String> {
         let name = required_string(&params, "name")?;
-        let mut raw = self.read_settings();
-        let profile = find_provider(&raw, &name)
-            .ok_or_else(|| format!("Provider '{name}' not found"))?
-            .clone();
-        let model = profile
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let vision_model = profile
-            .get("vision_model")
-            .and_then(Value::as_str)
-            .unwrap_or(&model)
-            .to_string();
-        raw.insert("active_provider".to_string(), json!(name));
-        raw.insert(
-            "bindings".to_string(),
-            json!({
-                "llm": { "provider": name, "model": model },
-                "vision": { "provider": name, "model": vision_model },
-            }),
-        );
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            let profile = find_provider(raw, &name)
+                .ok_or_else(|| format!("Provider '{name}' not found"))?
+                .clone();
+            let model = profile
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let vision_model = profile
+                .get("vision_model")
+                .and_then(Value::as_str)
+                .unwrap_or(&model)
+                .to_string();
+            raw.insert("active_provider".to_string(), json!(name));
+            raw.insert(
+                "bindings".to_string(),
+                json!({
+                    "llm": { "provider": name, "model": model },
+                    "vision": { "provider": name, "model": vision_model },
+                }),
+            );
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
     fn provider_test(&self, params: Value) -> Result<Value, String> {
         let raw = self.read_settings();
+        let cache_provider = capability_cache_provider_name(&raw, &params);
         let profile = provider_profile_for_request(&raw, &params)?;
         match fetch_provider_models(&profile) {
-            Ok(models) => Ok(json!({
-                "success": true,
-                "message": format!("服务可用，读取到 {} 个模型", models.len()),
-                "models": models,
-            })),
-            Err(error) => Ok(json!({
-                "success": false,
-                "message": error,
-            })),
+            Ok(models) => {
+                let (capability_cache_saved, capability_cache_error) =
+                    match cache_provider.as_deref() {
+                        Some(provider_name) => self.update_provider_capability(
+                            provider_name,
+                            &profile.model,
+                            "text",
+                            "pass",
+                            "Text model is available",
+                            None,
+                        ),
+                        None => (
+                            false,
+                            Some("Ad-hoc provider test is not cached".to_string()),
+                        ),
+                    };
+                Ok(json!({
+                    "success": true,
+                    "message": format!("服务可用，读取到 {} 个模型", models.len()),
+                    "models": models,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }))
+            }
+            Err(error) => {
+                let (capability_cache_saved, capability_cache_error) =
+                    match cache_provider.as_deref() {
+                        Some(provider_name) => self.update_provider_capability(
+                            provider_name,
+                            &profile.model,
+                            "text",
+                            "fail",
+                            "Text model test failed",
+                            None,
+                        ),
+                        None => (
+                            false,
+                            Some("Ad-hoc provider test is not cached".to_string()),
+                        ),
+                    };
+                Ok(json!({
+                    "success": false,
+                    "message": error,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }))
+            }
         }
     }
 
@@ -668,6 +750,26 @@ impl NativeEngine {
         let profile = provider_profile_for_request(&raw, &params)?;
         let models = fetch_provider_models(&profile)?;
         Ok(json!(models))
+    }
+
+    fn providers_capabilities_clear(&self, params: Value) -> Result<Value, String> {
+        let provider = string_param(&params, "provider").unwrap_or_default();
+        self.update_settings(|raw| {
+            if provider.trim().is_empty() {
+                if let Some(providers) = raw.get_mut("providers").and_then(Value::as_array_mut) {
+                    for profile in providers {
+                        if let Some(object) = profile.as_object_mut() {
+                            object.remove("capabilities");
+                        }
+                    }
+                }
+            } else {
+                let profile = find_provider_mut(raw, &provider)?;
+                profile.remove("capabilities");
+            }
+            Ok(())
+        })?;
+        Ok(json!(true))
     }
 
     fn ocr_test(&self, params: Value) -> Result<Value, String> {
@@ -774,6 +876,7 @@ impl NativeEngine {
 
     fn vision_test(&self, params: Value) -> Result<Value, String> {
         let raw = self.read_settings();
+        let cache_provider = capability_cache_provider_name(&raw, &params);
         let profile = provider_profile_for_request(&raw, &params)?;
         let model = string_param(&params, "vision_model")
             .filter(|value| !value.trim().is_empty())
@@ -786,15 +889,38 @@ impl NativeEngine {
                 .to_string()
             });
 
-        let client = reqwest::blocking::Client::builder()
+        let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(client) => client,
+            Err(error) => {
+                let message = "HTTP client init failed";
+                let error = error.to_string();
+                let (capability_cache_saved, capability_cache_error) = self
+                    .maybe_update_provider_capability(
+                        cache_provider.as_deref(),
+                        &model,
+                        "vision",
+                        "fail",
+                        "HTTP client init failed",
+                        None,
+                    );
+                return Ok(json!({
+                    "success": false,
+                    "model": model,
+                    "message": message,
+                    "error": error,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }));
+            }
+        };
         let url = format!(
             "{}/chat/completions",
             profile.base_url.trim_end_matches('/')
         );
-        let response = with_optional_bearer(client.post(url), &profile.api_key)
+        let response = match with_optional_bearer(client.post(url), &profile.api_key)
             .json(&json!({
                 "model": model,
                 "messages": [
@@ -815,16 +941,52 @@ impl NativeEngine {
                 "max_tokens": 100
             }))
             .send()
-            .map_err(|error| format!("HTTP request failed: {error}"))?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let message = "HTTP request failed";
+                let error = error.to_string();
+                let (capability_cache_saved, capability_cache_error) = self.maybe_update_provider_capability(
+                    cache_provider.as_deref(),
+                    &model,
+                    "vision",
+                    "fail",
+                    message,
+                    None,
+                );
+                return Ok(json!({
+                    "success": false,
+                    "model": model,
+                    "message": message,
+                    "error": error,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }));
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
+            let message = format!("Vision model returned HTTP {status}");
+            let error = body.chars().take(500).collect::<String>();
+            let cache_message = format!("HTTP {}", status.as_u16());
+            let (capability_cache_saved, capability_cache_error) = self
+                .maybe_update_provider_capability(
+                    cache_provider.as_deref(),
+                    &model,
+                    "vision",
+                    "fail",
+                    &cache_message,
+                    None,
+                );
             return Ok(json!({
                 "success": false,
                 "model": model,
-                "message": format!("Vision model returned HTTP {status}"),
-                "error": body.chars().take(500).collect::<String>(),
+                "message": message,
+                "error": error,
+                "capability_cache_saved": capability_cache_saved,
+                "capability_cache_error": capability_cache_error,
             }));
         }
 
@@ -832,11 +994,27 @@ impl NativeEngine {
         let payload: Value = match serde_json::from_str(&payload_text) {
             Ok(v) => v,
             Err(e) => {
+                let message = "Response is not valid JSON";
+                let error = format!(
+                    "{e}: {}",
+                    payload_text.chars().take(300).collect::<String>()
+                );
+                let (capability_cache_saved, capability_cache_error) = self
+                    .maybe_update_provider_capability(
+                        cache_provider.as_deref(),
+                        &model,
+                        "vision",
+                        "fail",
+                        "Invalid JSON response",
+                        None,
+                    );
                 return Ok(json!({
                     "success": false,
                     "model": model,
-                    "message": "Response is not valid JSON",
-                    "error": format!("{e}: {}", payload_text.chars().take(300).collect::<String>()),
+                    "message": message,
+                    "error": error,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
                 }));
             }
         };
@@ -853,18 +1031,131 @@ impl NativeEngine {
             .map(ToOwned::to_owned);
 
         match result {
-            Some(text) => Ok(json!({
-                "success": true,
-                "model": model,
-                "message": "Vision model is available",
-                "result": text.chars().take(200).collect::<String>(),
-            })),
-            None => Ok(json!({
-                "success": false,
-                "model": model,
-                "message": "Vision model returned no content",
-                "error": format!("response payload: {}", payload_text.chars().take(500).collect::<String>()),
-            })),
+            Some(text) => {
+                let result = text.chars().take(200).collect::<String>();
+                let (capability_cache_saved, capability_cache_error) = self
+                    .maybe_update_provider_capability(
+                        cache_provider.as_deref(),
+                        &model,
+                        "vision",
+                        "pass",
+                        "Vision model is available",
+                        None,
+                    );
+                Ok(json!({
+                    "success": true,
+                    "model": model,
+                    "message": "Vision model is available",
+                    "result": result,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }))
+            }
+            None => {
+                let message = "Vision model returned no content";
+                let error = format!(
+                    "response payload: {}",
+                    payload_text.chars().take(500).collect::<String>()
+                );
+                let (capability_cache_saved, capability_cache_error) = self
+                    .maybe_update_provider_capability(
+                        cache_provider.as_deref(),
+                        &model,
+                        "vision",
+                        "fail",
+                        "No content returned",
+                        None,
+                    );
+                Ok(json!({
+                    "success": false,
+                    "model": model,
+                    "message": message,
+                    "error": error,
+                    "capability_cache_saved": capability_cache_saved,
+                    "capability_cache_error": capability_cache_error,
+                }))
+            }
+        }
+    }
+
+    fn update_provider_capability(
+        &self,
+        provider: &str,
+        model: &str,
+        capability: &str,
+        status: &str,
+        message: &str,
+        error: Option<&str>,
+    ) -> (bool, Option<String>) {
+        if provider.trim().is_empty() || model.trim().is_empty() {
+            return (false, Some("provider/model is empty".to_string()));
+        }
+        let safe_message = sanitize_capability_cache_text(message);
+        let safe_error = error.map(sanitize_capability_cache_text);
+        match self.update_settings(|raw| {
+            let profile = find_provider_mut(raw, provider)?;
+            let current_model = if capability == "vision" {
+                profile
+                    .get("vision_model")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| profile.get("model").and_then(Value::as_str))
+                    .unwrap_or("")
+            } else {
+                profile.get("model").and_then(Value::as_str).unwrap_or("")
+            };
+            if current_model.trim() != model.trim() {
+                return Err("capability target model changed".to_string());
+            }
+            let capabilities = profile
+                .entry("capabilities".to_string())
+                .or_insert_with(|| json!({}));
+            if !capabilities.is_object() {
+                *capabilities = json!({});
+            }
+            let capabilities = capabilities
+                .as_object_mut()
+                .ok_or_else(|| "capabilities must be an object".to_string())?;
+            let model_entry = capabilities
+                .entry(model.to_string())
+                .or_insert_with(|| json!({}));
+            if !model_entry.is_object() {
+                *model_entry = json!({});
+            }
+            let model_entry = model_entry
+                .as_object_mut()
+                .ok_or_else(|| "capability entry must be an object".to_string())?;
+            model_entry.insert(capability.to_string(), json!(status));
+            model_entry.insert("last_tested_at".to_string(), json!(Utc::now().to_rfc3339()));
+            model_entry.insert("message".to_string(), json!(safe_message));
+            model_entry.insert(
+                "error".to_string(),
+                safe_error.clone().map(Value::from).unwrap_or(Value::Null),
+            );
+            Ok(())
+        }) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(sanitize_capability_cache_text(&error))),
+        }
+    }
+
+    fn maybe_update_provider_capability(
+        &self,
+        provider: Option<&str>,
+        model: &str,
+        capability: &str,
+        status: &str,
+        message: &str,
+        error: Option<&str>,
+    ) -> (bool, Option<String>) {
+        match provider {
+            Some(provider) => {
+                self.update_provider_capability(provider, model, capability, status, message, error)
+            }
+            None => (
+                false,
+                Some("Ad-hoc provider test is not cached".to_string()),
+            ),
         }
     }
 
@@ -875,17 +1166,18 @@ impl NativeEngine {
         }
         let provider = required_string(&params, "provider")?;
         let model = string_param(&params, "model").unwrap_or_default();
-        let mut raw = self.read_settings();
-        if find_provider(&raw, &provider).is_none() {
-            return Err(format!("Provider '{provider}' not found"));
-        }
-        let bindings = raw
-            .entry("bindings".to_string())
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .ok_or_else(|| "bindings must be an object".to_string())?;
-        bindings.insert(purpose, json!({ "provider": provider, "model": model }));
-        self.write_settings(raw)?;
+        self.update_settings(|raw| {
+            if find_provider(raw, &provider).is_none() {
+                return Err(format!("Provider '{provider}' not found"));
+            }
+            let bindings = raw
+                .entry("bindings".to_string())
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| "bindings must be an object".to_string())?;
+            bindings.insert(purpose, json!({ "provider": provider, "model": model }));
+            Ok(())
+        })?;
         Ok(json!(true))
     }
 
@@ -1251,6 +1543,14 @@ impl NativeEngine {
     }
 
     fn process_start(&self, params: Value) -> Result<Value, String> {
+        self.process_start_internal(params, None)
+    }
+
+    fn process_start_internal(
+        &self,
+        params: Value,
+        lineage: Option<(u32, String)>,
+    ) -> Result<Value, String> {
         let input = required_string(&params, "input")?;
         let title = string_param(&params, "title").or_else(|| {
             Path::new(&input)
@@ -1258,71 +1558,18 @@ impl NativeEngine {
                 .and_then(|value| value.to_str())
                 .map(ToOwned::to_owned)
         });
-        let id = {
-            let mut next = self
-                .next_job_id
-                .lock()
-                .map_err(|_| "job id lock poisoned".to_string())?;
-            let id = *next;
-            *next += 1;
-            id
-        };
-        let job = NativeJob {
-            id,
-            job_id: Uuid::new_v4().to_string(),
-            title: title.clone(),
-            status: "pending".to_string(),
-            progress: 0,
-            progress_message: "任务已创建".to_string(),
-            stage: "pending".to_string(),
-            input: input.clone(),
-            created_at: Utc::now().to_rfc3339(),
-            completed_at: None,
-            error_message: None,
-            output_path: None,
-            transcript_path: None,
-            frames_count: 0,
-            can_resume: false,
-        };
-        let control = Arc::new(JobControl::new());
-        {
-            let mut controls = self
-                .job_controls
-                .lock()
-                .map_err(|_| "job controls lock poisoned".to_string())?;
-            controls.insert(id, control.clone());
-        }
-        {
-            let mut jobs = self
-                .jobs
-                .lock()
-                .map_err(|_| "jobs lock poisoned".to_string())?;
-            jobs.push(job);
-            if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
-                jobs.retain(|job| job.id != id);
-                if let Ok(mut controls) = self.job_controls.lock() {
-                    controls.remove(&id);
-                }
-                return Err(error);
-            }
-        }
-
-        let jobs = self.jobs.clone();
-        let jobs_state_path = self.jobs_state_path.clone();
-        let job_controls = self.job_controls.clone();
-        let app_handle = self.app_handle.clone();
         let settings = self.read_settings();
         let output_dir = string_param(&params, "output_dir")
             .map(PathBuf::from)
             .unwrap_or_else(|| effective_note_output_dir(&settings, &self.default_export_dir));
-        let runtime_dir = self.runtime_dir.clone();
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
-        let whisper_model =
-            string_value(&settings, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
+        let whisper_model = string_param(&params, "whisper_model")
+            .or_else(|| string_value(&settings, "whisper_model"))
+            .unwrap_or_else(|| "large-v3".to_string());
         let whisper_device = string_param(&params, "whisper_device")
             .or_else(|| string_value(&settings, "whisper_device"))
             .unwrap_or_else(|| "auto".to_string());
-        let provider = active_provider_profile(&settings).ok();
+        let provider = provider_profile_for_job(&settings, &params).ok();
         let ocr_enabled = params
             .get("ocr_enabled")
             .and_then(Value::as_bool)
@@ -1343,7 +1590,7 @@ impl NativeEngine {
             .unwrap_or_else(|| "tesseract".to_string());
         let ocr_config = OcrRuntimeConfig {
             enabled: ocr_enabled,
-            backend: ocr_backend,
+            backend: ocr_backend.clone(),
             endpoint: string_param(&params, "ocr_http_endpoint")
                 .or_else(|| string_value(&settings, "ocr_http_endpoint"))
                 .or_else(|| string_value(&settings, "ocr_api_url"))
@@ -1384,6 +1631,90 @@ impl NativeEngine {
         let frame_mode = string_param(&params, "frame_mode")
             .or_else(|| string_value(&settings, "frame_mode"))
             .unwrap_or_else(|| "fixed".to_string());
+        let provider_name = string_param(&params, "provider_name")
+            .or_else(|| string_param(&params, "active_provider"))
+            .or_else(|| string_value(&settings, "active_provider"))
+            .unwrap_or_default();
+        let settings_snapshot = Some(build_job_settings_snapshot(
+            &input,
+            title.as_deref(),
+            &output_dir,
+            &whisper_model,
+            &whisper_device,
+            &provider_name,
+            provider.as_ref(),
+            &ocr_config,
+            vision_enabled,
+            frame_interval,
+            max_frames,
+            &frame_mode,
+            &params,
+        ));
+        let (attempt, parent_run_id) = lineage
+            .map(|(attempt, parent)| (attempt.max(1), Some(parent)))
+            .unwrap_or((1, None));
+        let artifact_cleanup_policy = string_param(&params, "artifact_cleanup_policy")
+            .map(|value| normalize_artifact_cleanup_policy(&value))
+            .unwrap_or_else(default_artifact_cleanup_policy);
+        let id = {
+            let mut next = self
+                .next_job_id
+                .lock()
+                .map_err(|_| "job id lock poisoned".to_string())?;
+            let id = *next;
+            *next += 1;
+            id
+        };
+        let job = NativeJob {
+            id,
+            job_id: Uuid::new_v4().to_string(),
+            title: title.clone(),
+            status: "pending".to_string(),
+            progress: 0,
+            progress_message: "任务已创建".to_string(),
+            stage: "pending".to_string(),
+            input: input.clone(),
+            created_at: Utc::now().to_rfc3339(),
+            completed_at: None,
+            error_message: None,
+            output_path: None,
+            transcript_path: None,
+            frames_count: 0,
+            can_resume: false,
+            settings_snapshot,
+            workspace_dir: None,
+            attempt,
+            parent_run_id,
+            artifact_cleanup_policy,
+        };
+        let control = Arc::new(JobControl::new());
+        {
+            let mut controls = self
+                .job_controls
+                .lock()
+                .map_err(|_| "job controls lock poisoned".to_string())?;
+            controls.insert(id, control.clone());
+        }
+        {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "jobs lock poisoned".to_string())?;
+            jobs.push(job);
+            if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
+                jobs.retain(|job| job.id != id);
+                if let Ok(mut controls) = self.job_controls.lock() {
+                    controls.remove(&id);
+                }
+                return Err(error);
+            }
+        }
+
+        let jobs = self.jobs.clone();
+        let jobs_state_path = self.jobs_state_path.clone();
+        let job_controls = self.job_controls.clone();
+        let app_handle = self.app_handle.clone();
+        let runtime_dir = self.runtime_dir.clone();
         std::thread::spawn(move || {
             run_native_job(
                 jobs,
@@ -1475,7 +1806,7 @@ impl NativeEngine {
 
     fn process_retry(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
-        let (input, title) = {
+        let (input, title, snapshot, attempt, parent_run_id, cleanup_policy) = {
             let jobs = self
                 .jobs
                 .lock()
@@ -1487,9 +1818,24 @@ impl NativeEngine {
             if !is_terminal_status(&job.status) {
                 return Err(format!("Job {id} cannot be retried from {}", job.status));
             }
-            (job.input.clone(), job.title.clone())
+            (
+                job.input.clone(),
+                job.title.clone(),
+                job.settings_snapshot.clone(),
+                job.attempt.saturating_add(1),
+                job.parent_run_id
+                    .clone()
+                    .unwrap_or_else(|| job.job_id.clone()),
+                job.artifact_cleanup_policy.clone(),
+            )
         };
-        self.process_start(json!({ "input": input, "title": title }))
+        let mut retry_params =
+            sanitized_retry_task_params(snapshot.as_ref(), &input, title.as_ref());
+        retry_params.insert(
+            "artifact_cleanup_policy".to_string(),
+            json!(normalize_artifact_cleanup_policy(&cleanup_policy)),
+        );
+        self.process_start_internal(Value::Object(retry_params), Some((attempt, parent_run_id)))
     }
 
     fn job_control(&self, id: u64) -> Result<Arc<JobControl>, String> {
@@ -1555,9 +1901,13 @@ impl NativeEngine {
         {
             return Err(format!("Job {id} is active and cannot be deleted"));
         }
+        let removed_job = jobs.iter().find(|job| job.id == id).cloned();
         let old_len = jobs.len();
         jobs.retain(|job| job.id != id);
         save_jobs(&self.jobs_state_path, &jobs)?;
+        if let Some(job) = removed_job {
+            cleanup_deleted_job_workspace(&job, &self.data_dir);
+        }
         if jobs.len() != old_len {
             if let Ok(mut controls) = self.job_controls.lock() {
                 controls.remove(&id);
@@ -2277,6 +2627,20 @@ impl NativeEngine {
     fn write_settings(&self, raw: Map<String, Value>) -> Result<(), String> {
         write_json_atomic(&self.settings_path, &Value::Object(raw))
     }
+
+    fn update_settings<F, T>(&self, update: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut Map<String, Value>) -> Result<T, String>,
+    {
+        let _guard = self
+            .settings_lock
+            .lock()
+            .map_err(|_| "settings lock poisoned".to_string())?;
+        let mut raw = self.read_settings();
+        let result = update(&mut raw)?;
+        self.write_settings(raw)?;
+        Ok(result)
+    }
 }
 
 impl NativeJob {
@@ -2300,8 +2664,11 @@ impl NativeJob {
             "transcript_path": self.transcript_path,
             "frames_count": self.frames_count,
             "note_id": null,
-            "attempt": 1,
-            "parent_run_id": null,
+            "settings_snapshot": self.settings_snapshot,
+            "workspace_dir": self.workspace_dir,
+            "attempt": self.attempt,
+            "parent_run_id": self.parent_run_id,
+            "artifact_cleanup_policy": self.artifact_cleanup_policy,
             "can_resume": self.can_resume,
             "heartbeat_at": Utc::now().to_rfc3339(),
         })
@@ -2340,6 +2707,148 @@ fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
 
 fn save_jobs(jobs_state_path: &Path, jobs: &[NativeJob]) -> Result<(), String> {
     write_json_atomic(jobs_state_path, &json!(jobs))
+}
+
+fn default_job_attempt() -> u32 {
+    1
+}
+
+fn default_artifact_cleanup_policy() -> String {
+    "keep_all".to_string()
+}
+
+fn normalize_artifact_cleanup_policy(policy: &str) -> String {
+    match policy {
+        "delete_workspace" => "delete_workspace".to_string(),
+        _ => default_artifact_cleanup_policy(),
+    }
+}
+
+fn cleanup_deleted_job_workspace(job: &NativeJob, data_dir: &Path) {
+    if normalize_artifact_cleanup_policy(&job.artifact_cleanup_policy) != "delete_workspace" {
+        return;
+    }
+    let Some(workspace_dir) = &job.workspace_dir else {
+        return;
+    };
+    let workspace_path = PathBuf::from(workspace_dir);
+    if workspace_path.as_os_str().is_empty() || workspace_path.parent().is_none() {
+        return;
+    }
+    let Some(name) = workspace_path.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    if !name.starts_with("job-") {
+        return;
+    }
+    let Ok(workspace_path) = workspace_path.canonicalize() else {
+        return;
+    };
+    let allowed_roots = [data_dir.join("jobs"), data_dir.join(".jobs")];
+    for root in allowed_roots {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        if workspace_path.parent() == Some(root.as_path()) {
+            let _ = fs::remove_dir_all(&workspace_path);
+            return;
+        }
+    }
+}
+
+fn sanitized_retry_task_params(
+    snapshot: Option<&Value>,
+    fallback_input: &str,
+    fallback_title: Option<&String>,
+) -> Map<String, Value> {
+    const ALLOWED: &[&str] = &[
+        "input",
+        "title",
+        "output_dir",
+        "whisper_model",
+        "whisper_device",
+        "provider_name",
+        "active_provider",
+        "base_url",
+        "model",
+        "vision_model",
+        "ocr_enabled",
+        "ocr_backend",
+        "ocr_http_endpoint",
+        "ocr_model",
+        "vision_enabled",
+        "frame_interval",
+        "max_frames",
+        "frame_mode",
+        "template",
+        "artifact_cleanup_policy",
+    ];
+    let mut params = Map::new();
+    if let Some(task_params) = snapshot
+        .and_then(|value| value.get("task_params"))
+        .and_then(Value::as_object)
+    {
+        for key in ALLOWED {
+            if let Some(value) = task_params.get(*key) {
+                params.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    if !params.contains_key("input") {
+        params.insert("input".to_string(), json!(fallback_input));
+    }
+    if !params.contains_key("title") {
+        params.insert("title".to_string(), json!(fallback_title));
+    }
+    if let Some(policy) = params
+        .get("artifact_cleanup_policy")
+        .and_then(Value::as_str)
+        .map(normalize_artifact_cleanup_policy)
+    {
+        params.insert("artifact_cleanup_policy".to_string(), json!(policy));
+    }
+    params
+}
+
+fn sanitize_capability_cache_text(value: &str) -> String {
+    let mut text = value.chars().take(300).collect::<String>();
+    for marker in [
+        "Bearer ",
+        "sk-",
+        "api_key",
+        "Authorization",
+        "token",
+        "secret",
+    ] {
+        while let Some(index) = text.to_ascii_lowercase().find(&marker.to_ascii_lowercase()) {
+            let start = (index + marker.len()).min(text.len());
+            let end = text[start..]
+                .find(|ch: char| ch.is_whitespace() || ch == ',' || ch == '}' || ch == '"')
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| text.len());
+            text.replace_range(index..end, "[redacted]");
+        }
+    }
+    text
+}
+
+fn sanitize_snapshot_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string().trim_end_matches('/').to_string();
+    }
+    let without_query = trimmed.split('?').next().unwrap_or(trimmed);
+    without_query
+        .split('#')
+        .next()
+        .unwrap_or(without_query)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn job_id_param(params: &Value) -> Result<u64, String> {
@@ -2542,6 +3051,12 @@ fn run_native_job(
         );
         return;
     }
+    update_job_workspace(
+        &jobs,
+        &jobs_state_path,
+        id,
+        workspace_dir.to_string_lossy().to_string(),
+    );
 
     let t_dl = StageTimer::new("downloading");
     checkpoint!("downloading", 12, "准备媒体输入");
@@ -2857,6 +3372,10 @@ fn run_native_job(
                         for (segment_index, start_sec, end_sec, text, frame_paths) in
                             batch.iter().cloned()
                         {
+                            if control.cancel_requested.load(Ordering::SeqCst) {
+                                checkpoint!("cancelled", 64, "任务已取消");
+                                return;
+                            }
                             let profile = profile.clone();
                             handles.push(std::thread::spawn(move || {
                                 let paths: Vec<&PathBuf> = frame_paths.iter().collect();
@@ -2867,6 +3386,10 @@ fn run_native_job(
                             }));
                         }
                         for handle in handles {
+                            if control.cancel_requested.load(Ordering::SeqCst) {
+                                checkpoint!("cancelled", 64, "任务已取消");
+                                return;
+                            }
                             match handle.join() {
                                 Ok(result) => vision_results.push(result),
                                 Err(_) => vision_results.push((
@@ -2967,6 +3490,7 @@ fn run_native_job(
     } else {
         String::new()
     };
+    checkpoint!("generating_notes", 72, "准备调用文本模型");
     let timeline_context = if segments.is_empty() {
         None
     } else {
@@ -3022,6 +3546,7 @@ fn run_native_job(
                 transcript_path.display()
             )
         });
+    checkpoint!("generating_notes", 88, "文本模型调用完成");
     checkpoint!("generating_notes", 90, "Markdown 笔记生成完成");
     let note = if generated_note.trim_start().starts_with('#') {
         generated_note
@@ -3132,6 +3657,20 @@ fn update_job(
     }
     if let (Some(handle), Some(payload)) = (app_handle, event) {
         let _ = handle.emit("job:progress", payload);
+    }
+}
+
+fn update_job_workspace(
+    jobs: &Arc<Mutex<Vec<NativeJob>>>,
+    jobs_state_path: &Path,
+    id: u64,
+    workspace_dir: String,
+) {
+    if let Ok(mut locked) = jobs.lock() {
+        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
+            job.workspace_dir = Some(workspace_dir);
+            let _ = save_jobs(jobs_state_path, &locked);
+        }
     }
 }
 
@@ -3489,6 +4028,7 @@ fn provider_profiles(raw: &Map<String, Value>, active: &str) -> Vec<Value> {
                         "vision_model": object.get("vision_model").and_then(Value::as_str).unwrap_or(model),
                         "models": models,
                         "active": name.eq_ignore_ascii_case(active),
+                        "capabilities": object.get("capabilities").cloned().unwrap_or_else(|| json!({})),
                     }))
                 })
                 .collect()
@@ -3502,7 +4042,7 @@ fn provider_profile_for_request(
 ) -> Result<NativeProviderProfile, String> {
     if let Some(name) = string_param(params, "name") {
         if let Some(profile) = find_provider(settings, &name) {
-            return provider_from_value(profile, params);
+            return provider_from_saved_value(profile, params);
         }
     }
     let mut merged = Map::new();
@@ -3522,6 +4062,116 @@ fn provider_profile_for_request(
         return provider_from_map(&merged);
     }
     active_provider_profile(settings)
+}
+
+fn capability_cache_provider_name(settings: &Map<String, Value>, params: &Value) -> Option<String> {
+    if let Some(name) = string_param(params, "name") {
+        if find_provider(settings, &name).is_some() {
+            return Some(name);
+        }
+    }
+    let has_ad_hoc_fields = ["base_url", "api_key", "type", "provider"]
+        .iter()
+        .any(|key| string_param(params, key).is_some());
+    if has_ad_hoc_fields {
+        None
+    } else {
+        string_value(settings, "active_provider")
+            .filter(|name| find_provider(settings, name).is_some())
+    }
+}
+
+fn provider_profile_for_job(
+    settings: &Map<String, Value>,
+    params: &Value,
+) -> Result<NativeProviderProfile, String> {
+    let provider_name = string_param(params, "provider_name")
+        .or_else(|| string_param(params, "active_provider"))
+        .or_else(|| string_value(settings, "active_provider"));
+    if let Some(name) = provider_name {
+        if let Some(profile) = find_provider(settings, &name) {
+            return provider_from_saved_value(profile, params);
+        }
+    }
+    provider_profile_for_request(settings, params)
+}
+
+fn build_job_settings_snapshot(
+    input: &str,
+    title: Option<&str>,
+    output_dir: &Path,
+    whisper_model: &str,
+    whisper_device: &str,
+    provider_name: &str,
+    provider: Option<&NativeProviderProfile>,
+    ocr_config: &OcrRuntimeConfig,
+    vision_enabled: bool,
+    frame_interval: f64,
+    max_frames: u32,
+    frame_mode: &str,
+    raw_params: &Value,
+) -> Value {
+    let mut task_params = Map::new();
+    task_params.insert("input".to_string(), json!(input));
+    task_params.insert("title".to_string(), json!(title));
+    task_params.insert(
+        "output_dir".to_string(),
+        json!(output_dir.to_string_lossy().to_string()),
+    );
+    task_params.insert("whisper_model".to_string(), json!(whisper_model));
+    task_params.insert("whisper_device".to_string(), json!(whisper_device));
+    task_params.insert("provider_name".to_string(), json!(provider_name));
+    if let Some(provider) = provider {
+        if provider_name.trim().is_empty() {
+            task_params.insert(
+                "base_url".to_string(),
+                json!(sanitize_snapshot_endpoint(&provider.base_url)),
+            );
+        }
+        task_params.insert("model".to_string(), json!(provider.model));
+        task_params.insert("vision_model".to_string(), json!(provider.vision_model));
+    }
+    task_params.insert("ocr_enabled".to_string(), json!(ocr_config.enabled));
+    task_params.insert("ocr_backend".to_string(), json!(ocr_config.backend));
+    task_params.insert(
+        "ocr_http_endpoint".to_string(),
+        json!(sanitize_snapshot_endpoint(&ocr_config.endpoint)),
+    );
+    task_params.insert("ocr_model".to_string(), json!(ocr_config.model));
+    task_params.insert("vision_enabled".to_string(), json!(vision_enabled));
+    task_params.insert("frame_interval".to_string(), json!(frame_interval));
+    task_params.insert("max_frames".to_string(), json!(max_frames));
+    task_params.insert("frame_mode".to_string(), json!(frame_mode));
+    if let Some(value) = raw_params.get("template") {
+        task_params.insert("template".to_string(), value.clone());
+    }
+    json!({
+        "version": 1,
+        "created_at": Utc::now().to_rfc3339(),
+        "task_params": task_params,
+        "settings": {
+            "whisper_model": whisper_model,
+            "whisper_device": whisper_device,
+            "ocr_enabled": ocr_config.enabled,
+            "ocr_backend": ocr_config.backend,
+            "ocr_http_endpoint": sanitize_snapshot_endpoint(&ocr_config.endpoint),
+            "ocr_model": ocr_config.model,
+            "vision_enabled": vision_enabled,
+            "frame_interval": frame_interval,
+            "max_frames": max_frames,
+            "frame_mode": frame_mode,
+            "active_provider": provider_name,
+            "provider": provider.map(|profile| {
+                let mut value = Map::new();
+                if provider_name.trim().is_empty() {
+                    value.insert("base_url".to_string(), json!(sanitize_snapshot_endpoint(&profile.base_url)));
+                }
+                value.insert("model".to_string(), json!(profile.model));
+                value.insert("vision_model".to_string(), json!(profile.vision_model));
+                Value::Object(value)
+            }),
+        }
+    })
 }
 
 fn active_provider_profile(settings: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
@@ -3546,6 +4196,21 @@ fn provider_from_value(
         "vision_model",
         "api_key",
     ] {
+        if let Some(value) = override_params.get(key) {
+            if !value.is_null() {
+                merged.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    provider_from_map(&merged)
+}
+
+fn provider_from_saved_value(
+    profile: &Map<String, Value>,
+    override_params: &Value,
+) -> Result<NativeProviderProfile, String> {
+    let mut merged = profile.clone();
+    for key in ["model", "vision_model"] {
         if let Some(value) = override_params.get(key) {
             if !value.is_null() {
                 merged.insert(key.to_string(), value.clone());
@@ -4031,7 +4696,7 @@ fn run_controlled_command(
 
     let status = loop {
         if control.cancel_requested.load(Ordering::SeqCst) {
-            let _ = child.kill();
+            kill_process_tree_or_child(&mut child);
             let _ = child.wait();
             let stdout = stdout_reader
                 .map(|reader| reader.join().unwrap_or_default())
@@ -4049,7 +4714,7 @@ fn run_controlled_command(
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_millis(75)),
             Err(error) => {
-                let _ = child.kill();
+                kill_process_tree_or_child(&mut child);
                 let _ = child.wait();
                 if let Ok(mut current_child) = control.current_child.lock() {
                     *current_child = None;
@@ -4073,6 +4738,33 @@ fn run_controlled_command(
         stdout,
         stderr,
     })
+}
+
+fn kill_process_tree_or_child(child: &mut std::process::Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id().to_string();
+        let system_taskkill = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| root.join("System32").join("taskkill.exe"));
+        let candidates = system_taskkill
+            .into_iter()
+            .chain(std::iter::once(PathBuf::from("taskkill")));
+        for candidate in candidates {
+            let status = hidden_command(candidate)
+                .args(["/PID", &pid, "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if status.map(|status| status.success()).unwrap_or(false) {
+                return;
+            }
+        }
+    }
+    let _ = child.kill();
 }
 
 fn run_controlled_command_piped(
@@ -4428,10 +5120,20 @@ fn extract_ocr_with_http(
             return Err(cancellation_error("OCR HTTP"));
         }
         let text = if config.backend == "paddleocr_http" {
-            ocr_frame_with_paddleocr(&client, &frame, &endpoint, &config.api_key, &config.model)?
+            ocr_frame_with_paddleocr(
+                &client,
+                &frame,
+                &endpoint,
+                &config.api_key,
+                &config.model,
+                control,
+            )?
         } else {
             ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key)?
         };
+        if control.cancel_requested.load(Ordering::SeqCst) {
+            return Err(cancellation_error("OCR HTTP"));
+        }
         if !text.trim().is_empty() {
             output.push_str(&format!(
                 "### {}\n\n{}\n\n",
@@ -5108,7 +5810,11 @@ fn ocr_frame_with_paddleocr(
     endpoint: &str,
     api_key: &str,
     model: &str,
+    control: &Arc<JobControl>,
 ) -> Result<String, String> {
+    if control.cancel_requested.load(Ordering::SeqCst) {
+        return Err(cancellation_error("PaddleOCR"));
+    }
     if api_key.trim().is_empty() {
         return Err("PaddleOCR API Key is empty".to_string());
     }
@@ -5118,7 +5824,13 @@ fn ocr_frame_with_paddleocr(
         .and_then(|value| value.to_str())
         .unwrap_or("frame.png");
     let job_id = submit_paddleocr_job(client, endpoint, api_key, model, bytes, filename)?;
-    let json_url = poll_paddleocr_job(client, endpoint, api_key, &job_id)?;
+    if control.cancel_requested.load(Ordering::SeqCst) {
+        return Err(cancellation_error("PaddleOCR"));
+    }
+    let json_url = poll_paddleocr_job(client, endpoint, api_key, &job_id, control)?;
+    if control.cancel_requested.load(Ordering::SeqCst) {
+        return Err(cancellation_error("PaddleOCR"));
+    }
     fetch_paddleocr_jsonl_text(client, &json_url)
 }
 
@@ -5187,9 +5899,13 @@ fn poll_paddleocr_job(
     endpoint: &str,
     api_key: &str,
     job_id: &str,
+    control: &Arc<JobControl>,
 ) -> Result<String, String> {
     let job_url = format!("{}/{}", endpoint.trim_end_matches('/'), job_id);
     for _ in 0..60 {
+        if control.cancel_requested.load(Ordering::SeqCst) {
+            return Err(cancellation_error("PaddleOCR poll"));
+        }
         let response = client
             .get(&job_url)
             .bearer_auth(bearer_token(api_key))
@@ -5225,7 +5941,15 @@ fn poll_paddleocr_job(
                     .unwrap_or("unknown error");
                 return Err(format!("PaddleOCR job failed: {error}"));
             }
-            "pending" | "running" | "" => std::thread::sleep(Duration::from_secs(5)),
+            "pending" | "running" | "" => {
+                if control.cancel_requested.load(Ordering::SeqCst) {
+                    return Err(cancellation_error("PaddleOCR poll"));
+                }
+                std::thread::sleep(Duration::from_secs(5));
+                if control.cancel_requested.load(Ordering::SeqCst) {
+                    return Err(cancellation_error("PaddleOCR poll"));
+                }
+            }
             other => return Err(format!("PaddleOCR job returned unknown state: {other}")),
         }
     }
@@ -6439,6 +7163,11 @@ mod tests {
             transcript_path: None,
             frames_count: 0,
             can_resume: status == "paused",
+            settings_snapshot: None,
+            workspace_dir: None,
+            attempt: 1,
+            parent_run_id: None,
+            artifact_cleanup_policy: default_artifact_cleanup_policy(),
         }
     }
 
@@ -6478,6 +7207,131 @@ mod tests {
         } else {
             shell_command("sleep 5")
         }
+    }
+
+    fn provider_settings() -> Map<String, Value> {
+        serde_json::from_value(json!({
+            "active_provider": "saved",
+            "providers": [{
+                "name": "saved",
+                "type": "openai_compat",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+                "vision_model": "saved-vision",
+                "api_key": "sk-saved-secret"
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn saved_provider_ignores_endpoint_override_but_keeps_secret() {
+        let settings = provider_settings();
+        let profile = provider_profile_for_request(
+            &settings,
+            &json!({
+                "name": "saved",
+                "base_url": "https://attacker.example/v1",
+                "api_key": "sk-attacker",
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.base_url, "https://saved.example/v1");
+        assert_eq!(profile.api_key, "sk-saved-secret");
+        assert_eq!(profile.model, "saved-model");
+    }
+
+    #[test]
+    fn adhoc_provider_uses_explicit_endpoint_and_secret() {
+        let settings = provider_settings();
+        let profile = provider_profile_for_request(
+            &settings,
+            &json!({
+                "base_url": "https://adhoc.example/v1",
+                "api_key": "sk-adhoc",
+                "model": "adhoc-model",
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.base_url, "https://adhoc.example/v1");
+        assert_eq!(profile.api_key, "sk-adhoc");
+        assert_eq!(profile.model, "adhoc-model");
+    }
+
+    #[test]
+    fn saved_provider_allows_model_override_only() {
+        let settings = provider_settings();
+        let profile = provider_profile_for_request(
+            &settings,
+            &json!({
+                "name": "saved",
+                "base_url": "https://attacker.example/v1",
+                "model": "override-model",
+                "vision_model": "override-vision",
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.base_url, "https://saved.example/v1");
+        assert_eq!(profile.api_key, "sk-saved-secret");
+        assert_eq!(profile.model, "override-model");
+        assert_eq!(profile.vision_model, "override-vision");
+    }
+
+    #[test]
+    fn job_saved_provider_ignores_endpoint_override() {
+        let settings = provider_settings();
+        let profile = provider_profile_for_job(
+            &settings,
+            &json!({
+                "provider_name": "saved",
+                "base_url": "https://attacker.example/v1",
+                "model": "job-model",
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.base_url, "https://saved.example/v1");
+        assert_eq!(profile.api_key, "sk-saved-secret");
+        assert_eq!(profile.model, "job-model");
+    }
+
+    #[test]
+    fn retry_snapshot_attacker_base_url_does_not_override_saved_endpoint() {
+        let settings = provider_settings();
+        let snapshot = json!({
+            "task_params": {
+                "input": "old.mp4",
+                "provider_name": "saved",
+                "base_url": "https://attacker.example/v1",
+                "model": "snapshot-model"
+            }
+        });
+        let params = Value::Object(sanitized_retry_task_params(
+            Some(&snapshot),
+            "fallback.mp4",
+            None,
+        ));
+        let profile = provider_profile_for_job(&settings, &params).unwrap();
+        assert_eq!(profile.base_url, "https://saved.example/v1");
+        assert_eq!(profile.api_key, "sk-saved-secret");
+        assert_eq!(profile.model, "snapshot-model");
+    }
+
+    #[test]
+    fn saved_provider_ignores_type_override() {
+        let settings = provider_settings();
+        let profile = provider_profile_for_request(
+            &settings,
+            &json!({
+                "name": "saved",
+                "type": "llama_cpp",
+                "provider": "llama_cpp",
+                "model": "override-model"
+            }),
+        )
+        .unwrap();
+        assert_eq!(profile.base_url, "https://saved.example/v1");
+        assert_eq!(profile.api_key, "sk-saved-secret");
+        assert_eq!(profile.model, "override-model");
     }
 
     #[test]
@@ -6572,6 +7426,11 @@ mod tests {
             transcript_path: None,
             frames_count: 0,
             can_resume: false,
+            settings_snapshot: None,
+            workspace_dir: None,
+            attempt: 1,
+            parent_run_id: None,
+            artifact_cleanup_policy: default_artifact_cleanup_policy(),
         };
         save_jobs(&engine.jobs_state_path, &[job]).unwrap();
 

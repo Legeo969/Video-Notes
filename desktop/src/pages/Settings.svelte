@@ -185,6 +185,7 @@
   let testingOcr = $state(false);
   let refreshingOcrModels = $state(false);
   let testingVision = $state(false);
+  let clearingCapabilities = $state<string | null>(null);
   let doctorRunning = $state(false);
   let bundlingDiagnostics = $state(false);
   let storageLoading = $state(false);
@@ -340,11 +341,21 @@
 
   function handleProviderTypeChange() { providerModelOptions = []; }
 
+  function providerDiscoveryName() {
+    if (!editingProviderName) return undefined;
+    const saved = providers.find((item) => item.name === editingProviderName);
+    if (!saved) return undefined;
+    if (providerForm.api_key.trim()) return undefined;
+    if ((providerForm.provider || "").trim() !== (saved.provider || "").trim()) return undefined;
+    if ((providerForm.base_url || "").trim() !== (saved.base_url || "").trim()) return undefined;
+    return editingProviderName;
+  }
+
   async function discoverProviderModels() {
     discoveringProviderModels = true;
     try {
       providerModelOptions = await engineCall<string[]>("settings.providers.models", {
-        name: editingProviderName ?? undefined,
+        name: providerDiscoveryName(),
         provider: providerForm.provider,
         base_url: providerForm.base_url,
         api_key: providerForm.api_key || undefined,
@@ -432,7 +443,9 @@
     testingProvider = p.name;
     try {
       const result: any = await engineCall("settings.providers.test", { name: p.name, provider: p.provider, base_url: p.base_url, model: p.model });
-      showToast(result?.success ? `连接成功：${result.message ?? "服务可用"}` : `连接失败：${result?.message ?? "未知错误"}`, result?.success ? "success" : "error");
+      const cacheNote = result?.capability_cache_saved === false ? "；能力缓存未写入" : "";
+      showToast(result?.success ? `连接成功：${result.message ?? "服务可用"}${cacheNote}` : `连接失败：${result?.message ?? "未知错误"}${cacheNote}`, result?.success ? "success" : "error");
+      providers = await engineCall<ProviderProfile[]>("settings.providers.list");
     } catch (e: any) { showToast(`测试连接异常：${e?.message ?? e}`, "error"); }
     finally { testingProvider = null; }
   }
@@ -474,15 +487,59 @@
       const result: any = await engineCall("settings.vision.test", {
         name: settings.active_provider,
       });
+      const cacheNote = result?.capability_cache_saved === false ? "；能力缓存未写入" : "";
       if (result?.success) {
-        showToast(`视觉模型 [${result.model}] 可用：${result?.result ?? ""}`, "success");
+        showToast(`视觉模型 [${result.model}] 可用：${result?.result ?? ""}${cacheNote}`, "success");
       } else {
-        showToast(`视觉模型测试失败：${result?.message ?? "未知错误"}${result?.error ? `（${result.error}）` : ""}`, "error");
+        showToast(`视觉模型测试失败：${result?.message ?? "未知错误"}${result?.error ? `（${result.error}）` : ""}${cacheNote}`, "error");
       }
     } catch (e: any) {
       showToast(`视觉模型测试异常：${e?.message ?? e}`, "error");
     } finally {
+      try {
+        providers = await engineCall<ProviderProfile[]>("settings.providers.list");
+        settings = { ...settings, ...(await engineCall<SettingsBag>("settings.get")) };
+      } catch (_e) {}
       testingVision = false;
+    }
+  }
+
+  function providerVisionModel(p: ProviderProfile) {
+    return (p.vision_model || p.model || "").trim();
+  }
+
+  function providerVisionCapability(p: ProviderProfile) {
+    const model = providerVisionModel(p);
+    return model ? p.capabilities?.[model] : undefined;
+  }
+
+  function providerVisionStatus(p: ProviderProfile) {
+    return providerVisionCapability(p)?.vision ?? "unknown";
+  }
+
+  function providerVisionStatusLabel(p: ProviderProfile) {
+    const status = providerVisionStatus(p);
+    return status === "pass" ? "pass" : status === "fail" ? "fail" : "unknown";
+  }
+
+  function providerVisionDetail(p: ProviderProfile) {
+    const capability = providerVisionCapability(p);
+    if (!capability) return "尚未测试";
+    const summary = capability.error || capability.message || "无摘要";
+    const time = capability.last_tested_at ? new Date(capability.last_tested_at).toLocaleString("zh-CN") : "未知时间";
+    return `${time} · ${summary}`;
+  }
+
+  async function clearProviderCapabilities(provider?: string) {
+    clearingCapabilities = provider || "__all__";
+    try {
+      await engineCall("settings.providers.capabilities.clear", provider ? { provider } : {});
+      providers = await engineCall<ProviderProfile[]>("settings.providers.list");
+      showToast(provider ? "能力缓存已清除" : "全部供应商能力缓存已清除", "success");
+    } catch (e: any) {
+      showToast(`清除能力缓存失败：${e?.message ?? e}`, "error");
+    } finally {
+      clearingCapabilities = null;
     }
   }
 
@@ -868,6 +925,12 @@
                       <div><span><Icon name="eye" size={13} />视觉模型</span><strong>{p.vision_model || "跟随文本模型"}</strong></div>
                     </div>
 
+                    <div class="provider-capability" class:pass={providerVisionStatus(p) === "pass"} class:fail={providerVisionStatus(p) === "fail"}>
+                      <span>vision capability</span>
+                      <strong>{providerVisionStatusLabel(p)}</strong>
+                      <small>{providerVisionDetail(p)}</small>
+                    </div>
+
                     <div class="provider-endpoint"><span>API ENDPOINT</span><code>{p.base_url || "供应商默认地址"}</code></div>
 
                     <div class="provider-key">
@@ -877,6 +940,7 @@
 
                     <footer class="provider-footer">
                       <button class="btn btn-secondary btn-sm" onclick={() => testConnection(p)} disabled={testingProvider === p.name}><Icon name="activity" size={13} />{testingProvider === p.name ? "正在测试" : "测试连接"}</button>
+                      <button class="btn btn-secondary btn-sm" onclick={() => clearProviderCapabilities(p.name)} disabled={clearingCapabilities === p.name}><Icon name="refresh" size={13} />{clearingCapabilities === p.name ? "清除中" : "清除能力缓存"}</button>
                       {#if p.name !== settings.active_provider}<button class="btn btn-primary btn-sm" onclick={() => setActiveProvider(p.name)}><Icon name="check" size={13} />设为活动</button>{:else}<span class="active-note"><Icon name="check" size={13} />当前默认</span>{/if}
                       <button class="icon-btn delete-provider" onclick={() => deleteProvider(p.name)} title="删除供应商"><Icon name="trash" size={14} /></button>
                     </footer>
@@ -1287,6 +1351,11 @@
   .provider-models > div { display: flex; min-width: 0; flex-direction: column; padding: 8px; border-radius: 8px; background: var(--bg-subtle); }
   .provider-models span { display: flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 11px; }
   .provider-models strong { margin-top: 3px; overflow: hidden; color: var(--text-primary); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-capability { display: grid; grid-template-columns: auto auto; gap: 3px 8px; align-items: center; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; color: var(--text-tertiary); background: var(--bg-subtle); font-size: 11px; }
+  .provider-capability strong { justify-self: start; padding: 2px 7px; border-radius: 999px; color: var(--text-tertiary); background: var(--bg-hover); font-size: 11px; }
+  .provider-capability small { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-capability.pass strong { color: var(--success-color); background: var(--success-soft); }
+  .provider-capability.fail strong { color: var(--danger-color); background: var(--danger-soft); }
   .provider-endpoint { display: flex; flex-direction: column; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
   .provider-endpoint span { color: var(--text-tertiary); font-size: 10px; font-weight: 750; letter-spacing: .08em; }
   .provider-endpoint code { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

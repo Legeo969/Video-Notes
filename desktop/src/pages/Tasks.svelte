@@ -269,7 +269,7 @@
                   {:else if job.status === "cancelling"}
                     <button class="icon-btn danger-action" title="再次请求取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if canRetry(job)}
-                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />重新运行</button>
+                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />按原任务参数重试</button>
                   {:else}
                     <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
                   {/if}
@@ -304,7 +304,7 @@
             {:else if selectedJob.status === "cancelling"}
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />再次取消</button>
             {:else if canRetry(selectedJob)}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />重新运行</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />按原任务参数重试</button>
             {/if}
             {#if canDelete(selectedJob)}
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>
@@ -319,6 +319,7 @@
             <div><StatusPill status={selectedJob.status} /><span>{stageText[selectedJob.stage] || selectedJob.stage}</span></div>
             <strong>{Math.round(selectedJob.progress || 0)}%</strong>
             <div class="progress-track"><div class="progress-bar" style={`width:${selectedJob.progress || 0}%`}></div></div>
+            {#if ["running", "pausing", "cancelling"].includes(selectedJob.status)}<small>外部 HTTP 请求会在当前请求返回或超时后响应取消。</small>{/if}
           </div>
 
           <div class="detail-section">
