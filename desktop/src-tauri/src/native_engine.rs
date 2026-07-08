@@ -3560,6 +3560,7 @@ fn run_native_job(
     };
     profile.stages.push(t_gen.finish());
     checkpoint!("indexing", 95, "准备写入笔记");
+    let note = decode_markdown_image_paths(&note);
     if let Err(error) = fs::write(&note_path, note) {
         update_job(
             &jobs,
@@ -5780,6 +5781,76 @@ fn markdown_image_context(
         ));
     }
     context
+}
+
+fn decode_markdown_image_paths(text: &str) -> String {
+    // AI models sometimes URL-encode spaces (%20) and other characters
+    // in markdown image paths, making them unreadable on local filesystem.
+    // This function decodes the path portion of markdown image references.
+    let mut result = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // Find ']('
+            let mut j = i + 2;
+            let mut paren_open = None;
+            while j + 1 < bytes.len() {
+                if bytes[j] == b']' && bytes[j + 1] == b'(' {
+                    paren_open = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(start) = paren_open {
+                let mut depth: i32 = 1;
+                let mut end = start;
+                while end < bytes.len() && depth > 0 {
+                    if bytes[end] == b'(' {
+                        depth += 1;
+                    } else if bytes[end] == b')' {
+                        depth -= 1;
+                    }
+                    end += 1;
+                }
+                // Copy the image reference prefix up to the path
+                result.push_str(&text[i..start]);
+                // Decode the path portion
+                let path = &text[start..end - 1];
+                result.push_str(&decode_percent(path));
+                i = end - 1;
+            } else {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+fn decode_percent(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hi = (bytes[i + 1] as char).to_digit(16).unwrap_or(0);
+            let lo = (bytes[i + 2] as char).to_digit(16).unwrap_or(0);
+            out.push(char::from((hi * 16 + lo) as u8));
+            i += 3;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn ocr_text_by_frame(transcript: &str) -> HashMap<String, String> {
