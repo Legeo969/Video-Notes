@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD / v1.6.0 Release Candidate
+# Video Notes AI 多模态视频理解 PRD / v1.6.1 Hotfix Release
 
 ## 1. 背景
 
@@ -139,7 +139,7 @@ M1.5 只修正当前任务链路，不引入新的时间轴数据结构。
 
 M1.5 最初 baseline 是固定抽帧：每 60 秒 1 帧、最多 8 帧、OCR 和 Vision 复用同一批帧。该段只保留为历史验收背景。
 
-v1.6.0 当前行为以 M4 Adaptive Frame Sampling 为准：支持 fixed/adaptive frame mode、frame interval、max frames、scene change、fps frame number、去重与失败回退。`ocr_enabled=false && vision_enabled=true` 时仍会抽帧并向 note generation 提供可引用图片素材。
+v1.6.1 当前行为以 M4 Adaptive Frame Sampling 为准：支持 fixed/adaptive frame mode、frame interval、max frames、scene change、fps frame number、去重与失败回退。`ocr_enabled=false && vision_enabled=true` 时仍会抽帧并向 note generation 提供可引用图片素材。
 
 ### 5.3 Vision 调用
 
@@ -373,7 +373,7 @@ settings.vision.test
 - 不兼容模型返回失败 toast，并保留 provider error。
 - 测试不修改 provider 配置。
 - 测试不创建任务、不写入 transcript、不写入 notes。
-- v1.6.0 中 `settings.vision.test` 仍是 live probe，并可把测试结果写入 M7-lite capability cache；不自动推断模型能力，也不阻止用户继续运行任务。
+- v1.6.1 中 `settings.vision.test` 仍是 live probe，并可把测试结果写入 M7-lite capability cache；不自动推断模型能力，也不阻止用户继续运行任务。
 
 ## 7. 数据结构
 
@@ -530,7 +530,7 @@ marker 内容：
 ```json
 {
   "component": "ffmpeg-tools",
-  "manifest_version": "1.6.0",
+  "manifest_version": "1.6.1",
   "installed_at": "RFC3339"
 }
 ```
@@ -564,7 +564,7 @@ marker 内容：
 
 ### 7.7 产物目录
 
-v1.6.0 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
+v1.6.1 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
 
 AppData job workspace：
 
@@ -648,7 +648,7 @@ Documents\Video Notes AI\exports\
 - `collection.batch_process` 创建/使用 collection output folder，并让子任务把最终 Markdown 和被引用 assets 写入该目录。
 - `collection.export` 只导出 collection metadata/index summary；它不移动、不打包、不重排已生成的 child notes/assets。
 - 普通 `process.start` 仍写入常规 export/vault 目标；只有 collection batch 内部启动的子任务使用 collection output folder override。
-- v1.6.0 已记录 task config snapshot 和 lineage；collection child retry 应优先沿用原 collection association 和 output folder，仍需通过真实合集 smoke test 验证。
+- v1.6.1 已记录 task config snapshot 和 lineage；collection child retry 应优先沿用原 collection association 和 output folder，仍需通过真实合集 smoke test 验证。
 
 ### 7.9 Collection batch state model
 
@@ -705,21 +705,21 @@ else active
 
 ## 8. 测试计划 / Release Smoke Test
 
-v1.6.0 当前 release gate 证据：
+v1.6.1 当前 release gate 证据：
 
 | Gate | Required result | Current status | Evidence |
 |---|---|---|---|
-| Version metadata | package / Tauri / Cargo 均为 1.6.0 | pending | 本次 bump：`desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/Cargo.lock`, `desktop/src-tauri/tauri.conf.json` |
+| Version metadata | package / Tauri / Cargo 均为 1.6.1 | pending | 本次 bump：`desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/Cargo.lock`, `desktop/src-tauri/tauri.conf.json` |
 | bundle identifier | 不以 `.app` 结尾 | pass | `com.videonotesai.desktop` |
 | product verification | 自动验证 / 对抗审查通过 | pass | 分支验证与对抗审查已通过；本次版本 bump 后未运行 build |
 | release build | NSIS installer generated | pending | 待运行 `build_windows_release.ps1` |
-| installer artifact | 1.6.0 installer exists | pending | 待生成 `Video Notes AI_1.6.0_x64-setup.exe` |
+| installer artifact | 1.6.1 installer exists | pending | 待生成 `Video Notes AI_1.6.1_x64-setup.exe` |
 | real collection smoke test | install 后真实合集通过 | pending | 需用户手工确认最终包 |
 
 预期安装包路径：
 
 ```text
-desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.0_x64-setup.exe
+desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.1_x64-setup.exe
 ```
 
 仍需完成的 release smoke test：
@@ -736,7 +736,7 @@ desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.0_x64-setup.exe
 - AI 供应商 `/models` 成功时展示真实列表；失败时显示错误，不伪造列表、不覆盖手动输入。
 - OCR “刷新模型”只刷新内置 PaddleOCR 官方静态列表，并提示官方无 model discovery endpoint。
 
-后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。installer 构建和真实合集 smoke test 通过后，v1.6.0 可发布 GitHub Release。
+后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。installer 构建和真实合集 smoke test 通过后，v1.6.1 作为 hotfix 可发布 GitHub Release。
 
 ### 8.1 Rust native engine
 
@@ -813,7 +813,7 @@ desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.0_x64-setup.exe
 
 ## 10. 后续方向
 
-后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.6.0 为准。
+后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.6.1 为准。
 
 ### M3：Timeline Context（已完成）
 
@@ -889,7 +889,7 @@ TimelineSegment {
 - 不设置固定 `max_tokens` 上限，避免长教程被硬截断。
 - 最终 Markdown 生成缓存已移除：不再维护 `generation-cache`，每次用当前 timeline/OCR/Vision 输入直接生成。
 
-### M4.7：Artifact Layout / Storage Cleanup / Task Records / Task Actions（v1.6.0 已完成发布范围）
+### M4.7：Artifact Layout / Storage Cleanup / Task Records / Task Actions（v1.6.1 已完成发布范围）
 
 已完成：
 
@@ -913,7 +913,7 @@ TimelineSegment {
 - task action 后续增强：跨重启 resume 与更完整 partial artifact cleanup policy。
 - full provider capability cache。
 
-v1.6.0 明确不承诺：OS thread suspension、mid-command pause、跨重启继续、强制中断所有不可取消的 blocking HTTP request。
+v1.6.1 明确不承诺：OS thread suspension、mid-command pause、跨重启继续、强制中断所有不可取消的 blocking HTTP request。
 
 ### M4.8：Runtime Component / Provider UX Fixes（已完成）
 
@@ -985,7 +985,7 @@ evidence: UI node labels, parameter panel
 
 ### M7：Provider Capability Matrix（M7-lite 已完成）
 
-目标：沉淀不同 OpenAI-compatible provider/model 的视觉能力，减少用户试错。v1.6.0 已完成 M7-lite：保存 `settings.vision.test` 结果，支持刷新/清除，不保存 API key，不按模型名硬编码判断。
+目标：沉淀不同 OpenAI-compatible provider/model 的视觉能力，减少用户试错。v1.6.1 已完成 M7-lite：保存 `settings.vision.test` 结果，支持刷新/清除，不保存 API key，不按模型名硬编码判断。
 
 能力字段：
 
@@ -1001,10 +1001,10 @@ last_error
 
 范围：
 
-- `settings.vision.test` 的结果可写入 capability cache。（v1.6.0 已完成）
+- `settings.vision.test` 的结果可写入 capability cache。（v1.6.1 已完成）
 - 创建任务前根据 capability 给出提示。（M7-lite 已完成基础提示，完整矩阵仍可继续增强）
 - 不根据模型名硬编码能力，只使用测试结果和用户配置。
-- capability cache 可被用户刷新或清除。（v1.6.0 已完成）
+- capability cache 可被用户刷新或清除。（v1.6.1 已完成）
 
 验收：
 
