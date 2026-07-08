@@ -5818,7 +5818,16 @@ fn decode_markdown_image_paths(text: &str) -> String {
                 // Keep relative assets/ paths as-is (Obsidian resolves
                 // these relative to the note's directory on disk).
                 // Only URL-decode to handle AI models that encode %20 etc.
-                result.push_str(&decoded);
+                // Wrap in angle brackets to handle spaces and special chars
+                // in paths (e.g. "03. Prepare..." gets truncated at the period
+                // by some markdown parsers). If AI already wrapped them,
+                // preserve the existing angle brackets.
+                let stripped = decoded.trim_start_matches('<').trim_end_matches('>');
+                if stripped.starts_with("assets/") || stripped.starts_with("./assets/") {
+                    result.push_str(&format!("<{}>", stripped));
+                } else {
+                    result.push_str(&decoded);
+                }
                 i = end - 1;
             } else {
                 result.push(bytes[i] as char);
