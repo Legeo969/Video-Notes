@@ -131,6 +131,12 @@ struct OcrRuntimeConfig {
     model: String,
 }
 
+struct CollectionBatchItem {
+    id: u64,
+    input: String,
+    title: String,
+}
+
 #[derive(Clone, Debug)]
 struct TimelineSegment {
     start_sec: f64,
@@ -660,10 +666,7 @@ impl NativeEngine {
     fn provider_models(&self, params: Value) -> Result<Value, String> {
         let raw = self.read_settings();
         let profile = provider_profile_for_request(&raw, &params)?;
-        let models = match fetch_provider_models(&profile) {
-            Ok(models) => models,
-            Err(_) => clean_models(vec![profile.model.clone(), profile.vision_model.clone()]),
-        };
+        let models = fetch_provider_models(&profile)?;
         Ok(json!(models))
     }
 
@@ -1309,7 +1312,9 @@ impl NativeEngine {
         let job_controls = self.job_controls.clone();
         let app_handle = self.app_handle.clone();
         let settings = self.read_settings();
-        let output_dir = effective_note_output_dir(&settings, &self.default_export_dir);
+        let output_dir = string_param(&params, "output_dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| effective_note_output_dir(&settings, &self.default_export_dir));
         let runtime_dir = self.runtime_dir.clone();
         let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
         let whisper_model =
@@ -1409,30 +1414,40 @@ impl NativeEngine {
     fn process_pause(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
         let control = self.job_control(id)?;
-        self.transition_job_action(
+        let previous_pause = control.pause_requested.swap(true, Ordering::SeqCst);
+        if let Err(error) = self.transition_job_action(
             id,
             &["pending", "running"],
             "pausing",
             None,
             "已请求暂停；将在当前阶段结束后暂停",
             false,
-        )?;
-        control.pause_requested.store(true, Ordering::SeqCst);
+        ) {
+            control
+                .pause_requested
+                .store(previous_pause, Ordering::SeqCst);
+            return Err(error);
+        }
         Ok(json!(true))
     }
 
     fn process_cancel(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
         let control = self.job_control(id)?;
-        self.transition_job_action(
+        let previous_cancel = control.cancel_requested.swap(true, Ordering::SeqCst);
+        if let Err(error) = self.transition_job_action(
             id,
             &["pending", "running", "pausing", "paused", "cancelling"],
             "cancelling",
             None,
             "已请求取消；将在安全检查点停止",
             false,
-        )?;
-        control.cancel_requested.store(true, Ordering::SeqCst);
+        ) {
+            control
+                .cancel_requested
+                .store(previous_cancel, Ordering::SeqCst);
+            return Err(error);
+        }
         control.condvar.notify_all();
         Ok(json!(true))
     }
@@ -1440,15 +1455,20 @@ impl NativeEngine {
     fn process_resume(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
         let control = self.job_control(id)?;
-        self.transition_job_action(
+        let previous_pause = control.pause_requested.swap(false, Ordering::SeqCst);
+        if let Err(error) = self.transition_job_action(
             id,
             &["pausing", "paused"],
             "running",
             None,
             "继续执行任务",
             false,
-        )?;
-        control.pause_requested.store(false, Ordering::SeqCst);
+        ) {
+            control
+                .pause_requested
+                .store(previous_pause, Ordering::SeqCst);
+            return Err(error);
+        }
         control.condvar.notify_all();
         Ok(json!(true))
     }
@@ -1697,7 +1717,7 @@ impl NativeEngine {
     }
 
     fn collection_list(&self) -> Result<Value, String> {
-        let store = self.read_collection_store();
+        let store = self.synced_collection_store(None)?;
         let collections = store
             .get("collections")
             .and_then(Value::as_array)
@@ -1723,7 +1743,7 @@ impl NativeEngine {
 
     fn collection_get(&self, params: Value) -> Result<Value, String> {
         let id = required_u64(&params, "id")?;
-        let store = self.read_collection_store();
+        let store = self.synced_collection_store(Some(id))?;
         let collection = find_collection(&store, id)
             .cloned()
             .ok_or_else(|| format!("Collection {id} not found"))?;
@@ -1739,6 +1759,29 @@ impl NativeEngine {
             "item_count": items.len(),
             "items": items,
         }))
+    }
+
+    fn synced_collection_store(
+        &self,
+        collection_id: Option<u64>,
+    ) -> Result<Map<String, Value>, String> {
+        let mut store = self.read_collection_store();
+        let jobs = self
+            .jobs
+            .lock()
+            .map(|jobs| jobs.clone())
+            .unwrap_or_default();
+        if let Some(collections) = store.get_mut("collections").and_then(Value::as_array_mut) {
+            for collection in collections {
+                let id = collection.get("id").and_then(Value::as_u64).unwrap_or(0);
+                if collection_id.is_some() && collection_id != Some(id) {
+                    continue;
+                }
+                sync_collection_value_from_jobs(collection, &jobs);
+            }
+        }
+        self.write_collection_store(store.clone())?;
+        Ok(store)
     }
 
     fn collection_create(&self, params: Value) -> Result<Value, String> {
@@ -1933,6 +1976,7 @@ impl NativeEngine {
         let items = items
             .into_iter()
             .filter_map(|item| {
+                let item_id = item.get("id")?.as_u64()?;
                 let input = item.get("input")?.as_str()?.trim().to_string();
                 if input.is_empty() {
                     return None;
@@ -1942,7 +1986,11 @@ impl NativeEngine {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                Some((input, title))
+                Some(CollectionBatchItem {
+                    id: item_id,
+                    input,
+                    title,
+                })
             })
             .collect::<Vec<_>>();
         if items.is_empty() {
@@ -1955,12 +2003,23 @@ impl NativeEngine {
             .and_then(Value::as_u64)
             .unwrap_or(1)
             .clamp(1, 2) as usize;
+        let collection_name = detail
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("collection");
+        let output_dir = collection_output_dir(
+            &self.read_settings(),
+            &self.default_export_dir,
+            collection_name,
+            id,
+        );
         let count = items.len();
         let batch_job_id = format!("batch-{id}-{}", Utc::now().timestamp());
         let runner = self.clone();
         let _ = self.set_collection_status(id, "processing");
+        let batch_output_dir = output_dir.clone();
         std::thread::spawn(move || {
-            runner.run_collection_batch(id, items, max_concurrency);
+            runner.run_collection_batch(id, items, max_concurrency, batch_output_dir);
         });
         Ok(json!({
             "batch_job_id": batch_job_id,
@@ -1968,24 +2027,46 @@ impl NativeEngine {
             "count": count,
             "queued_count": count,
             "max_concurrency": max_concurrency,
+            "output_dir": output_dir.to_string_lossy(),
         }))
     }
 
-    fn run_collection_batch(&self, id: u64, items: Vec<(String, String)>, max_concurrency: usize) {
+    fn run_collection_batch(
+        &self,
+        id: u64,
+        items: Vec<CollectionBatchItem>,
+        max_concurrency: usize,
+        output_dir: PathBuf,
+    ) {
         let mut pending = items.into_iter();
-        let mut active: Vec<u64> = Vec::new();
+        let mut active: Vec<(u64, u64)> = Vec::new();
         let mut pending_done = false;
         loop {
             while active.len() < max_concurrency && !pending_done {
                 match pending.next() {
-                    Some((input, title)) => {
-                        match self.process_start(json!({ "input": input, "title": title })) {
+                    Some(item) => {
+                        let item_id = item.id;
+                        match self.process_start(json!({
+                            "input": item.input,
+                            "title": item.title,
+                            "output_dir": output_dir.to_string_lossy(),
+                        })) {
                             Ok(result) => {
                                 if let Some(run_id) = result.get("job_id").and_then(Value::as_u64) {
-                                    active.push(run_id);
+                                    let _ = self.update_collection_item_start(id, item_id, run_id);
+                                    active.push((item_id, run_id));
+                                } else {
+                                    let _ = self.update_collection_item_failed(
+                                        id,
+                                        item_id,
+                                        "process.start did not return job_id",
+                                    );
                                 }
                             }
-                            Err(_) => continue,
+                            Err(error) => {
+                                let _ = self.update_collection_item_failed(id, item_id, &error);
+                                continue;
+                            }
                         }
                     }
                     None => pending_done = true,
@@ -1997,19 +2078,111 @@ impl NativeEngine {
             }
 
             if !active.is_empty() {
-                if let Ok(jobs) = self.jobs.lock() {
-                    active.retain(|run_id| {
-                        jobs.iter()
-                            .find(|job| job.id == *run_id)
-                            .map(|job| !is_terminal_status(&job.status))
-                            .unwrap_or(false)
-                    });
+                let snapshots = if let Ok(jobs) = self.jobs.lock() {
+                    active
+                        .iter()
+                        .filter_map(|(item_id, run_id)| {
+                            jobs.iter()
+                                .find(|job| job.id == *run_id)
+                                .cloned()
+                                .map(|job| (*item_id, job))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                for (item_id, job) in &snapshots {
+                    let _ = self.update_collection_item_from_job(id, *item_id, job);
                 }
+                active.retain(|(_, run_id)| {
+                    snapshots
+                        .iter()
+                        .find(|(_, job)| job.id == *run_id)
+                        .map(|(_, job)| !is_terminal_status(&job.status))
+                        .unwrap_or(false)
+                });
             }
 
             std::thread::sleep(Duration::from_millis(500));
         }
-        let _ = self.set_collection_status(id, "active");
+        let _ = self.refresh_collection_status(id);
+    }
+
+    fn update_collection_item_start(
+        &self,
+        collection_id: u64,
+        item_id: u64,
+        run_id: u64,
+    ) -> Result<(), String> {
+        self.update_collection_item(collection_id, item_id, |item| {
+            item["run_id"] = json!(run_id);
+            item["status"] = json!("pending");
+            item["progress"] = json!(0);
+            if let Some(object) = item.as_object_mut() {
+                object.remove("error_message");
+                object.remove("output_path");
+            }
+        })
+    }
+
+    fn update_collection_item_failed(
+        &self,
+        collection_id: u64,
+        item_id: u64,
+        error: &str,
+    ) -> Result<(), String> {
+        self.update_collection_item(collection_id, item_id, |item| {
+            item["status"] = json!("failed");
+            item["progress"] = json!(100);
+            item["error_message"] = json!(error);
+        })
+    }
+
+    fn update_collection_item_from_job(
+        &self,
+        collection_id: u64,
+        item_id: u64,
+        job: &NativeJob,
+    ) -> Result<(), String> {
+        self.update_collection_item(collection_id, item_id, |item| {
+            item["run_id"] = json!(job.id);
+            item["job_id"] = json!(job.job_id.clone());
+            item["status"] = json!(job.status.clone());
+            item["progress"] = json!(job.progress);
+            if let Some(output_path) = &job.output_path {
+                item["output_path"] = json!(output_path);
+            }
+            if let Some(error_message) = &job.error_message {
+                item["error_message"] = json!(error_message);
+            } else if let Some(object) = item.as_object_mut() {
+                object.remove("error_message");
+            }
+        })
+    }
+
+    fn update_collection_item<F>(
+        &self,
+        collection_id: u64,
+        item_id: u64,
+        update: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&mut Value),
+    {
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, collection_id)
+            .ok_or_else(|| format!("Collection {collection_id} not found"))?;
+        let items = collection
+            .get_mut("items")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "items must be an array".to_string())?;
+        let item = items
+            .iter_mut()
+            .find(|item| item.get("id").and_then(Value::as_u64) == Some(item_id))
+            .ok_or_else(|| format!("Collection item {item_id} not found"))?;
+        update(item);
+        collection["status"] = json!(aggregate_collection_status(collection));
+        self.write_collection_store(store)
     }
 
     fn set_collection_status(&self, id: u64, status: &str) -> Result<(), String> {
@@ -2017,6 +2190,14 @@ impl NativeEngine {
         let collection = find_collection_mut(&mut store, id)
             .ok_or_else(|| format!("Collection {id} not found"))?;
         collection["status"] = json!(status);
+        self.write_collection_store(store)
+    }
+
+    fn refresh_collection_status(&self, id: u64) -> Result<(), String> {
+        let mut store = self.read_collection_store();
+        let collection = find_collection_mut(&mut store, id)
+            .ok_or_else(|| format!("Collection {id} not found"))?;
+        collection["status"] = json!(aggregate_collection_status(collection));
         self.write_collection_store(store)
     }
 
@@ -3135,6 +3316,22 @@ fn effective_note_output_dir(settings: &Map<String, Value>, default_export_dir: 
         .unwrap_or_else(|| default_export_dir.to_path_buf())
 }
 
+fn collection_output_dir(
+    settings: &Map<String, Value>,
+    default_export_dir: &Path,
+    collection_name: &str,
+    collection_id: u64,
+) -> PathBuf {
+    let name = if collection_name.trim().is_empty() {
+        "collection"
+    } else {
+        collection_name
+    };
+    effective_note_output_dir(settings, default_export_dir)
+        .join("collections")
+        .join(format!("{}-{collection_id}", sanitize_filename(name)))
+}
+
 fn project_root() -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let candidate = manifest_dir.join("..").join("..");
@@ -3647,6 +3844,72 @@ fn find_collection_mut(store: &mut Map<String, Value>, id: u64) -> Option<&mut V
         .as_array_mut()?
         .iter_mut()
         .find(|collection| collection.get("id").and_then(Value::as_u64) == Some(id))
+}
+
+fn sync_collection_value_from_jobs(collection: &mut Value, jobs: &[NativeJob]) {
+    if let Some(items) = collection.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            let Some(run_id) = item.get("run_id").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(job) = jobs.iter().find(|job| job.id == run_id) else {
+                continue;
+            };
+            item["run_id"] = json!(job.id);
+            item["job_id"] = json!(job.job_id.clone());
+            item["status"] = json!(job.status.clone());
+            item["progress"] = json!(job.progress);
+            if let Some(output_path) = &job.output_path {
+                item["output_path"] = json!(output_path);
+            }
+            if let Some(error_message) = &job.error_message {
+                item["error_message"] = json!(error_message);
+            } else if let Some(object) = item.as_object_mut() {
+                object.remove("error_message");
+            }
+        }
+    }
+    collection["status"] = json!(aggregate_collection_status(collection));
+}
+
+fn aggregate_collection_status(collection: &Value) -> &'static str {
+    let items = collection
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if items.is_empty() {
+        return "active";
+    }
+    let statuses = items
+        .iter()
+        .map(|item| {
+            item.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+        })
+        .collect::<Vec<_>>();
+    if statuses.iter().any(|status| *status == "cancelling") {
+        "cancelling"
+    } else if statuses.iter().any(|status| *status == "pausing") {
+        "pausing"
+    } else if statuses
+        .iter()
+        .any(|status| matches!(*status, "pending" | "running"))
+    {
+        "processing"
+    } else if statuses.iter().any(|status| *status == "paused") {
+        "paused"
+    } else if statuses.iter().all(|status| *status == "completed") {
+        "completed"
+    } else if statuses
+        .iter()
+        .any(|status| matches!(*status, "failed" | "cancelled" | "interrupted"))
+    {
+        "failed"
+    } else {
+        "active"
+    }
 }
 
 fn collection_item(id: u64, input: &str) -> Value {
@@ -6846,8 +7109,56 @@ mod tests {
         let output_path = PathBuf::from(job["output_path"].as_str().unwrap());
         let transcript_path = PathBuf::from(job["transcript_path"].as_str().unwrap());
         assert!(output_path.is_file());
+        assert_eq!(output_path.parent(), Some(root.join("exports").as_path()));
         assert!(transcript_path.is_file());
         assert_eq!(job["progress"], 100);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn process_start_accepts_output_dir_override() {
+        let (engine, root) = temp_engine();
+        fs::create_dir_all(root.join("input")).unwrap();
+        let input = root.join("input").join("lesson.mp4");
+        fs::write(&input, "fake video bytes").unwrap();
+        let output_dir = root.join("exports").join("collections").join("Course-1");
+
+        engine
+            .call(
+                "process.start",
+                json!({
+                    "input": input.to_string_lossy(),
+                    "title": "Lesson One",
+                    "output_dir": output_dir.to_string_lossy(),
+                }),
+            )
+            .expect("method handled")
+            .expect("start succeeds");
+
+        let mut completed = None;
+        for _ in 0..50 {
+            let jobs = engine
+                .call("process.list", json!({ "limit": 10 }))
+                .expect("method handled")
+                .expect("list succeeds");
+            let first = jobs.as_array().unwrap().first().cloned();
+            if first
+                .as_ref()
+                .and_then(|job| job.get("status"))
+                .and_then(Value::as_str)
+                == Some("completed")
+            {
+                completed = first;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let job = completed.expect("job completed");
+        let output_path = PathBuf::from(job["output_path"].as_str().unwrap());
+        assert!(output_path.is_file());
+        assert_eq!(output_path.parent(), Some(output_dir.as_path()));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -6990,6 +7301,12 @@ mod tests {
         assert_eq!(queued["queued_count"], 3);
         assert_eq!(queued["max_concurrency"], 1);
         assert_eq!(queued["run_ids"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            PathBuf::from(queued["output_dir"].as_str().unwrap()),
+            root.join("exports")
+                .join("collections")
+                .join(format!("Course-{id}"))
+        );
 
         std::thread::sleep(Duration::from_millis(100));
         let jobs = engine.jobs.lock().unwrap();
@@ -6998,6 +7315,44 @@ mod tests {
             "batch runner should not synchronously start all jobs"
         );
         drop(jobs);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collection_item_progress_updates_from_native_job() {
+        let (engine, root) = temp_engine();
+        let created = engine
+            .call(
+                "collection.create",
+                json!({ "name": "Course", "items": ["a.mp4"] }),
+            )
+            .expect("method handled")
+            .expect("create succeeds");
+        let collection_id = created["id"].as_u64().unwrap();
+        let mut job = test_job(9, "completed");
+        job.progress = 100;
+        job.output_path = Some(
+            root.join("exports")
+                .join("a.md")
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        engine
+            .update_collection_item_from_job(collection_id, 1, &job)
+            .expect("item update succeeds");
+
+        let detail = engine
+            .call("collection.get", json!({ "id": collection_id }))
+            .expect("method handled")
+            .expect("get succeeds");
+        let item = &detail["items"][0];
+        assert_eq!(item["run_id"], 9);
+        assert_eq!(item["job_id"], job.job_id);
+        assert_eq!(item["status"], "completed");
+        assert_eq!(item["progress"], 100);
+        assert_eq!(item["output_path"], job.output_path.unwrap());
 
         let _ = fs::remove_dir_all(root);
     }

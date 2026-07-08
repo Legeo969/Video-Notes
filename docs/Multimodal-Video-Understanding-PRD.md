@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD / v1.5.8 验收状态
+# Video Notes AI 多模态视频理解 PRD / v1.5.9 Release Candidate
 
 ## 1. 背景
 
@@ -18,7 +18,25 @@
 - M1.5：修正并验收当前视觉理解任务链路。
 - M2：补齐设置页视觉模型测试能力。
 
-截至 v1.5.8，M1.5/M2 已完成，并继续落地了 timeline context、adaptive frame sampling、segment-level vision、学习型笔记 prompt、清洁 artifact 布局与 storage cleanup。本文保留原始里程碑定义，同时记录当前验收状态与剩余缺口。
+截至 v1.5.9，M1.5/M2 已完成，并继续落地了 timeline context、adaptive frame sampling、segment-level vision、学习型笔记 prompt、清洁 artifact 布局、storage cleanup、任务记录持久化、任务控制、runtime component marker、provider 表单修正、合集批处理资源保护、合集独立导出目录和合集条目进度同步。
+
+本文是当前 release candidate 的产品/技术验收记录，不表示路线图全部完成。v1.5.9 的发布边界是“核心多模态生成链路、导出产物布局、本机任务中心、合集批处理、合集独立导出目录和合集条目进度同步可用”；M7 Provider Capability Matrix、精确重试 settings snapshot、跨重启 resume、process tree kill、HTTP request cancellation 等仍属于后续版本范围。
+
+## 1.1 v1.5.9 发布结论
+
+当前结论：**v1.5.9 代码实现已通过自动化验证并重新打包；真实合集 smoke test 仍是发布前最后门禁。**
+
+发布前必须确认：
+
+- 真实合集批处理默认串行执行，不爆 CPU/RAM/GPU。
+- 队列能自动从一个视频推进到下一个视频。
+- 成功任务输出 Markdown 和被引用 frames 到 Obsidian/export 或 collection folder。
+- 中间文件只留在 AppData job workspace，不污染 Obsidian/export 根目录。
+- 失败任务不会阻塞整个 batch queue。
+- Tasks 页面状态、进度、实时已用时间、失败信息和历史记录可理解。
+- Collections 页面条目状态和合集 `workProgress` 能随子任务推进更新，不再把 `completed/total` 误当作处理进度。
+
+如果真实合集 smoke test 通过，v1.5.9 可作为 GitHub Release 发布；如果失败，优先修真实运行问题，不继续堆新功能。
 
 ## 2. 目标
 
@@ -36,16 +54,17 @@
 
 1. 不做实时视频流理解。
 2. 不上传完整视频给模型。
-3. 不实现专有 SDK，只支持 OpenAI-compatible `chat/completions` + `image_url`。
+3. v1.5.9 不实现专有 SDK；自动笔记 pipeline 只承诺 OpenAI-compatible `chat/completions` + `image_url`。Gemini / Anthropic / Responses 等非 OpenAI-compatible adapter 不属于 v1.5.9 可用范围，除非后端明确实现。
 4. 不做自动模型下载。
-5. 不做自动 provider capability 推断；只使用测试结果、用户配置和明确错误信息。
+5. 不做自动 provider capability 推断；`settings.vision.test` 只是 live probe，不持久化 capability cache，不自动分类模型。
 6. 不保证所有 OpenAI-compatible 服务都兼容，只要求失败信息可见、任务可降级。
 7. 不保留最终 Markdown 生成缓存；最终笔记每次直接调用当前 provider 生成，避免 OCR/Vision/timeline 非确定性导致缓存污染。
 8. Task actions 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume、不做 exact historical settings replay。
 9. Task actions phase 2 只 kill 当前受控 direct child process；不保证终止 grandchildren/process tree，也不 kill blocking HTTP request。
 10. 合集 batch queue 不做持久化与跨重启恢复；已启动的子任务仍按任务中心现有机制持久化。
+11. 不保证所有供应商都支持远程模型发现；AI 供应商 `/models` 读取是真实接口探测，失败时必须报错且不得伪造列表或覆盖用户手动输入。PaddleOCR 模型刷新仅重载内置官方静态列表。
 
-## 4. 当前实现状态（v1.5.8）
+## 4. 当前实现状态（v1.5.9）
 
 当前代码已包含以下能力：
 
@@ -70,16 +89,32 @@
 - Task actions phase 2 已完成本地 pipeline 命令 direct child kill：yt-dlp、ffmpeg/ffprobe、whisper-cli、tesseract 在受控 helper 内运行，取消时 kill direct child 并回收进程。
 - 任务记录已持久化到 `%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json`，重启后历史任务仍可见。
 - `jobs.json` 写入使用 atomic write，任务控制状态写入避免 stale snapshot 覆盖。
-- 重启前仍 active 的任务会加载为 `interrupted`，不假装继续运行。
+- 重启前仍 non-terminal 的任务会加载为 `interrupted`，不假装继续运行。
 - Runtime component 安装成功后写 `.runtime-component.json` marker，更新判断基于 manifest version，而不是直接比较工具真实版本和 GitHub latest。
 - 新增 AI 供应商表单不再自动填入 OpenAI 默认 Base URL / model / vision model；切换 API 类型也不覆盖用户输入。
+- AI 供应商表单可调用供应商真实 `/models` endpoint 读取模型；读取失败不 fallback 为内置推荐或当前输入值，不覆盖用户手动输入的精确 `model` / `vision_model`。
+- PaddleOCR 模型刷新只重载内置官方静态模型列表；官方 hosted API 未提供 model discovery endpoint。
 - 合集导入文件夹只创建合集，不自动启动任务；合集批量处理改为后台队列，默认串行处理，最多并发 2。应用重启后不恢复 batch queue，但已启动子任务仍保留在任务中心持久化记录中。
+- 合集条目以 `NativeJob` 为运行状态权威来源，`CollectionItem` 只是 durable snapshot；`collection.get/list_items` 返回前按 `run_id` 做 read-through sync。
+- 合集 UI 区分 `successProgress` 与 `workProgress`，running/pausing/paused/failed/cancelled 不再导致合集处理进度长期显示 0%。
 
 当前仍未完成或需实测的缺口：
 
+- 真实合集 release smoke test 仍需最终确认：资源占用、队列推进、失败隔离、暂停语义、实时进度、collection folder 导出质量。
 - Task actions 仍不支持精确 settings snapshot 重放、跨重启继续、OS thread suspension、mid-command pause、process tree kill 或 HTTP request kill；暂停只在当前阶段结束后的安全检查点生效。
 - M7 Provider Capability Matrix 尚未完成：视觉测试结果暂未沉淀为可刷新/清除的 capability cache。
 - OpenAI-compatible provider 差异仍需通过设置页测试和任务降级路径暴露，不做模型名硬编码判断。
+- 合集任务的最终笔记产物已支持写入独立 collection folder，方便整理、移动和导入 Obsidian；仍需真实合集 smoke test 验证路径、图片引用和失败隔离。
+
+v1.5.9 发布范围不包含：
+
+- 精确复现旧任务 provider/model/OCR/frame 配置的 retry。
+- app 重启后继续 paused/running 任务。
+- 终止 native child 的 grandchildren/process tree。
+- 终止正在等待响应的 blocking HTTP request。
+- provider/model capability cache。
+
+这些项目进入 v1.5.9+ 路线图。
 
 ## 5. M1.5：视觉理解任务链路修正
 
@@ -99,22 +134,11 @@ M1.5 只修正当前任务链路，不引入新的时间轴数据结构。
 → 生成 Markdown 笔记
 ```
 
-### 5.2 抽帧规则
+### 5.2 抽帧规则（历史 M1.5 baseline）
 
-默认规则：
+M1.5 最初 baseline 是固定抽帧：每 60 秒 1 帧、最多 8 帧、OCR 和 Vision 复用同一批帧。该段只保留为历史验收背景。
 
-- 每 60 秒抽 1 帧。
-- 最多 8 帧。
-- 输出到 `<note-stem>-<job-id>-frames`。
-- OCR 和 Vision 复用同一批帧。
-- 如果 OCR 关闭但 Vision 开启，仍然抽帧。
-
-本阶段不做：
-
-- 用户可配置抽帧间隔。
-- 用户可配置最大帧数。
-- 场景变化抽帧。
-- 开头/结尾/章节边界抽帧。
+v1.5.9 当前行为以 M4 Adaptive Frame Sampling 为准：支持 fixed/adaptive frame mode、frame interval、max frames、scene change、fps frame number、去重与失败回退。`ocr_enabled=false && vision_enabled=true` 时仍会抽帧并向 note generation 提供可引用图片素材。
 
 ### 5.3 Vision 调用
 
@@ -348,6 +372,7 @@ settings.vision.test
 - 不兼容模型返回失败 toast，并保留 provider error。
 - 测试不修改 provider 配置。
 - 测试不创建任务、不写入 transcript、不写入 notes。
+- v1.5.9 中 `settings.vision.test` 是 live probe；不持久化 capability cache，不自动推断模型能力，也不阻止用户继续运行任务。
 
 ## 7. 数据结构
 
@@ -393,8 +418,10 @@ interrupted   应用重启或进程中断后恢复出的终态记录
 状态规则：
 
 - `completed` / `failed` / `cancelled` / `interrupted` 是 terminal status。
-- `pending` / `running` / `pausing` / `paused` / `cancelling` 是 active status。
-- app 启动加载历史记录时，active status 一律转为 `interrupted`，避免假装任务仍在运行或可跨重启继续。
+- `pending` / `running` / `pausing` / `paused` / `cancelling` 是 non-terminal / controllable status，不能直接删除。
+- `pending` / `running` / `pausing` / `cancelling` 是 running-like status，用于“正在执行/等待边界/取消中”统计。
+- `paused` 是 non-terminal 但不是 running-like；它表示 worker 已在 checkpoint 停住，可继续或取消。
+- app 启动加载历史记录时，non-terminal status 一律转为 `interrupted`，避免假装任务仍在运行或可跨重启继续。
 - `paused` 不写 `completed_at`；terminal status 写 `completed_at`。
 - `can_resume=true` 只允许出现在 `paused`。
 
@@ -452,13 +479,15 @@ process.retry
 
 - 允许状态：`pending` / `running`。
 - 立即转为 `pausing`。
+- `pause_requested=true` 必须先于 `status=pausing` 写入，避免 worker 在状态变化和 flag 变化之间越过 checkpoint。
 - worker 到达安全检查点后转为 `paused`，并设置 `can_resume=true`。
-- 不暂停当前正在执行的 `ffmpeg` / `whisper-cli` / `yt-dlp` / HTTP request。
+- 不暂停当前正在执行的 `ffmpeg` / `whisper-cli` / `yt-dlp` / `tesseract` / HTTP request。
 
 `process.resume`：
 
 - 允许状态：`pausing` / `paused`。
-- 清除 pause request，唤醒暂停中的 worker。
+- `pausing + resume` 表示撤销尚未生效的暂停请求；任务可能从未停住。
+- `paused + resume` 表示唤醒 checkpoint wait 并继续 pipeline。
 - 任务继续后 `can_resume=false`。
 
 `process.cancel`：
@@ -478,7 +507,7 @@ process.retry
 
 `process.delete` 防护：
 
-- backend 拒绝删除 active status 任务。
+- backend 拒绝删除 non-terminal status 任务。
 - 用户需要先取消或等待任务进入 terminal status 后再删除记录。
 
 ### 7.5 Runtime Component 状态
@@ -500,7 +529,7 @@ marker 内容：
 ```json
 {
   "component": "ffmpeg-tools",
-  "manifest_version": "1.5.8",
+  "manifest_version": "1.5.9",
   "installed_at": "RFC3339"
 }
 ```
@@ -526,11 +555,15 @@ marker 内容：
 
 - 加载已有 provider 的 name、type、base_url、model、vision_model。
 - API key 不明文回填；用户可输入新 key 覆盖。
-- 模型发现功能保留，但发现失败不修改当前表单值。
+- “读取模型”只调用供应商真实 `{base_url}/models` endpoint。
+- `/models` 成功时，返回的模型 ID 可用于下拉选择文本模型和视觉模型。
+- `/models` 失败时必须显示错误，不 fallback 为当前 `model` / `vision_model`，不使用内置推荐列表伪造结果。
+- 手动输入的精确 `model` / `vision_model` 是 source of truth；读取失败不得清空或覆盖它们。
+- 非 OpenAI-compatible provider adapter 如果后端未实现，不应在 v1.5.9 中标为可用于自动任务。
 
 ### 7.7 产物目录
 
-v1.5.8 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
+v1.5.9 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
 
 AppData job workspace：
 
@@ -569,20 +602,140 @@ AppData job workspace：
 Documents\Video Notes AI\exports\
 ```
 
-## 8. 测试计划
+### 7.8 合集导出目录（已在当前工作区实现，待真实合集验收）
 
-v1.5.8 当前已通过的最终验证：
+原 v1.5.8 行为：合集批处理中的每个视频仍按单视频导出规则写入 export 根目录，图片写入 `assets/{note_stem}/`。这保证单视频路径稳定，但合集完成后笔记会分散在 export 根目录，不利于整理一个课程、系列教程或项目资料。
 
-- `cargo fmt --check`。
-- `cargo test --no-run`。
-- `scripts\verify_product.ps1`。
-- Svelte frontend build。
-- `svelte-check`：0 error / 0 warning。
-- Rust dev/test compile。
-- Rust tests：30/30 passed。
-- `scripts\build_windows_release.ps1`：已生成 `Video Notes AI_1.5.8_x64-setup.exe`。
+当前工作区实现：合集批处理启动时为该合集创建一个稳定的 collection export folder，合集内所有最终笔记和被引用图片集中写入该文件夹。`collection.batch_process` 返回 `output_dir`，合集详情页会显示该输出目录。
 
-后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。
+建议目录结构：
+
+```text
+<export-root>\collections\{collection_slug}-{collection_id}\
+  0001-lesson-title.md
+  0002-lesson-title.md
+  0003-lesson-title.md
+  assets\
+    0001-lesson-title\
+      frame-001.png
+      frame-002.png
+    0002-lesson-title\
+      frame-001.png
+```
+
+规则：
+
+- collection export folder 只保存最终学习产物，不保存 transcript、Whisper JSON、metrics、下载源文件或未引用 frame。
+- 单视频任务保持现有 export 根目录规则，避免改变既有用户习惯。
+- 合集任务默认集中到 collection folder；后续可在 UI 暴露“按合集导出 / 平铺导出”的选项。
+- 当前实现暂时沿用原有 note 文件名：`{note_stem}-{job_id}.md`；后续可增加合集内顺序号前缀，例如 `0001-`，保证 Obsidian 和文件管理器中的课程顺序稳定。
+- note 内图片路径使用相对路径，例如 `assets/{note_stem}/frame-001.png`。
+- 删除合集或清理合集导出时，应有明确确认，不和 Storage cleanup 的 AppData workspace cleanup 混在一起。
+- 如果单个视频 retry 属于某个 collection，应优先写回同一个 collection export folder，并避免覆盖已有 note。
+- 如果合集名称变化，不自动移动旧导出目录；只影响后续新批处理。
+
+验收：
+
+- 跑一个 3 个视频的合集后，export 根目录只新增一个 collection folder。
+- 3 个 Markdown 文件都在该 collection folder 下。
+- 每个 Markdown 引用的图片都在该 collection folder 的 `assets/` 下，且相对路径可在 Notes 页面和 Obsidian 中打开。
+- AppData 中间产物仍可被 Storage cleanup 清理，不影响 collection folder 中的最终产物。
+- 某个视频失败不应删除已成功生成的 collection notes。
+
+边界：
+
+- `collection.batch_process` 创建/使用 collection output folder，并让子任务把最终 Markdown 和被引用 assets 写入该目录。
+- `collection.export` 只导出 collection metadata/index summary；它不移动、不打包、不重排已生成的 child notes/assets。
+- 普通 `process.start` 仍写入常规 export/vault 目标；只有 collection batch 内部启动的子任务使用 collection output folder override。
+- v1.5.9 不承诺 collection child retry 一定写回原 collection folder；精确 collection retry 归入后续 settings snapshot / collection association 增强。
+
+### 7.9 Collection batch state model
+
+第一性原理：`NativeJob` 是运行状态 authoritative source；`CollectionItem` 是可持久化的 durable snapshot。snapshot 可用于重启后展示历史，但当 `run_id` 对应的 `NativeJob` 仍存在时，API 返回值必须以 `NativeJob` 为准。
+
+规则：
+
+- `collection.batch_process` 启动子任务后，`CollectionItem.run_id` 记录对应的 `NativeJob.id`。
+- batch runner 可轮询写入 `CollectionItem.status/progress/output_path/error_message`，但这只是优化，不是唯一同步路径。
+- `collection.get` / `collection.list_items` / `collection.list` 返回前应按 `run_id -> NativeJob` 做 read-through sync。
+- 如果匹配到 `NativeJob`，返回的 item 必须同步：`status`、`progress`、`job_id`、`output_path`、`error_message`。
+- app restart 后 non-terminal `NativeJob` 被恢复为 `interrupted`，collection detail 再次读取时也应反映到对应 item。
+- 如果 `run_id` 找不到对应 `NativeJob`，保留 snapshot，不猜测状态。
+
+进度分两类：
+
+```text
+successProgress = completed_count / total_count
+
+workProgress = average(itemWork):
+  completed                 -> 100
+  failed/cancelled/interrupted -> 100  // 本次尝试已结束，但不是成功
+  running/pausing/paused/cancelling -> latest NativeJob.progress
+  pending without run_id     -> 0
+```
+
+UI 规则：
+
+- 不允许把 `completed_count / total_count` 标为 batch 处理进度；它只能表示成功完成率。
+- 主进度条使用 `workProgress`。
+- UI 同时展示成功、失败/取消、暂停、进行中数量。
+- 一个 item `running 50%` 且 `completed_count=0` 时，collection `workProgress` 不能显示 0%。
+- `paused` item 的 `workProgress` 保持最后 progress，不归零。
+
+Collection status 聚合优先级：
+
+```text
+if any cancelling -> cancelling
+else if any pausing -> pausing
+else if any pending/running with run_id -> processing
+else if any paused -> paused
+else if total > 0 and all completed -> completed
+else if any failed/cancelled/interrupted -> failed  // UI 可显示“部分失败/需处理”
+else active
+```
+
+验收：
+
+- batch 完成后不得无条件把 collection status 写回 `active`。
+- 2 个 completed + 1 个 failed 的 collection 必须显示失败/需处理状态或等价提示。
+- 1 个 paused 且无 running/pausing item 的 collection 必须显示 paused。
+- 新建但未启动 batch 的 collection item 是 `pending` 且无 `run_id`，不应触发前端自动轮询刷新。
+- 已启动 batch 的 running-like/paused item 有 `run_id`，前端可以定时刷新 detail 以展示实时进度。
+
+## 8. 测试计划 / Release Smoke Test
+
+v1.5.9 当前 release gate 证据：
+
+| Gate | Required result | Current status | Evidence |
+|---|---|---|---|
+| Version metadata | package / Tauri / Cargo 均为 1.5.9 | pass | `desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json` |
+| bundle identifier | 不以 `.app` 结尾 | pass | `com.videonotesai.desktop` |
+| product verification | `verify_product.ps1` pass | pass | 2026-07-08 18:04，`svelte-check` 0 errors / 0 warnings，Rust tests 38/38 passed |
+| release build | NSIS installer generated | pass | `build_windows_release.ps1` pass |
+| installer artifact | 1.5.9 installer exists | pass | `Video Notes AI_1.5.9_x64-setup.exe` |
+| real collection smoke test | install 后真实合集通过 | pending | 需用户手工确认最终包 |
+
+安装包路径：
+
+```text
+desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.5.9_x64-setup.exe
+```
+
+仍需完成的 release smoke test：
+
+- 使用已打包 installer 安装/启动应用。
+- 跑真实合集任务，确认 batch queue 默认串行、自动推进、失败隔离。
+- 检查 Obsidian/export 目录只包含最终 Markdown 和被引用 assets。
+- 检查 AppData job workspace 保存中间文件、metrics 和 transcript。
+- 检查 Tasks 页面历史记录、未结束任务/暂停任务统计、失败信息和 terminal status。
+- 需要时抽测 cancel：本地受控 direct child 应被终止，任务最终进入 `cancelled`，不被 stage error 覆盖成 `failed`。
+- 抽测 pause/resume：`pausing` 是等待 checkpoint，`paused` 才是真正停住；`pausing` 上的 resume 是撤销暂停请求。
+- 检查合集 `workProgress`、成功数、失败/取消数、暂停数、进行中数展示正确。
+- 新建未启动 batch 的合集不应因为 `pending` item 无限自动刷新。
+- AI 供应商 `/models` 成功时展示真实列表；失败时显示错误，不伪造列表、不覆盖手动输入。
+- OCR “刷新模型”只刷新内置 PaddleOCR 官方静态列表，并提示官方无 model discovery endpoint。
+
+后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。真实合集 smoke test 通过后，v1.5.9 可发布 GitHub Release。
 
 ### 8.1 Rust native engine
 
@@ -594,15 +747,17 @@ v1.5.8 当前已通过的最终验证：
 - `settings.vision.test` 无 `vision_model` 时回退 `model`。
 - vision-only 任务生成 `image_context`。
 - Vision 失败后任务仍完成。
-- active job 重启加载后变 `interrupted`。
+- non-terminal job 重启加载后变 `interrupted`。
 - `process.pause` 从 `pending/running` 进入 `pausing`，checkpoint 后进入 `paused`。
 - `process.resume` 从 `paused/pausing` 恢复 running，并清除 `can_resume`。
-- `process.cancel` 从 active status 进入 `cancelling`，checkpoint 后进入 `cancelled`。
+- `process.cancel` 从 non-terminal status 进入 `cancelling`，checkpoint 后进入 `cancelled`。
 - cancel 后 stage error 不覆盖为 `failed`。
 - `process.retry` 对 terminal job 创建新 job，旧 job 保持 terminal。
-- `process.delete` 拒绝 active/paused job。
+- `process.delete` 拒绝 non-terminal job。
 - `jobs.json` atomic write 不产生半写文件；action 状态不会被旧 progress snapshot 覆盖。
 - runtime component 无 marker 时不因工具版本文本差异误报更新；旧 marker manifest version 显示 update。
+- `collection.get/list_items/list` 按 `run_id` 从 `NativeJob` read-through sync item 状态和进度。
+- collection status 按 item 状态聚合，不在 batch 结束后无条件设为 `active`。
 
 ### 8.2 Svelte UI
 
@@ -611,11 +766,14 @@ v1.5.8 当前已通过的最终验证：
 - 创建任务时 `vision_enabled` 正确提交。
 - 无活动 provider 时 Vision 开关不可启用。
 - 设置页 Vision 测试按钮 disabled/loading/success/failure 状态。
-- Tasks “活动任务”计数与筛选列表一致。
-- `pausing` 显示为暂停请求中，不显示为已暂停。
-- `paused` 显示继续/取消，不允许删除 active 记录。
+- Tasks “运行中/未结束/已暂停”口径不混淆；`paused` 不应被解释为正在执行。
+- `pausing` 显示为等待暂停/暂停请求中，不显示为已暂停。
+- `pausing` 的 resume 文案是撤销暂停请求；`paused` 的 resume 文案是继续执行。
+- `paused` 显示继续/取消，不允许删除 non-terminal 记录。
+- 任务中心已用时间应按前端时间每秒更新，non-terminal 使用 `now - created_at`，terminal 使用 `completed_at - created_at`。
 - 新增 provider 表单为空，不自动填 OpenAI Base URL 或默认模型。
 - 切换 provider type 不覆盖用户输入。
+- AI 供应商读取模型只展示真实 `/models` 返回；失败时显示错误，不伪造模型列表。
 - `ffmpeg-tools` 更新后不继续显示“更新”，除非 manifest version 变化。
 
 ### 8.3 手工验收
@@ -637,9 +795,9 @@ v1.5.8 当前已通过的最终验证：
 5. `paused` 后点击取消：worker 被唤醒并最终 `cancelled`。
 6. app 重启：`pending/running/pausing/cancelling/paused` 记录统一变 `interrupted`。
 7. 对 `failed/cancelled/interrupted/completed` 执行 retry：创建新任务，旧任务保持 terminal。
-8. 对 active job 执行 delete：backend 拒绝，UI 显示错误。
-9. Storage orphan cleanup 不删除 paused/active job workspace。
-10. Tasks / Process / Settings 的活动任务统计口径一致。
+8. 对 non-terminal job 执行 delete：backend 拒绝，UI 显示错误。
+9. Storage orphan cleanup 不删除 paused/non-terminal job workspace。
+10. Tasks / Process / Settings 的未结束任务统计口径一致；running-like 与 paused 应分开展示或明确标注。
 
 ## 9. 风险
 
@@ -654,7 +812,7 @@ v1.5.8 当前已通过的最终验证：
 
 ## 10. 后续方向
 
-后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.5.8 为准。
+后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.5.9 为准。
 
 ### M3：Timeline Context（已完成）
 
@@ -730,7 +888,7 @@ TimelineSegment {
 - 不设置固定 `max_tokens` 上限，避免长教程被硬截断。
 - 最终 Markdown 生成缓存已移除：不再维护 `generation-cache`，每次用当前 timeline/OCR/Vision 输入直接生成。
 
-### M4.7：Artifact Layout / Storage Cleanup / Task Records（已完成 phase 1）
+### M4.7：Artifact Layout / Storage Cleanup / Task Records / Task Actions（v1.5.9 已完成发布范围）
 
 已完成：
 
@@ -739,15 +897,18 @@ TimelineSegment {
 - Storage Management 可清理 orphan/completed job workspace。
 - Note deletion 会删除对应 `assets/{note_stem}/`。
 - 本机任务记录写入 `%LOCALAPPDATA%\Video Notes AI\.jobs\jobs.json`。
-- 重启后任务中心可读取历史任务；active 任务恢复为 `interrupted`。
+- 重启后任务中心可读取历史任务；non-terminal 任务恢复为 `interrupted`。
 - `process.pause/cancel/resume/retry` phase 1 已接入 backend。
-- Storage cleanup 把 `paused` 视为 active，避免误删可继续任务的 workspace。
-- Tasks / Process / Settings 采用“本机任务记录 / 活动任务”口径。
+- Task actions phase 2 已覆盖本地受控 direct child kill：`yt-dlp`、`ffmpeg/ffprobe`、`whisper-cli`、`tesseract` 在受控 helper 内运行，取消时 kill direct child 并回收进程。
+- Storage cleanup 把 `paused` 视为 non-terminal，避免误删可继续任务的 workspace。
+- Tasks / Process / Settings 采用“本机任务记录 / 未结束任务”口径，running-like 与 paused 不混用。
 
 未完成：
 
-- task action 后续增强：exact settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation 与部分产物清理策略。
+- task action 后续增强：exact settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation 与 partial artifact cleanup policy。
 - full provider capability cache。
+
+v1.5.9 明确不承诺：OS thread suspension、mid-command pause、跨重启继续、grandchildren/process tree kill、blocking HTTP request kill。
 
 ### M4.8：Runtime Component / Provider UX Fixes（已完成）
 
@@ -859,12 +1020,16 @@ last_error
 6. M4.7B Artifact Layout / Storage Cleanup。
 7. M4.7A Persistent Task Records。
 8. Task Actions Phase 1。
-9. M4.8 Runtime Component / Provider UX Fixes。
+9. Task Actions Phase 2 direct child kill。
+10. M4.8 Runtime Component / Provider UX Fixes。
+11. Collection batch queue resource protection。
+12. Collection export folder。
 
 剩余优先级：
 
-1. Task Actions 后续增强：settings snapshot、跨重启 resume、process tree kill / HTTP request cancellation、partial artifact cleanup policy。
-2. M7-lite 或 M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
-3. 更多真实长视频质量验收：CG / Houdini / Blender / Unreal / software tutorial。
+1. 完成当前真实合集 release smoke test：资源占用、自动串行推进、失败隔离、导出质量。
+2. Task Actions 后续增强：settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation、partial artifact cleanup policy。
+3. M7-lite 或 M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
+4. 更多真实长视频质量验收：CG / Houdini / Blender / Unreal / software tutorial。
 
-理由：核心多模态质量链路和本机任务控制 phase 1 已落地；下一步应提升长任务取消体验、精确重试能力和 provider 兼容性可见性。
+理由：核心多模态质量链路、导出产物布局、本机任务记录、任务控制发布范围、合集资源保护和合集独立导出目录已落地；下一步先用真实合集验证 release candidate，再提升精确重试能力、长任务取消边界和 provider 兼容性可见性。

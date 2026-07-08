@@ -137,7 +137,7 @@
   providerTypeLabels.openai = "OpenAI Compatible";
   providerTypeLabels.llama_cpp = "OpenAI Compatible";
   const whisperModelDownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
-  const paddleOcrModelOptions = [
+  const officialPaddleOcrModelOptions = [
     "PaddleOCR-VL-1.6",
     "PaddleOCR-VL-1.5",
     "PaddleOCR-VL",
@@ -183,6 +183,7 @@
   let scanning = $state(false);
   let testingProvider = $state<string | null>(null);
   let testingOcr = $state(false);
+  let refreshingOcrModels = $state(false);
   let testingVision = $state(false);
   let doctorRunning = $state(false);
   let bundlingDiagnostics = $state(false);
@@ -201,6 +202,7 @@
   let providerSearch = $state("");
   let providerModelOptions = $state<string[]>([]);
   let discoveringProviderModels = $state(false);
+  let paddleOcrModelOptions = $state<string[]>([...officialPaddleOcrModelOptions]);
 
   let filteredProviders = $derived.by(() => {
     const q = providerSearch.trim().toLowerCase();
@@ -322,7 +324,7 @@
       model: p.model,
       vision_model: p.vision_model ?? p.model,
     };
-    providerModelOptions = Array.from(new Set([...(p.models ?? []), p.model, p.vision_model ?? ""].filter(Boolean)));
+    providerModelOptions = [];
     showProviderModal = true;
   }
 
@@ -351,6 +353,7 @@
       });
       showToast(`读取到 ${providerModelOptions.length} 个模型`, "success");
     } catch (e: any) {
+      providerModelOptions = [];
       showToast(`读取模型列表失败：${e?.message ?? e}`, "error");
     } finally {
       discoveringProviderModels = false;
@@ -448,6 +451,16 @@
       showToast(`OCR 测试异常：${e?.message ?? e}`, "error");
     } finally {
       testingOcr = false;
+    }
+  }
+
+  async function refreshOcrModels() {
+    refreshingOcrModels = true;
+    try {
+      paddleOcrModelOptions = [...officialPaddleOcrModelOptions];
+      showToast("官方 PaddleOCR API 未提供模型发现接口；已刷新内置官方模型列表。", "info");
+    } finally {
+      refreshingOcrModels = false;
     }
   }
 
@@ -764,7 +777,12 @@
                 {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
                   {#if settings.ocr_backend === "paddleocr_http"}
                     <div class="field">
-                      <label class="field-label" for="ocr_model">PaddleOCR Model</label>
+                      <div class="field-label-row">
+                        <label class="field-label" for="ocr_model">PaddleOCR Model</label>
+                        <button type="button" class="btn btn-secondary btn-xs" onclick={refreshOcrModels} disabled={refreshingOcrModels} title="官方 API 未提供远程模型发现；刷新内置官方模型列表">
+                          <Icon name="refresh" size={12} />{refreshingOcrModels ? "刷新中" : "刷新模型"}
+                        </button>
+                      </div>
                       <select id="ocr_model" bind:value={settings.ocr_model} onchange={markDirty}>
                         {#if settings.ocr_model && !paddleOcrModelOptions.includes(settings.ocr_model)}
                           <option value={settings.ocr_model}>{settings.ocr_model}</option>
@@ -773,6 +791,7 @@
                           <option value={model}>{model}</option>
                         {/each}
                       </select>
+                      <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；自定义模型会保留为当前选项。</span>
                     </div>
                   {/if}
                   <div class="field">
@@ -1122,7 +1141,7 @@
         </section>
 
         <section class="form-section">
-          <div class="form-section-head provider-model-head"><span>02</span><div><h3>服务端点与模型</h3><p>先读取服务端模型列表，再选择文本与视觉模型；也可以手动输入模型 ID。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={discoverProviderModels} disabled={discoveringProviderModels}><Icon name="refresh" size={13} />{discoveringProviderModels ? "读取中" : "读取模型列表"}</button></div>
+          <div class="form-section-head provider-model-head"><span>02</span><div><h3>服务端点与模型</h3><p>可从供应商真实 `/models` 接口读取模型；读取失败不会伪造列表，也不会覆盖手动输入。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={discoverProviderModels} disabled={discoveringProviderModels || providerTypeUnsupported || !providerForm.base_url.trim()}><Icon name="refresh" size={13} />{discoveringProviderModels ? "读取中" : "读取模型"}</button></div>
           {#if providerTypeUnsupported}
             <div class="provider-type-warning"><Icon name="alert" size={15} /><span>ChatGPT Codex (Plus/Pro) 属于 ChatGPT 账号内的 Codex 产品能力，不是可直接用 API Key 调用的服务端点；本应用当前不会把它作为自动笔记生成供应商。</span></div>
           {/if}
@@ -1130,8 +1149,8 @@
           <div class="form-grid two-cols">
             <div class="field model-picker-field">
               <label class="field-label" for="prov_model">文本模型 <small>笔记生成</small></label>
-              <select class="model-choice" aria-label="从服务端模型中选择文本模型" onchange={(event) => chooseProviderModel(event, "model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
-                <option value="">{providerModelOptions.length ? "从已读取列表选择…" : "请先读取模型列表"}</option>
+              <select class="model-choice" aria-label="从真实读取的模型中选择文本模型" onchange={(event) => chooseProviderModel(event, "model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
+                <option value="">{providerModelOptions.length ? "从读取列表选择…" : "读取成功后可选择"}</option>
                 {#each providerModelOptions as model}<option value={model}>{model}</option>{/each}
               </select>
               <div class="input-wrap has-icon"><span class="input-icon"><Icon name="file-text" size={15} /></span><input id="prov_model" type="text" bind:value={providerForm.model} placeholder="输入精确模型 ID" disabled={providerTypeUnsupported} /></div>
@@ -1139,8 +1158,8 @@
             </div>
             <div class="field model-picker-field">
               <label class="field-label" for="prov_vision_model">视觉模型 <small>画面理解</small></label>
-              <select class="model-choice" aria-label="从服务端模型中选择视觉模型" onchange={(event) => chooseProviderModel(event, "vision_model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
-                <option value="">{providerModelOptions.length ? "从已读取列表选择…" : "请先读取模型列表"}</option>
+              <select class="model-choice" aria-label="从真实读取的模型中选择视觉模型" onchange={(event) => chooseProviderModel(event, "vision_model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
+                <option value="">{providerModelOptions.length ? "从读取列表选择…" : "读取成功后可选择"}</option>
                 {#each providerModelOptions as model}<option value={model}>{model}</option>{/each}
               </select>
               <div class="input-wrap has-icon"><span class="input-icon"><Icon name="eye" size={15} /></span><input id="prov_vision_model" type="text" bind:value={providerForm.vision_model} placeholder={providerForm.model || "输入视觉模型 ID"} disabled={providerTypeUnsupported} /></div>
@@ -1478,6 +1497,8 @@
   .model-availability.installed { color: var(--success-color); background: var(--success-soft); }
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .btn-xs { min-height: 26px; padding: 4px 8px; font-size: 12px; }
   .ocr-test-field { justify-content: end; }
   .ocr-test-btn { width: fit-content; min-width: 118px; }
   .vision-test-field { justify-content: end; }

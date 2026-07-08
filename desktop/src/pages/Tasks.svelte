@@ -13,6 +13,7 @@
   let actionJobId = $state<number | null>(null);
   let localError = $state("");
   let searchQuery = $state("");
+  let nowMs = $state(Date.now());
 
   let filteredJobs = $derived.by(() => {
     let result = filter === "all" ? $jobs : $jobs.filter((job) => filter === "active" ? isActive(job) : job.status === filter);
@@ -53,7 +54,11 @@
     { id: "completed", label: "已完成", icon: "check" },
   ];
 
-  onMount(() => { refreshJobs().catch(() => undefined); });
+  onMount(() => {
+    refreshJobs().catch(() => undefined);
+    const timer = window.setInterval(() => { nowMs = Date.now(); }, 1000);
+    return () => window.clearInterval(timer);
+  });
 
   function titleOf(job: JobInfo) {
     return job.title || job.input.split(/[\\/]/).pop() || job.input;
@@ -74,8 +79,22 @@
   }
 
   function durationCaption(job: JobInfo) {
+    const start = parseTimeMs(job.created_at);
+    if (start !== null) {
+      const end = ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status)
+        ? nowMs
+        : parseTimeMs(job.completed_at) ?? nowMs;
+      return `已用 ${formatDuration(Math.max(0, (end - start) / 1000))}`;
+    }
     if (job.elapsed_sec !== undefined && job.elapsed_sec !== null) return `已用 ${formatDuration(job.elapsed_sec)}`;
-    return ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status) ? "统计中" : "—";
+    return "—";
+  }
+
+  function parseTimeMs(value?: string | null): number | null {
+    if (!value) return null;
+    const date = new Date(value.includes("T") ? value : value.replace(" ", "T"));
+    const time = date.getTime();
+    return Number.isNaN(time) ? null : time;
   }
 
   function sourceKind(input: string) { return input.startsWith("http") ? "link" : "video"; }
@@ -239,9 +258,12 @@
 
                 <div class="row-actions">
                   {#if ["running", "pending"].includes(job.status)}
-                    <button class="icon-btn" title="阶段结束后暂停" disabled={actionJobId === job.id} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
+                    <button class="icon-btn" title="请求暂停：当前 native 命令结束后生效" disabled={actionJobId === job.id} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
                     <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
-                  {:else if ["pausing", "paused"].includes(job.status)}
+                  {:else if job.status === "pausing"}
+                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />撤销暂停</button>
+                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                  {:else if job.status === "paused"}
                     <button class="btn btn-primary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />继续</button>
                     <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if job.status === "cancelling"}
@@ -271,9 +293,12 @@
 
           <div class="detail-actions">
             {#if ["running", "pending"].includes(selectedJob.status)}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />阶段结束后暂停</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />请求暂停</button>
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
-            {:else if ["pausing", "paused"].includes(selectedJob.status)}
+            {:else if selectedJob.status === "pausing"}
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />撤销暂停</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
+            {:else if selectedJob.status === "paused"}
               <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />继续</button>
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
             {:else if selectedJob.status === "cancelling"}
@@ -321,7 +346,7 @@
             <div class="detail-error"><div><Icon name="alert" size={16} /><strong>错误详情</strong></div><p>{selectedJob.error_message}</p></div>
           {/if}
 
-          <div class="snapshot-note"><Icon name="shield" size={16} /><p>暂停会在当前处理阶段结束后的安全边界生效；取消为协作式取消，导出的笔记文件会保留在输出目录。</p></div>
+          <div class="snapshot-note"><Icon name="shield" size={16} /><p>暂停是阶段边界控制：不会冻结正在执行的 yt-dlp、ffmpeg、whisper 或 tesseract；当前 native 命令结束后才进入已暂停。取消会尝试终止当前受控 direct child。</p></div>
         </aside>
       {/if}
     </div>

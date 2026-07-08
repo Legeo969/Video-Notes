@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { engineCall, runningInTauri } from "../lib/api";
   import type { CollectionInfo } from "../lib/types";
@@ -13,6 +14,7 @@
     status: string;
     title?: string;
     progress?: number;
+    run_id?: number;
   }
 
   interface CollectionDetail {
@@ -39,6 +41,7 @@
   let processing = $state(false);
   let batchJobId = $state<string | null>(null);
   let batchProgress = $state<string>("");
+  let batchOutputDir = $state<string | null>(null);
   let exportPath = $state<string | null>(null);
   let confirmDeleteId = $state<number | null>(null);
   let showAddItems = $state(false);
@@ -52,6 +55,15 @@
 
   let totalItems = $derived(collections.reduce((sum, collection) => sum + (collection.item_count || 0), 0));
   let completedItems = $derived(detail?.items.filter((item) => item.status === "completed").length || 0);
+  let failedItems = $derived(detail?.items.filter((item) => ["failed", "cancelled", "interrupted"].includes(item.status)).length || 0);
+  let pausedItems = $derived(detail?.items.filter((item) => item.status === "paused").length || 0);
+  let runningItems = $derived(detail?.items.filter((item) => ["pending", "running", "pausing", "cancelling"].includes(item.status)).length || 0);
+  let workProgress = $derived.by(() => {
+    const items = detail?.items ?? [];
+    if (items.length === 0) return 0;
+    const total = items.reduce((sum, item) => sum + itemWorkProgress(item), 0);
+    return Math.round(total / items.length);
+  });
 
   async function loadCollections() {
     loading = true;
@@ -69,7 +81,7 @@
 
   async function selectCollection(id: number, force = false) {
     if (selectedId === id && !force) return;
-    selectedId = id; detailLoading = true; detail = null; exportPath = null; batchJobId = null; batchProgress = "";
+    selectedId = id; detailLoading = !force; detail = force ? detail : null; exportPath = force ? exportPath : null; batchJobId = force ? batchJobId : null; batchProgress = force ? batchProgress : ""; batchOutputDir = force ? batchOutputDir : null;
     try { detail = await engineCall<CollectionDetail>("collection.get", { id }); }
     catch (e) { error = `加载合集详情失败：${e}`; console.error(e); }
     finally { detailLoading = false; }
@@ -114,11 +126,11 @@
 
   async function batchProcess() {
     if (!selectedId) return;
-    processing = true; batchJobId = null; batchProgress = "正在提交批量处理…";
+    processing = true; batchJobId = null; batchOutputDir = null; batchProgress = "正在提交批量处理…";
     try {
-      const result = await engineCall<{ batch_job_id: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1 } });
-      batchJobId = result.batch_job_id; batchProgress = "已加入处理队列，默认串行处理；可在任务中心查看当前正在运行的任务。";
+      const result = await engineCall<{ batch_job_id: string; output_dir?: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1 } });
       await loadCollections(); await selectCollection(selectedId, true);
+      batchJobId = result.batch_job_id; batchOutputDir = result.output_dir || null; batchProgress = "已加入处理队列，默认串行处理；最终笔记会写入合集文件夹。";
     } catch (e) { batchProgress = `批量处理失败：${e}`; }
     finally { processing = false; }
   }
@@ -145,12 +157,32 @@
   }
 
   function statusLabel(status: string): string {
-    const map: Record<string, string> = { active: "可用", completed: "已完成", processing: "处理中", pending: "等待中", failed: "失败", paused: "已暂停", cancelled: "已取消" };
+    const map: Record<string, string> = { active: "可用", completed: "已完成", processing: "处理中", pending: "等待中", running: "运行中", pausing: "等待暂停", cancelling: "正在取消", failed: "失败", paused: "已暂停", cancelled: "已取消", interrupted: "已中断" };
     return map[status] || status;
+  }
+
+  function itemWorkProgress(item: CollectionItem): number {
+    if (["completed", "failed", "cancelled", "interrupted"].includes(item.status)) return 100;
+    const progress = Number(item.progress ?? 0);
+    return Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0));
+  }
+
+  function collectionNeedsRefresh(collection: CollectionDetail | null): boolean {
+    return Boolean(collection?.items.some((item) => item.run_id && ["pending", "running", "pausing", "cancelling", "paused"].includes(item.status)));
   }
 
   function fileName(path: string) { return path.split(/[\\/]/).pop() || path; }
   function sourceIcon(path: string) { return path.startsWith("http") ? "link" : "video"; }
+
+  onMount(() => {
+    const timer = window.setInterval(() => {
+      if (selectedId && collectionNeedsRefresh(detail)) {
+        loadCollections();
+        selectCollection(selectedId, true);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  });
 
   $effect(() => { loadCollections(); });
 </script>
@@ -212,7 +244,7 @@
         <header class="detail-header">
           <div class="detail-title-wrap">
             <div class="detail-folder"><Icon name="folder-open" size={22} /></div>
-            <div><span>COLLECTION #{detail.id}</span><h2>{detail.name}</h2><p>{detail.item_count} 个媒体条目 · {completedItems} 个已完成</p></div>
+            <div><span>COLLECTION #{detail.id}</span><h2>{detail.name}</h2><p>{detail.item_count} 个媒体条目 · 成功 {completedItems} · 失败/取消 {failedItems} · 暂停 {pausedItems}</p></div>
           </div>
           <div class="detail-actions">
             <button class="btn btn-secondary btn-sm" onclick={() => showAddItems = true}><Icon name="plus" size={14} />添加条目</button>
@@ -223,12 +255,16 @@
         </header>
 
         <div class="detail-progress-strip">
-          <div><span>完成进度</span><strong>{detail.item_count ? Math.round((completedItems / detail.item_count) * 100) : 0}%</strong></div>
-          <div class="progress-track"><div class="progress-bar" style={`width:${detail.item_count ? (completedItems / detail.item_count) * 100 : 0}%`}></div></div>
+          <div><span>处理进度</span><strong>{workProgress}%</strong></div>
+          <div class="progress-track"><div class="progress-bar" style={`width:${workProgress}%`}></div></div>
+          <div class="progress-breakdown"><span>成功 {completedItems}/{detail.item_count}</span>{#if runningItems}<span>进行中 {runningItems}</span>{/if}{#if pausedItems}<span>暂停 {pausedItems}</span>{/if}{#if failedItems}<span>失败/取消 {failedItems}</span>{/if}</div>
         </div>
 
         {#if batchProgress}
           <div class="alert {batchJobId ? 'alert-success' : 'alert-info'} detail-message"><Icon name={batchJobId ? "check" : "info"} size={16} /><span>{batchProgress}</span></div>
+        {/if}
+        {#if batchOutputDir}
+          <div class="alert alert-info detail-message"><Icon name="folder" size={16} /><span>合集输出目录：<code>{batchOutputDir}</code></span></div>
         {/if}
         {#if exportPath}
           <div class="alert alert-success detail-message"><Icon name="download" size={16} /><span>已导出到：<code>{exportPath}</code></span></div>
@@ -357,11 +393,13 @@
   .detail-title-wrap p { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
   .detail-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
   .danger-button { color: var(--danger-color); }
-  .detail-progress-strip { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 14px; padding: 12px 22px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
+  .detail-progress-strip { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px 14px; padding: 12px 22px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
   .detail-progress-strip > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .detail-progress-strip span { color: var(--text-secondary); font-size: 12px; }
   .detail-progress-strip strong { font-size: 15px; }
   .detail-progress-strip .progress-track { height: 6px; }
+  .progress-breakdown { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; color: var(--text-tertiary); font-size: 12px; }
+  .progress-breakdown span { margin: 0; }
   .detail-message { margin: 12px 22px 0; }
   .detail-message code { font-family: var(--font-mono); font-size: 13px; }
   .items-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 22px 10px; }
