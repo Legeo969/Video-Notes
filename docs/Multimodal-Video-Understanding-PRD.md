@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD / v1.5.9 Release Candidate
+# Video Notes AI 多模态视频理解 PRD / v1.6.0 Release Candidate
 
 ## 1. 背景
 
@@ -18,13 +18,13 @@
 - M1.5：修正并验收当前视觉理解任务链路。
 - M2：补齐设置页视觉模型测试能力。
 
-截至 v1.5.9，M1.5/M2 已完成，并继续落地了 timeline context、adaptive frame sampling、segment-level vision、学习型笔记 prompt、清洁 artifact 布局、storage cleanup、任务记录持久化、任务控制、runtime component marker、provider 表单修正、合集批处理资源保护、合集独立导出目录和合集条目进度同步。
+截至 v1.6.0，M1.5/M2 已完成，并继续落地了 timeline context、adaptive frame sampling、segment-level vision、学习型笔记 prompt、清洁 artifact 布局、storage cleanup、任务记录持久化、任务控制、runtime component marker、provider 表单修正、合集批处理资源保护、合集独立导出目录、合集条目进度同步、M7-lite Provider Capability Matrix、settings/task config snapshot retry、safe lineage、workspace tracking、conservative cleanup、Windows process tree kill hardening 和 staged HTTP cancellation checks。
 
-本文是当前 release candidate 的产品/技术验收记录，不表示路线图全部完成。v1.5.9 的发布边界是“核心多模态生成链路、导出产物布局、本机任务中心、合集批处理、合集独立导出目录和合集条目进度同步可用”；M7 Provider Capability Matrix、精确重试 settings snapshot、跨重启 resume、process tree kill、HTTP request cancellation 等仍属于后续版本范围。
+本文是当前 release candidate 的产品/技术验收记录，不表示路线图全部完成。v1.6.0 的发布边界是“核心多模态生成链路、导出产物布局、本机任务中心、合集批处理、合集独立导出目录、合集条目进度同步、M7-lite capability cache、精确重试配置快照、取消/清理安全加固可用”；跨重启 resume、OS thread suspension、mid-command pause 等仍属于后续版本范围。
 
-## 1.1 v1.5.9 发布结论
+## 1.1 v1.6.0 发布结论
 
-当前结论：**v1.5.9 代码实现已通过自动化验证并重新打包；真实合集 smoke test 仍是发布前最后门禁。**
+当前结论：**v1.6.0 当前功能已通过分支验证和对抗审查；installer / release 仍待构建发布。**
 
 发布前必须确认：
 
@@ -36,7 +36,7 @@
 - Tasks 页面状态、进度、实时已用时间、失败信息和历史记录可理解。
 - Collections 页面条目状态和合集 `workProgress` 能随子任务推进更新，不再把 `completed/total` 误当作处理进度。
 
-如果真实合集 smoke test 通过，v1.5.9 可作为 GitHub Release 发布；如果失败，优先修真实运行问题，不继续堆新功能。
+完成本次版本 metadata bump、构建 installer 并通过 release smoke test 后，v1.6.0 可作为 GitHub Release 发布；如果失败，优先修真实运行问题，不继续堆新功能。
 
 ## 2. 目标
 
@@ -54,17 +54,17 @@
 
 1. 不做实时视频流理解。
 2. 不上传完整视频给模型。
-3. v1.5.9 不实现专有 SDK；自动笔记 pipeline 只承诺 OpenAI-compatible `chat/completions` + `image_url`。Gemini / Anthropic / Responses 等非 OpenAI-compatible adapter 不属于 v1.5.9 可用范围，除非后端明确实现。
+3. v1.6.0 不实现专有 SDK；自动笔记 pipeline 只承诺 OpenAI-compatible `chat/completions` + `image_url`。Gemini / Anthropic / Responses 等非 OpenAI-compatible adapter 不属于 v1.6.0 可用范围，除非后端明确实现。
 4. 不做自动模型下载。
-5. 不做自动 provider capability 推断；`settings.vision.test` 只是 live probe，不持久化 capability cache，不自动分类模型。
+5. 不做自动 provider capability 推断；M7-lite 只沉淀 `settings.vision.test` 的 provider/model capability cache，不根据模型名自动分类。
 6. 不保证所有 OpenAI-compatible 服务都兼容，只要求失败信息可见、任务可降级。
 7. 不保留最终 Markdown 生成缓存；最终笔记每次直接调用当前 provider 生成，避免 OCR/Vision/timeline 非确定性导致缓存污染。
-8. Task actions 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume、不做 exact historical settings replay。
-9. Task actions phase 2 只 kill 当前受控 direct child process；不保证终止 grandchildren/process tree，也不 kill blocking HTTP request。
+8. Task actions 不做 OS thread suspension、不做 mid-command pause、不做跨重启 resume。
+9. Task actions 已做 Windows process tree kill hardening 和 staged HTTP cancellation checks；不承诺强制中断所有不可取消的外部 blocking call。
 10. 合集 batch queue 不做持久化与跨重启恢复；已启动的子任务仍按任务中心现有机制持久化。
 11. 不保证所有供应商都支持远程模型发现；AI 供应商 `/models` 读取是真实接口探测，失败时必须报错且不得伪造列表或覆盖用户手动输入。PaddleOCR 模型刷新仅重载内置官方静态列表。
 
-## 4. 当前实现状态（v1.5.9）
+## 4. 当前实现状态（v1.6.0）
 
 当前代码已包含以下能力：
 
@@ -97,24 +97,25 @@
 - 合集导入文件夹只创建合集，不自动启动任务；合集批量处理改为后台队列，默认串行处理，最多并发 2。应用重启后不恢复 batch queue，但已启动子任务仍保留在任务中心持久化记录中。
 - 合集条目以 `NativeJob` 为运行状态权威来源，`CollectionItem` 只是 durable snapshot；`collection.get/list_items` 返回前按 `run_id` 做 read-through sync。
 - 合集 UI 区分 `successProgress` 与 `workProgress`，running/pausing/paused/failed/cancelled 不再导致合集处理进度长期显示 0%。
+- M7-lite Provider Capability Matrix 已完成：`settings.vision.test` 结果可沉淀为可刷新/清除的 provider/model capability cache，不保存 API key，不阻止用户继续运行任务。
+- Retry 已使用 settings/task config snapshot，并记录 safe lineage、workspace tracking；conservative cleanup 避免误删可继续或可追溯的任务 workspace。
+- Windows process tree kill hardening 已完成；取消受控 native 命令时按安全 lineage 回收 process tree。
+- HTTP 调用已加入 staged cancellation checks，取消请求可在阶段边界和请求前后尽早停止。
 
 当前仍未完成或需实测的缺口：
 
 - 真实合集 release smoke test 仍需最终确认：资源占用、队列推进、失败隔离、暂停语义、实时进度、collection folder 导出质量。
-- Task actions 仍不支持精确 settings snapshot 重放、跨重启继续、OS thread suspension、mid-command pause、process tree kill 或 HTTP request kill；暂停只在当前阶段结束后的安全检查点生效。
-- M7 Provider Capability Matrix 尚未完成：视觉测试结果暂未沉淀为可刷新/清除的 capability cache。
+- Task actions 仍不支持跨重启继续、OS thread suspension 或 mid-command pause；暂停只在当前阶段结束后的安全检查点生效。
 - OpenAI-compatible provider 差异仍需通过设置页测试和任务降级路径暴露，不做模型名硬编码判断。
 - 合集任务的最终笔记产物已支持写入独立 collection folder，方便整理、移动和导入 Obsidian；仍需真实合集 smoke test 验证路径、图片引用和失败隔离。
 
-v1.5.9 发布范围不包含：
+v1.6.0 发布范围不包含：
 
-- 精确复现旧任务 provider/model/OCR/frame 配置的 retry。
 - app 重启后继续 paused/running 任务。
-- 终止 native child 的 grandchildren/process tree。
-- 终止正在等待响应的 blocking HTTP request。
-- provider/model capability cache。
+- OS thread suspension 或 mid-command pause。
+- 强制中断所有不可取消的外部 blocking HTTP call。
 
-这些项目进入 v1.5.9+ 路线图。
+这些项目进入 v1.6.0+ 路线图。v1.5.9 release 可作为历史发布说明保留：其边界不包含 M7-lite、精确配置快照 retry、process tree kill hardening 和 HTTP cancellation checks。
 
 ## 5. M1.5：视觉理解任务链路修正
 
@@ -138,7 +139,7 @@ M1.5 只修正当前任务链路，不引入新的时间轴数据结构。
 
 M1.5 最初 baseline 是固定抽帧：每 60 秒 1 帧、最多 8 帧、OCR 和 Vision 复用同一批帧。该段只保留为历史验收背景。
 
-v1.5.9 当前行为以 M4 Adaptive Frame Sampling 为准：支持 fixed/adaptive frame mode、frame interval、max frames、scene change、fps frame number、去重与失败回退。`ocr_enabled=false && vision_enabled=true` 时仍会抽帧并向 note generation 提供可引用图片素材。
+v1.6.0 当前行为以 M4 Adaptive Frame Sampling 为准：支持 fixed/adaptive frame mode、frame interval、max frames、scene change、fps frame number、去重与失败回退。`ocr_enabled=false && vision_enabled=true` 时仍会抽帧并向 note generation 提供可引用图片素材。
 
 ### 5.3 Vision 调用
 
@@ -372,7 +373,7 @@ settings.vision.test
 - 不兼容模型返回失败 toast，并保留 provider error。
 - 测试不修改 provider 配置。
 - 测试不创建任务、不写入 transcript、不写入 notes。
-- v1.5.9 中 `settings.vision.test` 是 live probe；不持久化 capability cache，不自动推断模型能力，也不阻止用户继续运行任务。
+- v1.6.0 中 `settings.vision.test` 仍是 live probe，并可把测试结果写入 M7-lite capability cache；不自动推断模型能力，也不阻止用户继续运行任务。
 
 ## 7. 数据结构
 
@@ -529,7 +530,7 @@ marker 内容：
 ```json
 {
   "component": "ffmpeg-tools",
-  "manifest_version": "1.5.9",
+  "manifest_version": "1.6.0",
   "installed_at": "RFC3339"
 }
 ```
@@ -559,11 +560,11 @@ marker 内容：
 - `/models` 成功时，返回的模型 ID 可用于下拉选择文本模型和视觉模型。
 - `/models` 失败时必须显示错误，不 fallback 为当前 `model` / `vision_model`，不使用内置推荐列表伪造结果。
 - 手动输入的精确 `model` / `vision_model` 是 source of truth；读取失败不得清空或覆盖它们。
-- 非 OpenAI-compatible provider adapter 如果后端未实现，不应在 v1.5.9 中标为可用于自动任务。
+- 非 OpenAI-compatible provider adapter 如果后端未实现，不应在 v1.6.0 中标为可用于自动任务。
 
 ### 7.7 产物目录
 
-v1.5.9 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
+v1.6.0 当前规则：中间产物写入 AppData job workspace，导出目录只保留最终学习产物。
 
 AppData job workspace：
 
@@ -647,7 +648,7 @@ Documents\Video Notes AI\exports\
 - `collection.batch_process` 创建/使用 collection output folder，并让子任务把最终 Markdown 和被引用 assets 写入该目录。
 - `collection.export` 只导出 collection metadata/index summary；它不移动、不打包、不重排已生成的 child notes/assets。
 - 普通 `process.start` 仍写入常规 export/vault 目标；只有 collection batch 内部启动的子任务使用 collection output folder override。
-- v1.5.9 不承诺 collection child retry 一定写回原 collection folder；精确 collection retry 归入后续 settings snapshot / collection association 增强。
+- v1.6.0 已记录 task config snapshot 和 lineage；collection child retry 应优先沿用原 collection association 和 output folder，仍需通过真实合集 smoke test 验证。
 
 ### 7.9 Collection batch state model
 
@@ -704,21 +705,21 @@ else active
 
 ## 8. 测试计划 / Release Smoke Test
 
-v1.5.9 当前 release gate 证据：
+v1.6.0 当前 release gate 证据：
 
 | Gate | Required result | Current status | Evidence |
 |---|---|---|---|
-| Version metadata | package / Tauri / Cargo 均为 1.5.9 | pass | `desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/tauri.conf.json` |
+| Version metadata | package / Tauri / Cargo 均为 1.6.0 | pending | 本次 bump：`desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/Cargo.lock`, `desktop/src-tauri/tauri.conf.json` |
 | bundle identifier | 不以 `.app` 结尾 | pass | `com.videonotesai.desktop` |
-| product verification | `verify_product.ps1` pass | pass | 2026-07-08 18:04，`svelte-check` 0 errors / 0 warnings，Rust tests 38/38 passed |
-| release build | NSIS installer generated | pass | `build_windows_release.ps1` pass |
-| installer artifact | 1.5.9 installer exists | pass | `Video Notes AI_1.5.9_x64-setup.exe` |
+| product verification | 自动验证 / 对抗审查通过 | pass | 分支验证与对抗审查已通过；本次版本 bump 后未运行 build |
+| release build | NSIS installer generated | pending | 待运行 `build_windows_release.ps1` |
+| installer artifact | 1.6.0 installer exists | pending | 待生成 `Video Notes AI_1.6.0_x64-setup.exe` |
 | real collection smoke test | install 后真实合集通过 | pending | 需用户手工确认最终包 |
 
-安装包路径：
+预期安装包路径：
 
 ```text
-desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.5.9_x64-setup.exe
+desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.0_x64-setup.exe
 ```
 
 仍需完成的 release smoke test：
@@ -735,7 +736,7 @@ desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.5.9_x64-setup.exe
 - AI 供应商 `/models` 成功时展示真实列表；失败时显示错误，不伪造列表、不覆盖手动输入。
 - OCR “刷新模型”只刷新内置 PaddleOCR 官方静态列表，并提示官方无 model discovery endpoint。
 
-后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。真实合集 smoke test 通过后，v1.5.9 可发布 GitHub Release。
+后续不打包验证优先使用 `npm run build` 和 targeted manual test；只有发布前再运行完整 packaging。installer 构建和真实合集 smoke test 通过后，v1.6.0 可发布 GitHub Release。
 
 ### 8.1 Rust native engine
 
@@ -806,13 +807,13 @@ desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.5.9_x64-setup.exe
 3. 多图输入成本较高。
 4. 固定 60 秒抽帧可能漏掉快速操作步骤。
 5. 视觉模型可能泛泛描述画面，需要后续优化 prompt 和时间轴上下文。
-6. Cancel 只终止受控 local direct child；grandchildren/process tree 与 blocking HTTP call 仍可能让任务停留在 `cancelling`，直到非受控阶段返回。
-7. Retry 使用当前 settings，不保证复现旧任务的 provider/model/OCR/frame 配置。
+6. Cancel 已加固 Windows process tree kill 和 staged HTTP cancellation checks；不可取消的外部 blocking call 仍可能延迟进入 terminal status。
+7. Retry 使用 settings/task config snapshot，避免无意漂移到当前配置。
 8. `paused` 不能跨重启继续；重启后会变 `interrupted`。
 
 ## 10. 后续方向
 
-后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.5.9 为准。
+后续方向按“先建立结构，再提升质量，再沉淀能力”的顺序推进。以下状态以 v1.6.0 为准。
 
 ### M3：Timeline Context（已完成）
 
@@ -888,7 +889,7 @@ TimelineSegment {
 - 不设置固定 `max_tokens` 上限，避免长教程被硬截断。
 - 最终 Markdown 生成缓存已移除：不再维护 `generation-cache`，每次用当前 timeline/OCR/Vision 输入直接生成。
 
-### M4.7：Artifact Layout / Storage Cleanup / Task Records / Task Actions（v1.5.9 已完成发布范围）
+### M4.7：Artifact Layout / Storage Cleanup / Task Records / Task Actions（v1.6.0 已完成发布范围）
 
 已完成：
 
@@ -902,13 +903,17 @@ TimelineSegment {
 - Task actions phase 2 已覆盖本地受控 direct child kill：`yt-dlp`、`ffmpeg/ffprobe`、`whisper-cli`、`tesseract` 在受控 helper 内运行，取消时 kill direct child 并回收进程。
 - Storage cleanup 把 `paused` 视为 non-terminal，避免误删可继续任务的 workspace。
 - Tasks / Process / Settings 采用“本机任务记录 / 未结束任务”口径，running-like 与 paused 不混用。
+- Retry 使用 settings/task config snapshot，并记录 safe lineage 与 workspace tracking。
+- Conservative cleanup 避免删除 non-terminal、paused、lineage 仍需引用的 workspace。
+- Windows process tree kill hardening 已覆盖受控 native command cancellation。
+- HTTP 调用已加入 staged cancellation checks。
 
 未完成：
 
-- task action 后续增强：exact settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation 与 partial artifact cleanup policy。
+- task action 后续增强：跨重启 resume 与更完整 partial artifact cleanup policy。
 - full provider capability cache。
 
-v1.5.9 明确不承诺：OS thread suspension、mid-command pause、跨重启继续、grandchildren/process tree kill、blocking HTTP request kill。
+v1.6.0 明确不承诺：OS thread suspension、mid-command pause、跨重启继续、强制中断所有不可取消的 blocking HTTP request。
 
 ### M4.8：Runtime Component / Provider UX Fixes（已完成）
 
@@ -978,9 +983,9 @@ evidence: UI node labels, parameter panel
 - 图片引用服务于步骤理解，不作为装饰图。
 - 不输出完整 transcript，只保留关键证据。
 
-### M7：Provider Capability Matrix（未完成）
+### M7：Provider Capability Matrix（M7-lite 已完成）
 
-目标：沉淀不同 OpenAI-compatible provider/model 的视觉能力，减少用户试错。
+目标：沉淀不同 OpenAI-compatible provider/model 的视觉能力，减少用户试错。v1.6.0 已完成 M7-lite：保存 `settings.vision.test` 结果，支持刷新/清除，不保存 API key，不按模型名硬编码判断。
 
 能力字段：
 
@@ -996,10 +1001,10 @@ last_error
 
 范围：
 
-- `settings.vision.test` 的结果可写入 capability cache。
-- 创建任务前根据 capability 给出提示。
+- `settings.vision.test` 的结果可写入 capability cache。（v1.6.0 已完成）
+- 创建任务前根据 capability 给出提示。（M7-lite 已完成基础提示，完整矩阵仍可继续增强）
 - 不根据模型名硬编码能力，只使用测试结果和用户配置。
-- capability cache 可被用户刷新或清除。
+- capability cache 可被用户刷新或清除。（v1.6.0 已完成）
 
 验收：
 
@@ -1028,8 +1033,8 @@ last_error
 剩余优先级：
 
 1. 完成当前真实合集 release smoke test：资源占用、自动串行推进、失败隔离、导出质量。
-2. Task Actions 后续增强：settings snapshot retry、跨重启 resume、process tree kill / HTTP request cancellation、partial artifact cleanup policy。
-3. M7-lite 或 M7 Provider Capability Matrix：把 `settings.vision.test` 结果沉淀为可刷新/清除的 provider/model capability cache。
+2. Task Actions 后续增强：跨重启 resume、partial artifact cleanup policy。
+3. M7 Provider Capability Matrix 增强：在 M7-lite cache 基础上继续完善 provider 兼容性提示。
 4. 更多真实长视频质量验收：CG / Houdini / Blender / Unreal / software tutorial。
 
-理由：核心多模态质量链路、导出产物布局、本机任务记录、任务控制发布范围、合集资源保护和合集独立导出目录已落地；下一步先用真实合集验证 release candidate，再提升精确重试能力、长任务取消边界和 provider 兼容性可见性。
+理由：核心多模态质量链路、导出产物布局、本机任务记录、任务控制发布范围、合集资源保护、合集独立导出目录、精确重试配置快照、取消边界加固和 M7-lite capability cache 已落地；下一步先构建 installer 并用真实合集验证 release candidate，再继续提升跨重启恢复和 provider 兼容性可见性。
