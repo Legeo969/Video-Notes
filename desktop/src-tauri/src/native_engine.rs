@@ -3560,7 +3560,7 @@ fn run_native_job(
     };
     profile.stages.push(t_gen.finish());
     checkpoint!("indexing", 95, "准备写入笔记");
-    let note = decode_markdown_image_paths(&note, &note_path);
+    let note = decode_markdown_image_paths(&note);
     if let Err(error) = fs::write(&note_path, note) {
         update_job(
             &jobs,
@@ -5783,11 +5783,10 @@ fn markdown_image_context(
     context
 }
 
-fn decode_markdown_image_paths(text: &str, note_path: &Path) -> String {
-    // 1. URL-decode paths in markdown image references
-    // 2. Convert relative `assets/...` paths to absolute paths so
-    //    Obsidian and other markdown viewers can find the images.
-    let note_dir = note_path.parent().unwrap_or_else(|| Path::new("."));
+fn decode_markdown_image_paths(text: &str) -> String {
+    // URL-decode paths in markdown image references.
+    // AI models sometimes URL-encode spaces (%20) and other characters.
+    // Obsidian resolves relative `assets/...` paths from the note's directory.
     let mut result = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -5816,15 +5815,10 @@ fn decode_markdown_image_paths(text: &str, note_path: &Path) -> String {
                 result.push_str(&text[i..start]);
                 let raw_path = &text[start..end - 1];
                 let decoded = decode_percent(raw_path);
-                // Convert relative assets/ paths to absolute file:/// URIs
-                if decoded.starts_with("assets/") || decoded.starts_with("./assets/") {
-                    let clean = decoded.trim_start_matches("./");
-                    let abs = note_dir.join(clean);
-                    let abs_str = abs.to_string_lossy().replace('\\', "/");
-                    result.push_str(&format!("file:///{abs_str}"));
-                } else {
-                    result.push_str(&decoded);
-                }
+                // Keep relative assets/ paths as-is (Obsidian resolves
+                // these relative to the note's directory on disk).
+                // Only URL-decode to handle AI models that encode %20 etc.
+                result.push_str(&decoded);
                 i = end - 1;
             } else {
                 result.push(bytes[i] as char);
