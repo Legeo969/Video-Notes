@@ -5816,12 +5816,12 @@ fn decode_markdown_image_paths(text: &str, note_path: &Path) -> String {
                 result.push_str(&text[i..start]);
                 let raw_path = &text[start..end - 1];
                 let decoded = decode_percent(raw_path);
-                // Convert relative assets/ paths to absolute paths
+                // Convert relative assets/ paths to absolute file:/// URIs
                 if decoded.starts_with("assets/") || decoded.starts_with("./assets/") {
                     let clean = decoded.trim_start_matches("./");
                     let abs = note_dir.join(clean);
                     let abs_str = abs.to_string_lossy().replace('\\', "/");
-                    result.push_str(&abs_str);
+                    result.push_str(&format!("file:///{abs_str}"));
                 } else {
                     result.push_str(&decoded);
                 }
