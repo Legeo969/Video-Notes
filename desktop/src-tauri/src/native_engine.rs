@@ -3483,7 +3483,12 @@ fn run_native_job(
         if let Some(asset_dir) =
             copy_frame_assets(&frame_dir, &output_dir, &format!("{file_stem}-{id}"))
         {
-            markdown_image_context(&note_path, &asset_dir, &transcript_text, 8)
+            markdown_image_context(
+                &note_path,
+                &asset_dir,
+                &transcript_text,
+                max_frames as usize,
+            )
         } else {
             String::new()
         }

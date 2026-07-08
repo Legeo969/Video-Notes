@@ -30,6 +30,9 @@
   let errorMessage = $state("");
   let startedJobId = $state<number | null>(null);
   let advancedOpen = $state(false);
+  let frameMode = $state<"fixed" | "adaptive">("fixed");
+  let frameInterval = $state<number>(30);
+  let maxFrames = $state<number>(30);
   let localWhisperModels = $state<LocalWhisperModel[]>([]);
   let modelsLoading = $state(true);
   let modelScanError = $state("");
@@ -72,6 +75,9 @@
           vision_enabled?: boolean;
           active_provider?: string;
           whisper_device?: string;
+          frame_mode?: string;
+          frame_interval?: number;
+          max_frames?: number;
         }>("settings.get"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local"),
       ]);
@@ -88,6 +94,9 @@
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
+      frameMode = settings.frame_mode === "adaptive" ? "adaptive" : "fixed";
+      frameInterval = typeof settings.frame_interval === "number" ? settings.frame_interval : 30;
+      maxFrames = typeof settings.max_frames === "number" ? settings.max_frames : 30;
       if (visionEnabled && !activeProvider) {
         visionEnabled = false;
         modelScanError = "默认开启了视觉理解，但尚未配置活动 AI 供应商。本次任务已先关闭视觉理解。";
@@ -189,6 +198,9 @@
         ocr_model: ocrModel,
         vision_enabled: visionEnabled,
         whisper_device: whisperDevice,
+        frame_mode: frameMode,
+        frame_interval: frameInterval,
+        max_frames: maxFrames,
       });
       startedJobId = result.job_id;
       await refreshJobs();
@@ -418,6 +430,23 @@
           <div class="advanced-panel">
             <div><Icon name="shield" size={17} /><span><strong>实时阶段记录</strong><small>本机任务状态会同步处理阶段、进度和输出路径</small></span><span class="always-on">始终开启</span></div>
             <div><Icon name="database" size={17} /><span><strong>临时工作区</strong><small>中间产物写入 AppData，完成后可在设置中清理</small></span><span class="always-on">始终开启</span></div>
+            <div class="advanced-frame-controls">
+              <label class="field">
+                <span class="field-label">抽帧模式</span>
+                <select bind:value={frameMode}>
+                  <option value="fixed">固定间隔抽取</option>
+                  <option value="adaptive">自适应合并场景检测</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">最大帧数</span>
+                <input type="number" bind:value={maxFrames} min={1} max={100} />
+              </label>
+              <label class="field">
+                <span class="field-label">抽帧间隔（秒）</span>
+                <input type="number" bind:value={frameInterval} min={10} max={600} />
+              </label>
+            </div>
           </div>
         {/if}
       </div>
@@ -544,6 +573,11 @@
   .advanced-panel strong { color: var(--text-primary); font-size: 14px; }
   .advanced-panel small { margin-top: 2px; font-size: 12px; line-height: 1.45; }
   .always-on { flex: 0 0 auto !important; color: var(--success-color); font-size: 12px; font-weight: 700; }
+  .advanced-frame-controls { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding-top: 6px; border-top: 1px solid var(--border-color); }
+  .advanced-frame-controls .field { display: flex; flex-direction: column; gap: 4px; }
+  .advanced-frame-controls .field-label { font-size: 11px; font-weight: 680; color: var(--text-tertiary); }
+  .advanced-frame-controls select,
+  .advanced-frame-controls input[type="number"] { width: 100%; min-height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text-primary); background: var(--bg-input); font-size: 13px; }
 
   .submit-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 26px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
   .submit-summary { display: flex; align-items: center; gap: 10px; min-width: 0; }
