@@ -76,6 +76,7 @@
     ocr_backend: string;
     ocr_http_endpoint: string;
     ocr_http_api_key: string;
+    ocr_model: string;
     vision_enabled: boolean;
     template: string;
     active_provider: string;
@@ -136,6 +137,15 @@
   providerTypeLabels.openai = "OpenAI Compatible";
   providerTypeLabels.llama_cpp = "OpenAI Compatible";
   const whisperModelDownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
+  const paddleOcrModelOptions = [
+    "PaddleOCR-VL-1.6",
+    "PaddleOCR-VL-1.5",
+    "PaddleOCR-VL",
+    "PP-StructureV3",
+    "PP-OCRv6",
+    "PP-OCRv5",
+    "PP-OCRv5-latin",
+  ];
 
   const tabs = [
     { id: "general", label: "通用与转录", icon: "settings", hint: "目录、模型和 OCR" },
@@ -158,6 +168,7 @@
     ocr_backend: "tesseract",
     ocr_http_endpoint: "",
     ocr_http_api_key: "",
+    ocr_model: "PaddleOCR-VL-1.6",
     vision_enabled: false,
     template: "default",
     active_provider: "",
@@ -228,6 +239,7 @@
         ocr_backend: s.ocr_backend || "tesseract",
         ocr_http_endpoint: s.ocr_http_endpoint ?? "",
         ocr_http_api_key: s.ocr_http_api_key ?? "",
+        ocr_model: s.ocr_model || "PaddleOCR-VL-1.6",
         whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3",
       };
       providers = provs;
@@ -281,6 +293,7 @@
           ocr_backend: settings.ocr_backend,
           ocr_http_endpoint: settings.ocr_http_endpoint,
           ocr_http_api_key: settings.ocr_http_api_key,
+          ocr_model: settings.ocr_model,
           vision_enabled: settings.vision_enabled,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
@@ -428,6 +441,7 @@
         ocr_backend: settings.ocr_backend,
         ocr_http_endpoint: settings.ocr_http_endpoint,
         ocr_http_api_key: settings.ocr_http_api_key,
+        ocr_model: settings.ocr_model,
       });
       showToast(result?.success ? `OCR 连接成功：${result.message ?? "服务可用"}` : `OCR 连接失败：${result?.message ?? "未知错误"}`, result?.success ? "success" : "error");
     } catch (e: any) {
@@ -748,6 +762,19 @@
                   </select>
                 </div>
                 {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
+                  {#if settings.ocr_backend === "paddleocr_http"}
+                    <div class="field">
+                      <label class="field-label" for="ocr_model">PaddleOCR Model</label>
+                      <select id="ocr_model" bind:value={settings.ocr_model} onchange={markDirty}>
+                        {#if settings.ocr_model && !paddleOcrModelOptions.includes(settings.ocr_model)}
+                          <option value={settings.ocr_model}>{settings.ocr_model}</option>
+                        {/if}
+                        {#each paddleOcrModelOptions as model}
+                          <option value={model}>{model}</option>
+                        {/each}
+                      </select>
+                    </div>
+                  {/if}
                   <div class="field">
                     <label class="field-label" for="ocr_http_endpoint">OCR HTTP Endpoint <small>本地或远程</small></label>
                     <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={markDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs" : "http://127.0.0.1:8868/ocr"} /></div>

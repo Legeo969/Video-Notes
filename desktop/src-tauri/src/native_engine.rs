@@ -128,6 +128,7 @@ struct OcrRuntimeConfig {
     backend: String,
     endpoint: String,
     api_key: String,
+    model: String,
 }
 
 #[derive(Clone, Debug)]
@@ -368,6 +369,7 @@ impl NativeEngine {
             "ocr_http_api_key": string_value(&raw, "ocr_http_api_key")
                 .or_else(|| string_value(&raw, "ocr_api_key"))
                 .unwrap_or_default(),
+            "ocr_model": string_value(&raw, "ocr_model").unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string()),
             "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
             "template_id": template,
@@ -411,6 +413,7 @@ impl NativeEngine {
             "ocr_backend",
             "ocr_http_endpoint",
             "ocr_http_api_key",
+            "ocr_model",
             "ocr_api_url",
             "ocr_api_key",
             "vision_enabled",
@@ -716,11 +719,15 @@ impl NativeEngine {
                 }));
             }
             let endpoint = normalise_paddleocr_jobs_endpoint(endpoint.trim());
+            let model = string_param(&params, "ocr_model")
+                .or_else(|| string_value(&settings, "ocr_model"))
+                .unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string());
             let test_pdf = simple_pdf_bytes("OCR TEST");
             return match submit_paddleocr_job(
                 &client,
                 &endpoint,
                 &api_key,
+                &model,
                 test_pdf,
                 "ocr-test.pdf",
             ) {
@@ -1340,6 +1347,9 @@ impl NativeEngine {
                 .or_else(|| string_value(&settings, "ocr_http_api_key"))
                 .or_else(|| string_value(&settings, "ocr_api_key"))
                 .unwrap_or_default(),
+            model: string_param(&params, "ocr_model")
+                .or_else(|| string_value(&settings, "ocr_model"))
+                .unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string()),
         };
         let vision_enabled = params
             .get("vision_enabled")
@@ -4155,7 +4165,7 @@ fn extract_ocr_with_http(
             return Err(cancellation_error("OCR HTTP"));
         }
         let text = if config.backend == "paddleocr_http" {
-            ocr_frame_with_paddleocr(&client, &frame, &endpoint, &config.api_key)?
+            ocr_frame_with_paddleocr(&client, &frame, &endpoint, &config.api_key, &config.model)?
         } else {
             ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key)?
         };
@@ -4834,6 +4844,7 @@ fn ocr_frame_with_paddleocr(
     frame: &Path,
     endpoint: &str,
     api_key: &str,
+    model: &str,
 ) -> Result<String, String> {
     if api_key.trim().is_empty() {
         return Err("PaddleOCR API Key is empty".to_string());
@@ -4843,7 +4854,7 @@ fn ocr_frame_with_paddleocr(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("frame.png");
-    let job_id = submit_paddleocr_job(client, endpoint, api_key, bytes, filename)?;
+    let job_id = submit_paddleocr_job(client, endpoint, api_key, model, bytes, filename)?;
     let json_url = poll_paddleocr_job(client, endpoint, api_key, &job_id)?;
     fetch_paddleocr_jsonl_text(client, &json_url)
 }
@@ -4863,9 +4874,15 @@ fn submit_paddleocr_job(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     api_key: &str,
+    model: &str,
     bytes: Vec<u8>,
     filename: &str,
 ) -> Result<String, String> {
+    let model = if model.trim().is_empty() {
+        PADDLEOCR_DEFAULT_MODEL
+    } else {
+        model.trim()
+    };
     let optional_payload = json!({
         "useDocOrientationClassify": false,
         "useDocUnwarping": false,
@@ -4874,7 +4891,7 @@ fn submit_paddleocr_job(
     let file_part =
         reqwest::blocking::multipart::Part::bytes(bytes).file_name(filename.to_string());
     let form = reqwest::blocking::multipart::Form::new()
-        .text("model", PADDLEOCR_DEFAULT_MODEL.to_string())
+        .text("model", model.to_string())
         .text("optionalPayload", optional_payload.to_string())
         .part("file", file_part);
     let response = client
@@ -6213,6 +6230,7 @@ mod tests {
                         "ocr_backend": "paddleocr_http",
                         "ocr_http_endpoint": "http://127.0.0.1:8868/ocr",
                         "ocr_http_api_key": "local-token",
+                        "ocr_model": "PP-OCRv6",
                         "template": "summary"
                     }
                 }),
@@ -6230,6 +6248,7 @@ mod tests {
         assert_eq!(settings["ocr_backend"], "paddleocr_http");
         assert_eq!(settings["ocr_http_endpoint"], "http://127.0.0.1:8868/ocr");
         assert_eq!(settings["ocr_http_api_key"], "local-token");
+        assert_eq!(settings["ocr_model"], "PP-OCRv6");
         assert_eq!(settings["template"], "summary");
 
         let _ = fs::remove_dir_all(root);

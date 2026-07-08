@@ -145,6 +145,7 @@ let mockSettings: any = {
   ocr_backend: "tesseract",
   ocr_http_endpoint: "",
   ocr_http_api_key: "",
+  ocr_model: "PaddleOCR-VL-1.6",
   vision_enabled: false,
   template: "default",
   template_id: "default",

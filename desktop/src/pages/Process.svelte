@@ -22,6 +22,7 @@
   let transcriptionBackend = $state<"whisper_cpp">("whisper_cpp");
   let ocrEnabled = $state(false);
   let ocrBackend = $state<"tesseract" | "paddleocr_http" | "custom_http">("tesseract");
+  let ocrModel = $state("PaddleOCR-VL-1.6");
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
@@ -32,6 +33,15 @@
   let localWhisperModels = $state<LocalWhisperModel[]>([]);
   let modelsLoading = $state(true);
   let modelScanError = $state("");
+  const paddleOcrModelOptions = [
+    "PaddleOCR-VL-1.6",
+    "PaddleOCR-VL-1.5",
+    "PaddleOCR-VL",
+    "PP-StructureV3",
+    "PP-OCRv6",
+    "PP-OCRv5",
+    "PP-OCRv5-latin",
+  ];
 
   let source = $derived(sourceMode === "file" ? fileSource : linkSource);
   let publicUrlValid = $derived(sourceMode !== "link" || isSupportedPublicUrl(linkSource));
@@ -58,6 +68,7 @@
           transcription_backend?: string;
           ocr_enabled?: boolean;
           ocr_backend?: string;
+          ocr_model?: string;
           vision_enabled?: boolean;
           active_provider?: string;
           whisper_device?: string;
@@ -73,6 +84,7 @@
         : normalizedModels[0]?.id || preferred;
       ocrEnabled = Boolean(settings.ocr_enabled);
       ocrBackend = (["tesseract", "paddleocr_http", "custom_http"].includes(String(settings.ocr_backend)) ? String(settings.ocr_backend) : "tesseract") as "tesseract" | "paddleocr_http" | "custom_http";
+      ocrModel = String(settings.ocr_model || "PaddleOCR-VL-1.6");
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
@@ -174,6 +186,7 @@
         whisper_model: normalizeWhisperModelId(whisperModel),
         ocr_enabled: ocrEnabled,
         ocr_backend: ocrBackend,
+        ocr_model: ocrModel,
         vision_enabled: visionEnabled,
         whisper_device: whisperDevice,
       });
@@ -366,6 +379,21 @@
               <option value="custom_http">Custom HTTP OCR</option>
             </select>
           </label>
+
+          {#if ocrBackend === "paddleocr_http"}
+            <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
+              <div class="enhance-icon"><Icon name="scan" size={20} /></div>
+              <div class="enhance-copy"><strong>PaddleOCR 模型</strong><span>{ocrModel}</span></div>
+              <select bind:value={ocrModel} disabled={!ocrEnabled}>
+                {#if ocrModel && !paddleOcrModelOptions.includes(ocrModel)}
+                  <option value={ocrModel}>{ocrModel}</option>
+                {/if}
+                {#each paddleOcrModelOptions as model}
+                  <option value={model}>{model}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
 
           <button type="button" class="enhancement-card" class:enabled={visionEnabled} class:disabled={!activeProvider} onclick={() => activeProvider && (visionEnabled = !visionEnabled)} aria-pressed={visionEnabled} disabled={!activeProvider}>
             <div class="enhance-icon"><Icon name="eye" size={20} /></div>
