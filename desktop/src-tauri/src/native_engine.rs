@@ -3560,7 +3560,7 @@ fn run_native_job(
     };
     profile.stages.push(t_gen.finish());
     checkpoint!("indexing", 95, "准备写入笔记");
-    let note = decode_markdown_image_paths(&note);
+    let note = decode_markdown_image_paths(&note, &note_path);
     if let Err(error) = fs::write(&note_path, note) {
         update_job(
             &jobs,
@@ -5783,16 +5783,16 @@ fn markdown_image_context(
     context
 }
 
-fn decode_markdown_image_paths(text: &str) -> String {
-    // AI models sometimes URL-encode spaces (%20) and other characters
-    // in markdown image paths, making them unreadable on local filesystem.
-    // This function decodes the path portion of markdown image references.
+fn decode_markdown_image_paths(text: &str, note_path: &Path) -> String {
+    // 1. URL-decode paths in markdown image references
+    // 2. Convert relative `assets/...` paths to absolute paths so
+    //    Obsidian and other markdown viewers can find the images.
+    let note_dir = note_path.parent().unwrap_or_else(|| Path::new("."));
     let mut result = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            // Find ']('
             let mut j = i + 2;
             let mut paren_open = None;
             while j + 1 < bytes.len() {
@@ -5813,11 +5813,18 @@ fn decode_markdown_image_paths(text: &str) -> String {
                     }
                     end += 1;
                 }
-                // Copy the image reference prefix up to the path
                 result.push_str(&text[i..start]);
-                // Decode the path portion
-                let path = &text[start..end - 1];
-                result.push_str(&decode_percent(path));
+                let raw_path = &text[start..end - 1];
+                let decoded = decode_percent(raw_path);
+                // Convert relative assets/ paths to absolute paths
+                if decoded.starts_with("assets/") || decoded.starts_with("./assets/") {
+                    let clean = decoded.trim_start_matches("./");
+                    let abs = note_dir.join(clean);
+                    let abs_str = abs.to_string_lossy().replace('\\', "/");
+                    result.push_str(&abs_str);
+                } else {
+                    result.push_str(&decoded);
+                }
                 i = end - 1;
             } else {
                 result.push(bytes[i] as char);
