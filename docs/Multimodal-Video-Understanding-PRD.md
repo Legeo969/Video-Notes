@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD / v1.6.1 Hotfix Release
+# Video Notes AI 多模态视频理解 PRD / v1.6.2 Hotfix Release
 
 ## 1. 背景
 
@@ -530,7 +530,7 @@ marker 内容：
 ```json
 {
   "component": "ffmpeg-tools",
-  "manifest_version": "1.6.1",
+  "manifest_version": "1.6.2",
   "installed_at": "RFC3339"
 }
 ```
@@ -709,17 +709,17 @@ v1.6.1 当前 release gate 证据：
 
 | Gate | Required result | Current status | Evidence |
 |---|---|---|---|
-| Version metadata | package / Tauri / Cargo 均为 1.6.1 | pending | 本次 bump：`desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/Cargo.lock`, `desktop/src-tauri/tauri.conf.json` |
+| Version metadata | package / Tauri / Cargo 均为 1.6.2 | done | 本次 bump：`desktop/package.json`, `desktop/package-lock.json`, `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/Cargo.lock`, `desktop/src-tauri/tauri.conf.json` |
 | bundle identifier | 不以 `.app` 结尾 | pass | `com.videonotesai.desktop` |
 | product verification | 自动验证 / 对抗审查通过 | pass | 分支验证与对抗审查已通过；本次版本 bump 后未运行 build |
 | release build | NSIS installer generated | pending | 待运行 `build_windows_release.ps1` |
-| installer artifact | 1.6.1 installer exists | pending | 待生成 `Video Notes AI_1.6.1_x64-setup.exe` |
+| installer artifact | 1.6.2 installer exists | pending | 待生成 `Video Notes AI_1.6.2_x64-setup.exe` |
 | real collection smoke test | install 后真实合集通过 | pending | 需用户手工确认最终包 |
 
 预期安装包路径：
 
 ```text
-desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.1_x64-setup.exe
+desktop\src-tauri\target\release\bundle\nsis\Video Notes AI_1.6.2_x64-setup.exe
 ```
 
 仍需完成的 release smoke test：
