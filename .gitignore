@@ -65,6 +65,9 @@ config/cookies.txt
 config/bilibili_cookies.txt
 config/yt-dlp.conf
 .slim/deepwork/
+.slim/worktrees/
+.slim/worktrees.json
+
 # Desktop (Tauri + Svelte)
 desktop/node_modules/
 desktop/dist/

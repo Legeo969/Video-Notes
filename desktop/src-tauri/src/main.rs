@@ -56,6 +56,21 @@ fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let _ = app.get_webview_window("main")
+                .map(|window| {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                });
+        }))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                startup_diagnostics::append("Window close requested; cancelling jobs");
+                if let Some(engine) = window.try_state::<NativeEngine>() {
+                    engine.cancel_all_jobs();
+                }
+            }
+        })
         .setup(|app| {
             startup_diagnostics::append("Tauri setup started");
 
@@ -100,7 +115,7 @@ fn main() {
         "Desktop process starting; version {}",
         env!("CARGO_PKG_VERSION")
     ));
-    env_logger::init();
+
 
     let app = match build_app() {
         Ok(app) => app,

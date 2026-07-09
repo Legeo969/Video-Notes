@@ -78,6 +78,9 @@
     ocr_http_api_key: string;
     ocr_model: string;
     vision_enabled: boolean;
+    frame_mode: string;
+    frame_interval: number;
+    max_frames: number;
     template: string;
     active_provider: string;
     bilibili_cookie_file: string;
@@ -170,6 +173,9 @@
     ocr_http_api_key: "",
     ocr_model: "PaddleOCR-VL-1.6",
     vision_enabled: false,
+    frame_mode: "fixed",
+    frame_interval: 30,
+    max_frames: 30,
     template: "default",
     active_provider: "",
     bilibili_cookie_file: "",
@@ -239,6 +245,9 @@
         ...s,
         vault_path: s.vault_path ?? "",
         transcription_backend: "whisper_cpp",
+        frame_mode: s.frame_mode ?? "fixed",
+        frame_interval: s.frame_interval ?? 30,
+        max_frames: s.max_frames ?? 30,
         ocr_backend: s.ocr_backend || "tesseract",
         ocr_http_endpoint: s.ocr_http_endpoint ?? "",
         ocr_http_api_key: s.ocr_http_api_key ?? "",
@@ -298,6 +307,9 @@
           ocr_http_api_key: settings.ocr_http_api_key,
           ocr_model: settings.ocr_model,
           vision_enabled: settings.vision_enabled,
+          frame_mode: settings.frame_mode,
+          frame_interval: settings.frame_interval,
+          max_frames: settings.max_frames,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
         },
@@ -805,6 +817,31 @@
                     <option value="cpu">CPU</option>
                   </select>
                 </div>
+              </div>
+            </div>
+
+            <div class="setting-group">
+              <div class="group-head"><div class="group-icon"><Icon name="image" size={18} /></div><div><h3>默认抽帧设置</h3><p>控制新任务与合集任务默认的帧抽取策略。创建任务页仍可单次覆盖。</p></div></div>
+              <div class="runtime-settings-grid">
+                <div class="field">
+                  <label class="field-label" for="settings_frame_mode">抽帧模式</label>
+                  <select id="settings_frame_mode" bind:value={settings.frame_mode} onchange={markDirty}>
+                    <option value="fixed">固定间隔抽取</option>
+                    <option value="adaptive">自适应合并场景检测</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings_max_frames">最大帧数</label>
+                  <input id="settings_max_frames" type="number" bind:value={settings.max_frames} min={1} max={10000} oninput={markDirty} />
+                </div>
+                <div class="field">
+                  <label class="field-label" for="settings_frame_interval">抽帧间隔（秒）</label>
+                  <input id="settings_frame_interval" type="number" bind:value={settings.frame_interval} min={0.1} max={600} step={0.1} oninput={markDirty} disabled={settings.frame_mode === "adaptive"} />
+                  {#if settings.frame_mode === "adaptive"}<small style="color:var(--text-tertiary);font-size:10px;margin-top:2px;">自适应模式自动计算间隔</small>{/if}
+                </div>
+              </div>
+              <div style="margin-top:8px;padding:8px 12px;border-radius:8px;background:var(--bg-subtle);font-size:12px;color:var(--text-tertiary);line-height:1.5;">
+                <strong>固定间隔</strong>：按间隔秒数等距抽帧。<strong>自适应</strong>：场景检测 + 均匀采样 + 95% 相似度去重，自动合并相似帧。合集任务也会使用此默认值。
               </div>
             </div>
 

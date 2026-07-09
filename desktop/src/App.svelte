@@ -9,7 +9,7 @@
   import Collections from "./pages/Collections.svelte";
   import Settings from "./pages/Settings.svelte";
   import { activeJobs, initializeJobEvents, refreshJobs } from "./lib/stores/jobs";
-  import { getEngineStatus, onEngineEvent, runningInTauri } from "./lib/api";
+  import { getEngineStatus, onEngineEvent, runningInTauri, toErrorMessage } from "./lib/api";
   import type { PageName } from "./lib/types";
 
   let currentPage = $state<PageName>("process");
@@ -39,7 +39,7 @@
     } catch (error) {
       const status = await getEngineStatus().catch(() => null);
       setEngineFailure({
-        error: status?.error || (error instanceof Error ? error.message : String(error)),
+        error: status?.error || toErrorMessage(error),
         startup_log: status?.startup_log,
       });
     }
@@ -82,7 +82,7 @@
       } catch (error) {
         const status = await getEngineStatus().catch(() => null);
         setEngineFailure({
-          error: status?.error || (error instanceof Error ? error.message : String(error)),
+          error: status?.error || toErrorMessage(error),
           startup_log: status?.startup_log,
         });
       }
@@ -93,7 +93,7 @@
     }
 
     initialize().catch((error) => {
-      setEngineFailure({ error: error instanceof Error ? error.message : String(error) });
+      setEngineFailure({ error: toErrorMessage(error) });
     });
 
     return () => {

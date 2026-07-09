@@ -58,3 +58,8 @@ export async function getEngineStatus(): Promise<EngineStatus> {
 export function runningInTauri(): boolean {
   return !useMock;
 }
+
+/** Normalize any caught exception into a readable string. */
+export function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

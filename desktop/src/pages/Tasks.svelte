@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { engineCall } from "../lib/api";
+  import { engineCall, toErrorMessage } from "../lib/api";
   import { deleteJob, jobs, jobsError, jobsLoading, refreshJobs, runJobAction } from "../lib/stores/jobs";
   import type { JobInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
@@ -119,7 +119,7 @@
       const result = await runJobAction(method, job.id);
       if (typeof result === "object" && result?.job_id) selectedJobId = result.job_id;
     } catch (error) {
-      localError = error instanceof Error ? error.message : String(error);
+      localError = toErrorMessage(error);
     } finally {
       actionJobId = null;
     }
@@ -145,7 +145,7 @@
       }
       if (selectedJobId === job.id) selectedJobId = null;
     } catch (error) {
-      localError = error instanceof Error ? error.message : String(error);
+      localError = toErrorMessage(error);
     } finally {
       actionJobId = null;
     }
@@ -165,7 +165,7 @@
     try {
       await engineCall(reveal ? "process.reveal_output" : "process.open_output", { job_id: job.id });
     } catch (error) {
-      localError = error instanceof Error ? error.message : String(error);
+      localError = toErrorMessage(error);
     } finally {
       actionJobId = null;
     }

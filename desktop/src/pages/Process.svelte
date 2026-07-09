@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { engineCall, runningInTauri } from "../lib/api";
+  import { engineCall, runningInTauri, toErrorMessage } from "../lib/api";
   import { jobs, refreshJobs } from "../lib/stores/jobs";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -107,7 +107,7 @@
         modelScanError = `默认模型“${preferred}”未安装，已为本次任务切换到“${whisperModel}”。`;
       }
     } catch (error) {
-      modelScanError = error instanceof Error ? error.message : String(error);
+      modelScanError = toErrorMessage(error);
     } finally {
       modelsLoading = false;
     }
@@ -128,7 +128,7 @@
         modelScanError = "没有检测到可运行的本地 Whisper 模型。";
       }
     } catch (error) {
-      modelScanError = error instanceof Error ? error.message : String(error);
+      modelScanError = toErrorMessage(error);
     } finally {
       modelsLoading = false;
     }
@@ -205,7 +205,7 @@
       startedJobId = result.job_id;
       await refreshJobs();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = toErrorMessage(error);
     } finally {
       submitting = false;
     }
@@ -444,7 +444,8 @@
               </label>
               <label class="field">
                 <span class="field-label">抽帧间隔（秒）</span>
-                <input type="number" bind:value={frameInterval} min={10} max={600} />
+                <input type="number" bind:value={frameInterval} min={10} max={600} disabled={frameMode === "adaptive"} />
+                {#if frameMode === "adaptive"}<small style="color:var(--text-tertiary);font-size:10px;margin-top:2px;">自适应模式自动计算间隔</small>{/if}
               </label>
             </div>
           </div>

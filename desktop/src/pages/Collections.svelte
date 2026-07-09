@@ -124,13 +124,27 @@
     } catch (e) { error = `移除条目失败：${e}`; }
   }
 
+let hasActionableItems = $derived(detail?.items.some((item) => {
+    const s = item.status;
+    return item.run_id != null && ["pending", "running", "pausing", "cancelling", "paused"].includes(s);
+}) ?? false);
+
+  let hasPausedItems = $derived(detail?.items.some((item) => item.status === "paused") ?? false);
+  let hasRunningItems = $derived(runningItems > 0);
+
   async function batchProcess() {
     if (!selectedId) return;
     processing = true; batchJobId = null; batchOutputDir = null; batchProgress = "正在提交批量处理…";
     try {
-      const result = await engineCall<{ batch_job_id: string; output_dir?: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1 } });
+      const result = await engineCall<{ batch_job_id: string; count?: number; output_dir?: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1 } });
       await loadCollections(); await selectCollection(selectedId, true);
-      batchJobId = result.batch_job_id; batchOutputDir = result.output_dir || null; batchProgress = "已加入处理队列，默认串行处理；最终笔记会写入合集文件夹。";
+      batchJobId = result.batch_job_id; batchOutputDir = result.output_dir || null;
+      const count = result.count ?? 0;
+      if (count > 0) {
+        batchProgress = `已提交 ${count} 个任务到处理队列，默认串行处理；最终笔记会写入合集文件夹。`;
+      } else {
+        batchProgress = "没有需要处理的新条目（已有进行中的任务）。";
+      }
     } catch (e) { batchProgress = `批量处理失败：${e}`; }
     finally { processing = false; }
   }
@@ -141,6 +155,41 @@
       const result = await engineCall<{ path: string }>("collection.export", { id: selectedId });
       exportPath = result.path;
     } catch (e) { error = `导出失败：${e}`; }
+  }
+
+  let stoppingAll = $state(false);
+
+  async function pauseAll() {
+    if (!selectedId) return;
+    stoppingAll = true;
+    try {
+      const result = await engineCall<{ paused: number }>("collection.pause_all", { id: selectedId });
+      await loadCollections(); await selectCollection(selectedId, true);
+      error = `已暂停 ${result.paused} 个任务`;
+    } catch (e) { error = `暂停失败：${e}`; }
+    finally { stoppingAll = false; }
+  }
+
+  async function cancelAll() {
+    if (!selectedId) return;
+    stoppingAll = true;
+    try {
+      const result = await engineCall<{ cancelled: number }>("collection.cancel_all", { id: selectedId });
+      await loadCollections(); await selectCollection(selectedId, true);
+      error = `已取消 ${result.cancelled} 个任务`;
+    } catch (e) { error = `取消失败：${e}`; }
+    finally { stoppingAll = false; }
+  }
+
+  async function resumeAll() {
+    if (!selectedId) return;
+    stoppingAll = true;
+    try {
+      const result = await engineCall<{ resumed: number }>("collection.resume_all", { id: selectedId });
+      await loadCollections(); await selectCollection(selectedId, true);
+      error = `已恢复 ${result.resumed} 个任务`;
+    } catch (e) { error = `恢复失败：${e}`; }
+    finally { stoppingAll = false; }
   }
 
   async function importFolder() {
@@ -249,7 +298,15 @@
           <div class="detail-actions">
             <button class="btn btn-secondary btn-sm" onclick={() => showAddItems = true}><Icon name="plus" size={14} />添加条目</button>
             <button class="btn btn-secondary btn-sm" onclick={exportCollection}><Icon name="download" size={14} />导出</button>
-            <button class="btn btn-primary btn-sm" onclick={batchProcess} disabled={processing || detail.items.length === 0}><Icon name="play" size={14} />{processing ? "提交中" : "批量处理"}</button>
+            <button class="btn btn-primary btn-sm" onclick={batchProcess} disabled={processing || stoppingAll || detail.items.length === 0}>
+              <Icon name="play" size={14} />{processing ? "提交中" : "批量处理"}</button>
+            {#if hasPausedItems}
+              <button class="btn btn-secondary btn-sm" onclick={resumeAll} disabled={stoppingAll}><Icon name="play" size={14} />恢复全部</button>
+            {/if}
+            {#if hasActionableItems}
+              <button class="btn btn-secondary btn-sm" onclick={pauseAll} disabled={stoppingAll}><Icon name="pause" size={14} />暂停全部</button>
+              <button class="btn btn-danger btn-sm" onclick={cancelAll} disabled={stoppingAll}><Icon name="x" size={14} />取消全部</button>
+            {/if}
             <button class="icon-btn danger-button" onclick={() => confirmDeleteId = detail?.id ?? null} title="删除合集"><Icon name="trash" size={15} /></button>
           </div>
         </header>

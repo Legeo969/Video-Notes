@@ -36,21 +36,27 @@ export async function refreshJobs(): Promise<JobInfo[]> {
 }
 
 export function applyJobEvent(event: JobProgressEvent) {
-  jobs.update((items) =>
-    items.map((job) =>
+  let found = false;
+  jobs.update((items) => {
+    const updated = items.map((job) =>
       job.id === event.job_id
-        ? {
+        ? ({
             ...job,
             status: event.status,
             stage: event.stage,
             progress: Math.max(0, Math.min(100, event.progress)),
             progress_message: event.message,
             heartbeat_at: event.timestamp ?? job.heartbeat_at,
-          }
+          } as JobInfo)
         : job
-    )
-  );
-  scheduleRefresh();
+    );
+    // If the job id isn't in the store yet, it's a new job — do a full refresh
+    found = updated.some((job) => job.id === event.job_id);
+    return updated;
+  });
+  if (!found) {
+    scheduleRefresh();
+  }
 }
 
 export async function initializeJobEvents(): Promise<() => void> {
