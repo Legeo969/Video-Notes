@@ -338,15 +338,23 @@ mod tests {
         save_jobs(&engine.jobs_state_path, &jobs).unwrap();
 
         let reloaded = engine_for_root(&root);
-        let jobs = reloaded
+        let list = reloaded
             .call("process.list", json!({ "limit": 10 }))
             .expect("method handled")
             .expect("list succeeds");
-        for job in jobs.as_array().unwrap() {
-            assert_eq!(job["status"], "interrupted");
+        let jobs = list.as_array().unwrap();
+
+        // pending, running, pausing, cancelling -> interrupted
+        for job in jobs.iter().take(4) {
+            assert_eq!(job["status"], "interrupted", "job {} should be interrupted", job["id"]);
             assert_eq!(job["can_resume"], false);
             assert!(job["completed_at"].as_str().unwrap_or_default().len() > 0);
         }
+        // paused -> stays paused
+        let paused = &jobs[4];
+        assert_eq!(paused["status"], "paused", "paused job should stay paused after restart");
+        assert_eq!(paused["can_resume"], true);
+        assert!(paused["completed_at"].as_str().unwrap_or_default().is_empty(), "paused job should not have completed_at");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -515,6 +523,7 @@ mod tests {
             &engine.jobs,
             &engine.jobs_state_path,
             &engine.app_handle,
+            &engine.data_dir,
             1,
             "failed",
             "failed",

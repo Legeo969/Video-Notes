@@ -834,7 +834,7 @@
                   <label class="field-label" for="settings_max_frames">最大帧数</label>
                   <input id="settings_max_frames" type="number" bind:value={settings.max_frames} min={1} max={10000} oninput={markDirty} />
                 </div>
-                <div class="field">
+                <div class="field field-full">
                   <label class="field-label" for="settings_frame_interval">抽帧间隔（秒）</label>
                   <input id="settings_frame_interval" type="number" bind:value={settings.frame_interval} min={0.1} max={600} step={0.1} oninput={markDirty} disabled={settings.frame_mode === "adaptive"} />
                   {#if settings.frame_mode === "adaptive"}<small style="color:var(--text-tertiary);font-size:10px;margin-top:2px;">自适应模式自动计算间隔</small>{/if}
@@ -1603,6 +1603,7 @@
   .model-availability.installed { color: var(--success-color); background: var(--success-soft); }
   .model-id { margin-top: 6px; overflow: hidden; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .field-full { grid-column: 1 / -1; }
   .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .btn-xs { min-height: 26px; padding: 4px 8px; font-size: 12px; }
   .ocr-test-field { justify-content: end; }

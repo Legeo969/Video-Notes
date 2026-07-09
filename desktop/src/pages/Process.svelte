@@ -7,6 +7,7 @@
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import StatusPill from "../lib/components/StatusPill.svelte";
+  import type { ProviderProfile } from "../lib/types";
   import {
     buildWhisperModelCatalog,
     normalizeLocalWhisperModels,
@@ -36,6 +37,7 @@
   let localWhisperModels = $state<LocalWhisperModel[]>([]);
   let modelsLoading = $state(true);
   let modelScanError = $state("");
+  let providers = $state<ProviderProfile[]>([]);
   const paddleOcrModelOptions = [
     "PaddleOCR-VL-1.6",
     "PaddleOCR-VL-1.5",
@@ -61,26 +63,26 @@
   let activeCount = $derived($jobs.filter((job) => ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status)).length);
   let completedCount = $derived($jobs.filter((job) => job.status === "completed").length);
   let recentJob = $derived($jobs[0]);
+  let visionCapability = $derived.by(() => {
+    if (!visionEnabled || !activeProvider) return null;
+    const profile = providers.find((p) => p.active);
+    if (!profile) return null;
+    const model = profile.vision_model || profile.model;
+    if (!model) return null;
+    const cap = profile.capabilities?.[model];
+    if (!cap) return null;
+    return cap;
+  });
 
   onMount(async () => {
     modelsLoading = true;
     try {
-      const [settings, discovered] = await Promise.all([
-        engineCall<{
-          whisper_model?: string;
-          transcription_backend?: string;
-          ocr_enabled?: boolean;
-          ocr_backend?: string;
-          ocr_model?: string;
-          vision_enabled?: boolean;
-          active_provider?: string;
-          whisper_device?: string;
-          frame_mode?: string;
-          frame_interval?: number;
-          max_frames?: number;
-        }>("settings.get"),
+      const [rawSettings, discovered] = await Promise.all([
+        engineCall<Record<string, any>>("settings.get"),
         engineCall<Array<string | LocalWhisperModel>>("settings.models.local"),
       ]);
+      const settings = rawSettings as any;
+      providers = (settings.providers || []) as ProviderProfile[];
       const normalizedModels = normalizeLocalWhisperModels(discovered);
       localWhisperModels = normalizedModels;
       const preferred = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
@@ -415,6 +417,19 @@
               <span class="switch-track"></span>
             </span>
           </button>
+          {#if visionEnabled && visionCapability}
+            {#if visionCapability.vision === "fail"}
+              <div class="alert alert-error" style="margin-top: 8px; grid-column: 1 / -1;">
+                <Icon name="alert" size={15} />
+                <span>视觉模型曾测试失败：{visionCapability.error || visionCapability.message || "未知错误"}。请先在设置页测试视觉模型兼容性。</span>
+              </div>
+            {:else if visionCapability.vision === "pass"}
+              <div class="alert alert-success" style="margin-top: 8px; grid-column: 1 / -1;">
+                <Icon name="check" size={15} />
+                <span>视觉模型可用，最后测试于 {visionCapability.last_tested_at ? new Date(visionCapability.last_tested_at).toLocaleString() : "未知时间"}。</span>
+              </div>
+            {/if}
+          {/if}
         </div>
 
         <div class="task-preflight">

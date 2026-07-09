@@ -1746,14 +1746,16 @@ impl NativeEngine {
         let job_controls = self.job_controls.clone();
         let app_handle = self.app_handle.clone();
         let runtime_dir = self.runtime_dir.clone();
+        let data_dir = self.data_dir.clone();
         std::thread::spawn(move || {
             let panic_jobs = jobs.clone();
             let panic_path = jobs_state_path.clone();
             let panic_handle = app_handle.clone();
+            let panic_data_dir = data_dir.clone();
             let panic_id = id;
             if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_native_job(
-                    jobs, jobs_state_path, app_handle, id,
+                    jobs, jobs_state_path, app_handle, data_dir, id,
                     input, title, output_dir, runtime_dir,
                     model_dirs, whisper_model, whisper_device,
                     provider, ocr_config, vision_enabled,
@@ -1767,7 +1769,7 @@ impl NativeEngine {
                     .or_else(|| panic.downcast_ref::<&str>().map(|&s| s.to_string()))
                     .unwrap_or_else(|| "unknown panic".to_string());
                 update_job(
-                    &panic_jobs, &panic_path, &panic_handle, panic_id,
+                    &panic_jobs, &panic_path, &panic_handle, &panic_data_dir, panic_id,
                     "failed", "failed", 100,
                     &format!("job panicked: {msg}"),
                     Some(msg), None, None,
@@ -1821,22 +1823,141 @@ impl NativeEngine {
 
     fn process_resume(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
-        let control = self.job_control(id)?;
-        let previous_pause = control.pause_requested.swap(false, Ordering::SeqCst);
-        if let Err(error) = self.transition_job_action(
+
+        // In-session resume: job has an active JobControl
+        if let Ok(control) = self.job_control(id) {
+            let previous_pause = control.pause_requested.swap(false, Ordering::SeqCst);
+            if let Err(error) = self.transition_job_action(
+                id,
+                &["pausing", "paused"],
+                "running",
+                None,
+                "继续执行任务",
+                false,
+            ) {
+                control
+                    .pause_requested
+                    .store(previous_pause, Ordering::SeqCst);
+                return Err(error);
+            }
+            control.condvar.notify_all();
+            return Ok(json!(true));
+        }
+
+        // After restart: job is paused but no JobControl exists
+        // Reconstruct parameters from settings_snapshot and spawn a new worker
+        let (input, title, output_dir, whisper_model, whisper_device,
+             vision_enabled, frame_interval, max_frames, frame_mode,
+             ocr_enabled, ocr_backend, ocr_endpoint, ocr_model) = {
+            let jobs = self.jobs.lock()
+                .map_err(|_| "jobs lock poisoned".to_string())?;
+            let job = jobs.iter().find(|j| j.id == id)
+                .ok_or_else(|| format!("Job {id} not found"))?;
+            if job.status != "paused" || !job.can_resume {
+                return Err(format!(
+                    "Job {id} cannot be resumed (status: {}, can_resume: {})",
+                    job.status, job.can_resume
+                ));
+            }
+            let snapshot = job.settings_snapshot.as_ref()
+                .ok_or_else(|| format!("Job {id} has no settings snapshot; cannot resume"))?;
+            let task = snapshot.get("task_params")
+                .ok_or_else(|| "Missing task_params in snapshot".to_string())?;
+            let _workspace = job.workspace_dir.as_ref()
+                .filter(|d| Path::new(d).exists())
+                .ok_or_else(|| format!("Job {id} workspace not found; cannot resume"))?;
+
+            // Clone all values while the lock is held
+            let input = required_string(task, "input")?;
+            let title = task.get("title").and_then(Value::as_str).map(String::from);
+            let output_dir_str = required_string(task, "output_dir")?;
+            let whisper_model = string_param(task, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
+            let whisper_device = string_param(task, "whisper_device").unwrap_or_else(|| "auto".to_string());
+            let vision_enabled = task.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false);
+            let frame_interval = task.get("frame_interval").and_then(Value::as_f64).unwrap_or(30.0);
+            let max_frames = task.get("max_frames").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(30);
+            let frame_mode = string_param(task, "frame_mode").unwrap_or_else(|| "fixed".to_string());
+            let ocr_enabled = task.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false);
+            let ocr_backend = string_param(task, "ocr_backend").unwrap_or_else(|| "tesseract".to_string());
+            let ocr_endpoint = string_param(task, "ocr_http_endpoint").unwrap_or_default();
+            let ocr_model = string_param(task, "ocr_model").unwrap_or_else(|| "PaddleOCR-VL-1.6".to_string());
+            drop(jobs);
+
+            (input, title, PathBuf::from(output_dir_str),
+             whisper_model, whisper_device,
+             vision_enabled, frame_interval, max_frames, frame_mode,
+             ocr_enabled, ocr_backend, ocr_endpoint, ocr_model)
+        };
+
+        // Reconstruct provider profile from snapshot
+        let provider = None; // Provider API key not persisted in snapshot
+
+        // Reconstruct OCR config
+        let ocr_config = OcrRuntimeConfig {
+            enabled: ocr_enabled,
+            backend: ocr_backend,
+            endpoint: ocr_endpoint,
+            api_key: String::new(),
+            model: ocr_model,
+        };
+
+        // Transition job to running
+        self.transition_job_action(
             id,
-            &["pausing", "paused"],
+            &["paused"],
             "running",
             None,
-            "继续执行任务",
+            "继续执行任务（重启后恢复）",
             false,
-        ) {
-            control
-                .pause_requested
-                .store(previous_pause, Ordering::SeqCst);
-            return Err(error);
+        )?;
+
+        // Create new JobControl
+        let control = Arc::new(JobControl::new());
+        {
+            let mut controls = self.job_controls.lock()
+                .map_err(|_| "job controls lock poisoned".to_string())?;
+            controls.insert(id, control.clone());
         }
-        control.condvar.notify_all();
+
+        // Spawn resume worker thread
+        let jobs = self.jobs.clone();
+        let jobs_state_path = self.jobs_state_path.clone();
+        let job_controls = self.job_controls.clone();
+        let app_handle = self.app_handle.clone();
+        let runtime_dir = self.runtime_dir.clone();
+        let model_dirs = whisper_model_dirs(&self.read_settings(), &self.data_dir);
+        let data_dir = self.data_dir.clone();
+
+        std::thread::spawn(move || {
+            let panic_jobs = jobs.clone();
+            let panic_path = jobs_state_path.clone();
+            let panic_handle = app_handle.clone();
+            let panic_data_dir = data_dir.clone();
+            let panic_id = id;
+            if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_native_job(
+                    jobs, jobs_state_path, app_handle, data_dir, id,
+                    input, title, output_dir, runtime_dir,
+                    model_dirs, whisper_model, whisper_device,
+                    provider, ocr_config, vision_enabled,
+                    frame_interval, max_frames, frame_mode,
+                    control, job_controls,
+                );
+            })) {
+                let msg = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|&s| s.to_string()))
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                update_job(
+                    &panic_jobs, &panic_path, &panic_handle, &panic_data_dir, panic_id,
+                    "failed", "failed", 100,
+                    &format!("job panicked: {msg}"),
+                    Some(msg), None, None,
+                );
+            }
+        });
+
         Ok(json!(true))
     }
 
@@ -2800,7 +2921,7 @@ fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
     for job in &mut jobs {
         if matches!(
             job.status.as_str(),
-            "pending" | "running" | "pausing" | "cancelling" | "paused"
+            "pending" | "running" | "pausing" | "cancelling"
         ) {
             job.status = "interrupted".to_string();
             job.stage = "interrupted".to_string();
@@ -2811,6 +2932,19 @@ fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
             job.completed_at = Some(now.clone());
             job.can_resume = false;
             changed = true;
+        } else if job.status == "paused" {
+            // Keep paused jobs as paused after restart — user can resume
+            if !job.can_resume {
+                job.can_resume = true;
+                changed = true;
+            }
+            if !job.progress_message.contains("重启") {
+                job.progress_message = format!(
+                    "{}（应用重启后保持暂停）",
+                    job.progress_message
+                );
+                changed = true;
+            }
         }
     }
     if changed {
@@ -3097,6 +3231,7 @@ fn run_native_job(
     jobs: Arc<Mutex<Vec<NativeJob>>>,
     jobs_state_path: PathBuf,
     app_handle: Option<AppHandle>,
+    data_dir: PathBuf,
     id: u64,
     input: String,
     title: Option<String>,
@@ -3139,6 +3274,7 @@ fn run_native_job(
                 &jobs,
                 &jobs_state_path,
                 &app_handle,
+                &data_dir,
                 id,
                 &control,
                 $stage,
@@ -3156,6 +3292,7 @@ fn run_native_job(
         &jobs,
         &jobs_state_path,
         &app_handle,
+        &data_dir,
         id,
         "running",
         "resolving",
@@ -3174,6 +3311,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "failed",
             "failed",
@@ -3199,6 +3337,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "running",
             "downloading",
@@ -3219,6 +3358,7 @@ fn run_native_job(
                     &jobs,
                     &jobs_state_path,
                     &app_handle,
+                    &data_dir,
                     id,
                     "failed",
                     "failed",
@@ -3238,6 +3378,7 @@ fn run_native_job(
                 &jobs,
                 &jobs_state_path,
                 &app_handle,
+                &data_dir,
                 id,
                 "failed",
                 "failed",
@@ -3277,6 +3418,7 @@ fn run_native_job(
         &jobs,
         &jobs_state_path,
         &app_handle,
+        &data_dir,
         id,
         "running",
         "transcribing",
@@ -3321,6 +3463,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "running",
             "extracting_frames",
@@ -3416,6 +3559,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "running",
             "vision_analyzing",
@@ -3582,6 +3726,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "failed",
             "failed",
@@ -3600,6 +3745,7 @@ fn run_native_job(
         &jobs,
         &jobs_state_path,
         &app_handle,
+        &data_dir,
         id,
         "running",
         "generating_notes",
@@ -3705,6 +3851,7 @@ fn run_native_job(
             &jobs,
             &jobs_state_path,
             &app_handle,
+            &data_dir,
             id,
             "failed",
             "failed",
@@ -3722,6 +3869,7 @@ fn run_native_job(
         &jobs,
         &jobs_state_path,
         &app_handle,
+        &data_dir,
         id,
         "completed",
         "completed",
@@ -3737,6 +3885,7 @@ fn update_job(
     jobs: &Arc<Mutex<Vec<NativeJob>>>,
     jobs_state_path: &Path,
     app_handle: &Option<AppHandle>,
+    data_dir: &Path,
     id: u64,
     status: &str,
     stage: &str,
@@ -3747,6 +3896,7 @@ fn update_job(
     transcript_path: Option<String>,
 ) {
     let mut event = None;
+    let mut workspace_to_cleanup: Option<PathBuf> = None;
     if let Ok(mut locked) = jobs.lock() {
         if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
             let mut next_status = status.to_string();
@@ -3774,6 +3924,11 @@ fn update_job(
             job.can_resume = next_status == "paused";
             if is_terminal_status(&next_status) {
                 job.completed_at = Some(Utc::now().to_rfc3339());
+                if normalize_artifact_cleanup_policy(&job.artifact_cleanup_policy)
+                    == "delete_workspace"
+                {
+                    workspace_to_cleanup = job.workspace_dir.clone().map(PathBuf::from);
+                }
             }
             if let Some(error) = next_error {
                 job.error_message = Some(error);
@@ -3793,6 +3948,26 @@ fn update_job(
                 &next_message,
             ));
             let _ = save_jobs(jobs_state_path, &locked);
+        }
+    }
+    if let Some(workspace_dir) = workspace_to_cleanup {
+        let workspace_path = PathBuf::from(&workspace_dir);
+        if !workspace_path.as_os_str().is_empty() && workspace_path.parent().is_some() {
+            if let Some(name) = workspace_path.file_name().and_then(|v| v.to_str()) {
+                if name.starts_with("job-") {
+                    if let Ok(canonical) = workspace_path.canonicalize() {
+                        let allowed_roots = [data_dir.join("jobs"), data_dir.join(".jobs")];
+                        for root in allowed_roots {
+                            if let Ok(root) = root.canonicalize() {
+                                if canonical.parent() == Some(root.as_path()) {
+                                    let _ = fs::remove_dir_all(&canonical);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     if let (Some(handle), Some(payload)) = (app_handle, event) {
@@ -3838,6 +4013,7 @@ fn checkpoint_job_control(
     jobs: &Arc<Mutex<Vec<NativeJob>>>,
     jobs_state_path: &Path,
     app_handle: &Option<AppHandle>,
+    data_dir: &Path,
     id: u64,
     control: &Arc<JobControl>,
     stage: &str,
@@ -3849,6 +4025,7 @@ fn checkpoint_job_control(
             jobs,
             jobs_state_path,
             app_handle,
+            data_dir,
             id,
             "cancelled",
             "cancelled",
@@ -3866,6 +4043,7 @@ fn checkpoint_job_control(
             jobs,
             jobs_state_path,
             app_handle,
+            data_dir,
             id,
             "paused",
             stage,
@@ -3893,6 +4071,7 @@ fn checkpoint_job_control(
                 jobs,
                 jobs_state_path,
                 app_handle,
+                data_dir,
                 id,
                 "cancelled",
                 "cancelled",
@@ -3908,6 +4087,7 @@ fn checkpoint_job_control(
             jobs,
             jobs_state_path,
             app_handle,
+            data_dir,
             id,
             "running",
             stage,
