@@ -8,7 +8,7 @@
   import Notes from "./pages/Notes.svelte";
   import Collections from "./pages/Collections.svelte";
   import Settings from "./pages/Settings.svelte";
-  import { activeJobs, initializeJobEvents, refreshJobs } from "./lib/stores/jobs";
+  import { activeJobs, initializeJobEvents, navigateTo, refreshJobs } from "./lib/stores/jobs";
   import { getEngineStatus, onEngineEvent, runningInTauri, toErrorMessage } from "./lib/api";
   import type { PageName } from "./lib/types";
 
@@ -44,6 +44,14 @@
       });
     }
   }
+
+  $effect(() => {
+    const target = $navigateTo;
+    if (target) {
+      currentPage = target;
+      navigateTo.set(null);
+    }
+  });
 
   onMount(() => {
     const disposers: Array<() => void> = [];

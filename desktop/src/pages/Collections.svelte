@@ -4,6 +4,7 @@
   import { engineCall, runningInTauri } from "../lib/api";
   import type { CollectionInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
+  import { navigateTo } from "../lib/stores/jobs";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import StatusPill from "../lib/components/StatusPill.svelte";
@@ -348,7 +349,14 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
                   <span><StatusPill status={item.status} label={statusLabel(item.status)} /><em>{Math.round(item.progress || 0)}%</em></span>
                   <span class="progress-track"><span class="progress-bar" style={`width:${item.progress || 0}%`}></span></span>
                 </span>
-                <button class="icon-btn remove-item" onclick={() => removeItem(item.id)} title="从合集中移除"><Icon name="trash" size={14} /></button>
+                <span class="row-actions">
+                  {#if item.run_id}
+                    <button class="link-btn" onclick={() => navigateTo.set("tasks")} title="在任务中心查看">
+                      <Icon name="external" size={13} />任务
+                    </button>
+                  {/if}
+                  <button class="icon-btn remove-item" onclick={() => removeItem(item.id)} title="从合集中移除"><Icon name="trash" size={14} /></button>
+                </span>
               </article>
             {/each}
           {/if}
@@ -465,8 +473,8 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .items-toolbar span { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
   .item-counter { margin: 0 !important; padding: 4px 8px; border-radius: 99px; background: var(--bg-muted); font-size: 12px !important; font-weight: 650; }
   .items-list { padding: 0 22px 22px; }
-  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 40px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
-  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 40px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
+  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 120px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 120px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
   .media-row:last-child { border-bottom: 0; }
   .row-index { color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
   .row-media-icon { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
@@ -477,6 +485,9 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .row-status > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
   .row-status em { color: var(--text-secondary); font-size: 12px; font-style: normal; }
   .row-status .progress-track { height: 4px; }
+  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+  .link-btn { display: inline-flex; align-items: center; gap: 4px; border: 0; color: var(--accent-color); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; padding: 4px 8px; border-radius: 6px; }
+  .link-btn:hover { background: var(--accent-soft); }
   .remove-item { width: 31px; height: 31px; color: var(--text-tertiary); }
   .remove-item:hover { color: var(--danger-color); background: var(--danger-soft); }
   .detail-loading, .collection-welcome { min-height: 560px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
@@ -558,8 +569,8 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
     .collection-list { max-height: 260px; }
     .detail-header { flex-direction: column; align-items: flex-start; gap: 10px; }
     .detail-actions { width: 100%; flex-wrap: wrap; }
-    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 34px; }
-    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 34px; gap: 5px; padding: 7px 2px; }
+    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 110px; }
+    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 110px; gap: 5px; padding: 7px 2px; }
     .detail-progress-strip { grid-template-columns: 85px 1fr; }
     .collection-metrics { grid-template-columns: repeat(3, 1fr); }
     .detail-actions .btn { min-height: 30px; padding: 5px 9px; font-size: 11px; }

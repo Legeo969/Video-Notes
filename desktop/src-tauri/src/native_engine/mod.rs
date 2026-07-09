@@ -103,6 +103,8 @@ struct NativeJob {
     parent_run_id: Option<String>,
     #[serde(default = "default_artifact_cleanup_policy")]
     artifact_cleanup_policy: String,
+    #[serde(default)]
+    note_id: Option<u32>,
 }
 
 struct JobControl {
@@ -1717,6 +1719,7 @@ impl NativeEngine {
             attempt,
             parent_run_id,
             artifact_cleanup_policy,
+            note_id: None,
         };
         let control = Arc::new(JobControl::new());
         {
@@ -2895,7 +2898,7 @@ impl NativeJob {
             "output_path": self.output_path,
             "transcript_path": self.transcript_path,
             "frames_count": self.frames_count,
-            "note_id": null,
+            "note_id": self.note_id,
             "settings_snapshot": self.settings_snapshot,
             "workspace_dir": self.workspace_dir,
             "attempt": self.attempt,
@@ -3865,6 +3868,9 @@ fn run_native_job(
     }
     checkpoint!("completed", 99, "准备完成任务");
 
+    // Set note_id for cross-navigation
+    update_job_note_id(&jobs, &jobs_state_path, id, note_id(&note_path));
+
     update_job(
         &jobs,
         &jobs_state_path,
@@ -4121,6 +4127,20 @@ fn update_job_frames(
     }
     if let (Some(handle), Some(payload)) = (app_handle, event) {
         let _ = handle.emit("job:progress", payload);
+    }
+}
+
+fn update_job_note_id(
+    jobs: &Arc<Mutex<Vec<NativeJob>>>,
+    jobs_state_path: &Path,
+    id: u64,
+    note_id: u32,
+) {
+    if let Ok(mut locked) = jobs.lock() {
+        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
+            job.note_id = Some(note_id);
+            let _ = save_jobs(jobs_state_path, &locked);
+        }
     }
 }
 

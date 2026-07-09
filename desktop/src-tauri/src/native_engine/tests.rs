@@ -44,7 +44,8 @@ mod tests {
             workspace_dir: None,
             attempt: 1,
             parent_run_id: None,
-            artifact_cleanup_policy: default_artifact_cleanup_policy(),
+artifact_cleanup_policy: default_artifact_cleanup_policy(),
+            note_id: None,
         }
     }
 

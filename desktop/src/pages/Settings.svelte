@@ -5,6 +5,8 @@
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import StatusPill from "../lib/components/StatusPill.svelte";
+  import ProvidersPanel from "../lib/components/settings/ProvidersPanel.svelte";
+  import ProviderFormDialog from "../lib/components/settings/ProviderFormDialog.svelte";
   import {
     buildWhisperModelCatalog,
     normalizeLocalWhisperModels,
@@ -95,50 +97,6 @@
     vision_model: "",
   });
 
-  const providerTypeOptions = [
-    {
-      id: "openai_compat",
-      label: "OpenAI Compatible",
-      hint: "Chat Completions 兼容接口，例如 OpenAI 兼容网关、阿里云百炼兼容模式。",
-      defaultBaseUrl: "https://api.openai.com/v1",
-      defaultModel: "gpt-4o-mini",
-      defaultVisionModel: "gpt-4o-mini",
-      supported: true,
-    },
-    {
-      id: "google_gemini",
-      label: "Google Gemini",
-      hint: "Google Generative Language API，使用 gemini-* 模型。",
-      defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
-      defaultModel: "gemini-2.5-flash",
-      defaultVisionModel: "gemini-2.5-flash",
-      supported: true,
-    },
-    {
-      id: "anthropic_messages",
-      label: "Anthropic Messages",
-      hint: "Anthropic /v1/messages 接口，使用 claude-* 模型。",
-      defaultBaseUrl: "https://api.anthropic.com/v1",
-      defaultModel: "claude-sonnet-4-5",
-      defaultVisionModel: "claude-sonnet-4-5",
-      supported: true,
-    },
-    {
-      id: "openai_responses",
-      label: "OpenAI Responses",
-      hint: "OpenAI /v1/responses 接口，适合新版 OpenAI API 调用。",
-      defaultBaseUrl: "https://api.openai.com/v1",
-      defaultModel: "gpt-5.5",
-      defaultVisionModel: "gpt-5.5",
-      supported: true,
-    },
-  ];
-
-  const providerTypeLabels: Record<string, string> = Object.fromEntries(providerTypeOptions.map((item) => [item.id, item.label]));
-  providerTypeLabels.mimo = "OpenAI Compatible";
-  providerTypeLabels.dashscope = "OpenAI Compatible";
-  providerTypeLabels.openai = "OpenAI Compatible";
-  providerTypeLabels.llama_cpp = "OpenAI Compatible";
   const whisperModelDownloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
   const officialPaddleOcrModelOptions = [
     "PaddleOCR-VL-1.6",
@@ -211,11 +169,6 @@
   let discoveringProviderModels = $state(false);
   let paddleOcrModelOptions = $state<string[]>([...officialPaddleOcrModelOptions]);
 
-  let filteredProviders = $derived.by(() => {
-    const q = providerSearch.trim().toLowerCase();
-    if (!q) return providers;
-    return providers.filter((p) => [p.name, p.provider, p.model, p.vision_model || ""].some((v) => v.toLowerCase().includes(q)));
-  });
   let selectedTemplate = $derived(templates.find((template) => template.id === settings.template));
   let passedChecks = $derived(checkResults.filter((item) => item.status === "pass").length);
   let whisperCatalog = $derived(buildWhisperModelCatalog(localWhisperModels, settings.whisper_model, true));
@@ -348,11 +301,6 @@
     editingProviderName = null;
   }
 
-  const selectedProviderType = $derived(providerTypeOptions.find((item) => item.id === providerForm.provider) ?? providerTypeOptions[0]);
-  let providerTypeUnsupported = $derived(!selectedProviderType.supported);
-
-  function handleProviderTypeChange() { providerModelOptions = []; }
-
   function providerDiscoveryName() {
     if (!editingProviderName) return undefined;
     const saved = providers.find((item) => item.name === editingProviderName);
@@ -392,7 +340,6 @@
 
   async function saveProvider() {
     if (!providerForm.name.trim()) { showToast("供应商名称不能为空", "error"); return; }
-    if (providerTypeUnsupported) { showToast("该 API 类型暂不可用于自动笔记任务。", "error"); return; }
     if (!providerForm.model.trim()) { showToast("文本模型不能为空", "error"); return; }
     providerSaving = true;
     try {
@@ -514,32 +461,6 @@
       } catch (_e) {}
       testingVision = false;
     }
-  }
-
-  function providerVisionModel(p: ProviderProfile) {
-    return (p.vision_model || p.model || "").trim();
-  }
-
-  function providerVisionCapability(p: ProviderProfile) {
-    const model = providerVisionModel(p);
-    return model ? p.capabilities?.[model] : undefined;
-  }
-
-  function providerVisionStatus(p: ProviderProfile) {
-    return providerVisionCapability(p)?.vision ?? "unknown";
-  }
-
-  function providerVisionStatusLabel(p: ProviderProfile) {
-    const status = providerVisionStatus(p);
-    return status === "pass" ? "pass" : status === "fail" ? "fail" : "unknown";
-  }
-
-  function providerVisionDetail(p: ProviderProfile) {
-    const capability = providerVisionCapability(p);
-    if (!capability) return "尚未测试";
-    const summary = capability.error || capability.message || "无摘要";
-    const time = capability.last_tested_at ? new Date(capability.last_tested_at).toLocaleString("zh-CN") : "未知时间";
-    return `${time} · ${summary}`;
   }
 
   async function clearProviderCapabilities(provider?: string) {
@@ -926,66 +847,20 @@
           </section>
 
         {:else if activeTab === "providers"}
-          <section class="settings-pane">
-            <div class="pane-head actions-head">
-              <div><span>AI PROVIDERS</span><h2>AI 供应商</h2><p>管理笔记生成与视觉理解使用的模型服务。</p></div>
-              <button class="btn btn-primary" onclick={openAddProvider}><Icon name="plus" size={15} />添加供应商</button>
-            </div>
-
-            <div class="provider-overview">
-              <div><span class="overview-icon"><Icon name="server" size={18} /></span><strong>{providers.length}</strong><small>已配置供应商</small></div>
-              <div><span class="overview-icon active"><Icon name="activity" size={18} /></span><strong>{settings.active_provider || "未设置"}</strong><small>当前活动供应商</small></div>
-              <div><span class="overview-icon secure"><Icon name="key" size={18} /></span><strong>{providers.filter((p) => p.api_key_configured).length}</strong><small>已配置安全凭据</small></div>
-            </div>
-
-            <div class="provider-toolbar">
-              <div class="provider-search input-wrap has-icon"><span class="input-icon"><Icon name="search" size={15} /></span><input type="search" bind:value={providerSearch} placeholder="搜索供应商、模型或类型" /></div>
-              <span>{filteredProviders.length} 个配置</span>
-            </div>
-
-            {#if filteredProviders.length === 0}
-              <EmptyState icon="bot" title={providerSearch ? "没有匹配的供应商" : "尚未配置 AI 供应商"} description={providerSearch ? "尝试更换搜索关键词。" : "添加 OpenAI 兼容、阿里云百炼或 MiMo 服务，开始生成 AI 笔记。"}>
-                {#snippet action()}<button class="btn btn-primary btn-sm" onclick={openAddProvider}><Icon name="plus" size={14} />添加第一个供应商</button>{/snippet}
-              </EmptyState>
-            {:else}
-              <div class="provider-grid">
-                {#each filteredProviders as p (p.name)}
-                  <article class="provider-card" class:active-provider={p.name === settings.active_provider}>
-                    <header class="provider-head">
-                      <div class="provider-avatar"><Icon name="bot" size={20} /></div>
-                      <div class="provider-name"><div><h3>{p.name}</h3>{#if p.name === settings.active_provider}<StatusPill status="completed" label="活动" />{/if}</div><span>{providerTypeLabels[p.provider] || p.provider}</span></div>
-                      <button class="icon-btn" onclick={() => openEditProvider(p)} title="编辑供应商"><Icon name="edit" size={14} /></button>
-                    </header>
-
-                    <div class="provider-models">
-                      <div><span><Icon name="file-text" size={13} />文本模型</span><strong>{p.model || "未配置"}</strong></div>
-                      <div><span><Icon name="eye" size={13} />视觉模型</span><strong>{p.vision_model || "跟随文本模型"}</strong></div>
-                    </div>
-
-                    <div class="provider-capability" class:pass={providerVisionStatus(p) === "pass"} class:fail={providerVisionStatus(p) === "fail"}>
-                      <span>vision capability</span>
-                      <strong>{providerVisionStatusLabel(p)}</strong>
-                      <small>{providerVisionDetail(p)}</small>
-                    </div>
-
-                    <div class="provider-endpoint"><span>API ENDPOINT</span><code>{p.base_url || "供应商默认地址"}</code></div>
-
-                    <div class="provider-key">
-                      <span class="key-status" class:configured={p.api_key_configured}><Icon name="key" size={14} /><span><strong>{p.api_key_configured ? "API Key 已配置" : "尚未配置 API Key"}</strong><small>{p.api_key_preview || "凭据保存在本机安全存储"}</small></span></span>
-                      {#if p.api_key_configured}<button class="text-danger" onclick={() => deleteApiKey(p.name)}>删除密钥</button>{/if}
-                    </div>
-
-                    <footer class="provider-footer">
-                      <button class="btn btn-secondary btn-sm" onclick={() => testConnection(p)} disabled={testingProvider === p.name}><Icon name="activity" size={13} />{testingProvider === p.name ? "正在测试" : "测试连接"}</button>
-                      <button class="btn btn-secondary btn-sm" onclick={() => clearProviderCapabilities(p.name)} disabled={clearingCapabilities === p.name}><Icon name="refresh" size={13} />{clearingCapabilities === p.name ? "清除中" : "清除能力缓存"}</button>
-                      {#if p.name !== settings.active_provider}<button class="btn btn-primary btn-sm" onclick={() => setActiveProvider(p.name)}><Icon name="check" size={13} />设为活动</button>{:else}<span class="active-note"><Icon name="check" size={13} />当前默认</span>{/if}
-                      <button class="icon-btn delete-provider" onclick={() => deleteProvider(p.name)} title="删除供应商"><Icon name="trash" size={14} /></button>
-                    </footer>
-                  </article>
-                {/each}
-              </div>
-            {/if}
-          </section>
+          <ProvidersPanel
+            {providers}
+            activeProvider={settings.active_provider}
+            {testingProvider}
+            {clearingCapabilities}
+            bind:providerSearch
+            onSetActive={setActiveProvider}
+            onTestConnection={testConnection}
+            onClearCapabilities={clearProviderCapabilities}
+            onOpenAddProvider={openAddProvider}
+            onOpenEditProvider={openEditProvider}
+            onDeleteProvider={deleteProvider}
+            onDeleteApiKey={deleteApiKey}
+          />
 
         {:else if activeTab === "templates"}
           <section class="settings-pane">
@@ -1225,59 +1100,18 @@
 </div>
 
 {#if showProviderModal}
-  <div class="modal-overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && closeProviderModal()}>
-    <div class="modal-shell provider-modal" role="dialog" aria-modal="true" aria-labelledby="provider-modal-title">
-      <header class="modal-header">
-        <div class="modal-title-wrap"><div class="modal-provider-icon"><Icon name="bot" size={21} /></div><div><span>{editingProviderName ? "EDIT PROVIDER" : "NEW PROVIDER"}</span><h2 id="provider-modal-title">{editingProviderName ? "编辑 AI 供应商" : "添加 AI 供应商"}</h2><p>配置文本生成、视觉理解模型与安全访问凭据。</p></div></div>
-        <button class="icon-btn" onclick={closeProviderModal} aria-label="关闭弹窗"><Icon name="x" size={15} /></button>
-      </header>
-
-      <div class="modal-body provider-form">
-        <section class="form-section">
-          <div class="form-section-head"><span>01</span><div><h3>基础信息</h3><p>用于在应用内识别和管理此服务。</p></div></div>
-          <div class="form-grid two-cols">
-            <div class="field"><label class="field-label" for="prov_name">配置名称 <small>必填</small></label><input id="prov_name" type="text" bind:value={providerForm.name} disabled={!!editingProviderName} placeholder="例如：阿里云百炼 / Gemini / Claude" /></div>
-            <div class="field"><label class="field-label" for="prov_type">API 类型</label><select id="prov_type" bind:value={providerForm.provider} onchange={handleProviderTypeChange}>{#each providerTypeOptions as option}<option value={option.id} disabled={!option.supported}>{option.label}{option.supported ? "" : "（暂不可用于自动任务）"}</option>{/each}</select><small class="field-help">{selectedProviderType.hint}</small></div>
-          </div>
-        </section>
-
-        <section class="form-section">
-          <div class="form-section-head provider-model-head"><span>02</span><div><h3>服务端点与模型</h3><p>可从供应商真实 `/models` 接口读取模型；读取失败不会伪造列表，也不会覆盖手动输入。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={discoverProviderModels} disabled={discoveringProviderModels || providerTypeUnsupported || !providerForm.base_url.trim()}><Icon name="refresh" size={13} />{discoveringProviderModels ? "读取中" : "读取模型"}</button></div>
-          {#if providerTypeUnsupported}
-            <div class="provider-type-warning"><Icon name="alert" size={15} /><span>ChatGPT Codex (Plus/Pro) 属于 ChatGPT 账号内的 Codex 产品能力，不是可直接用 API Key 调用的服务端点；本应用当前不会把它作为自动笔记生成供应商。</span></div>
-          {/if}
-          <div class="field"><label class="field-label" for="prov_base_url">Base URL <small>{providerForm.provider === "google_gemini" ? "Gemini API 根地址" : providerForm.provider === "anthropic_messages" ? "Anthropic API 根地址" : providerForm.provider === "openai_responses" ? "OpenAI API 根地址" : "兼容接口通常以 /v1 结尾"}</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="prov_base_url" type="text" bind:value={providerForm.base_url} placeholder={selectedProviderType.defaultBaseUrl || "由后续适配器提供"} disabled={providerTypeUnsupported} /></div></div>
-          <div class="form-grid two-cols">
-            <div class="field model-picker-field">
-              <label class="field-label" for="prov_model">文本模型 <small>笔记生成</small></label>
-              <select class="model-choice" aria-label="从真实读取的模型中选择文本模型" onchange={(event) => chooseProviderModel(event, "model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
-                <option value="">{providerModelOptions.length ? "从读取列表选择…" : "读取成功后可选择"}</option>
-                {#each providerModelOptions as model}<option value={model}>{model}</option>{/each}
-              </select>
-              <div class="input-wrap has-icon"><span class="input-icon"><Icon name="file-text" size={15} /></span><input id="prov_model" type="text" bind:value={providerForm.model} placeholder="输入精确模型 ID" disabled={providerTypeUnsupported} /></div>
-              <small class="field-help">当前值会实际用于笔记生成，不要填写模型数量、菜单标题等展示文字。</small>
-            </div>
-            <div class="field model-picker-field">
-              <label class="field-label" for="prov_vision_model">视觉模型 <small>画面理解</small></label>
-              <select class="model-choice" aria-label="从真实读取的模型中选择视觉模型" onchange={(event) => chooseProviderModel(event, "vision_model")} disabled={providerTypeUnsupported || providerModelOptions.length === 0}>
-                <option value="">{providerModelOptions.length ? "从读取列表选择…" : "读取成功后可选择"}</option>
-                {#each providerModelOptions as model}<option value={model}>{model}</option>{/each}
-              </select>
-              <div class="input-wrap has-icon"><span class="input-icon"><Icon name="eye" size={15} /></span><input id="prov_vision_model" type="text" bind:value={providerForm.vision_model} placeholder={providerForm.model || "输入视觉模型 ID"} disabled={providerTypeUnsupported} /></div>
-              <small class="field-help">服务没有独立视觉模型时，可与文本模型保持相同。</small>
-            </div>
-          </div>
-        </section>
-
-        <section class="form-section secure-section">
-          <div class="form-section-head"><span>03</span><div><h3>安全凭据</h3><p>{editingProviderName ? "留空将保留现有 API Key。" : "凭据只保存在本机安全存储，不会进入任务快照。"}</p></div><span class="secure-badge"><Icon name="shield" size={13} />本机加密</span></div>
-          <div class="field"><label class="field-label" for="prov_api_key">API Key {#if editingProviderName}<small>可选更新</small>{/if}</label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="prov_api_key" type="password" bind:value={providerForm.api_key} placeholder={editingProviderName ? "输入新密钥以替换，或留空保持不变" : "sk-..."} disabled={providerTypeUnsupported} /></div></div>
-        </section>
-      </div>
-
-      <footer class="modal-footer provider-modal-footer"><span><Icon name="info" size={14} />保存后可在供应商卡片上测试连接。</span><div><button class="btn btn-secondary" onclick={closeProviderModal}>取消</button><button class="btn btn-primary" onclick={saveProvider} disabled={providerSaving || providerTypeUnsupported || !providerForm.name.trim() || !providerForm.model.trim()}><Icon name="save" size={15} />{providerSaving ? "正在保存" : "保存供应商"}</button></div></footer>
-    </div>
-  </div>
+  <ProviderFormDialog
+    show={showProviderModal}
+    {editingProviderName}
+    bind:providerForm
+    {providerSaving}
+    {providerModelOptions}
+    {discoveringProviderModels}
+    onClose={closeProviderModal}
+    onSave={saveProvider}
+    onDiscoverModels={discoverProviderModels}
+    onChooseModel={chooseProviderModel}
+  />
 {/if}
 
 <style>
@@ -1356,58 +1190,6 @@
   .toggle-copy strong { font-size: 14px; }
   .toggle-copy small { margin-top: 3px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
-  .provider-overview { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin: 16px 0; }
-  .provider-overview > div { display: grid; grid-template-columns: 34px minmax(0,1fr); grid-template-rows: auto auto; align-items: center; column-gap: 9px; padding: 10px; border-radius: 10px; background: var(--bg-subtle); }
-  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
-  .overview-icon.active { color: var(--success-color); background: var(--success-soft); }
-  .overview-icon.secure { color: var(--warning-color); background: var(--warning-soft); }
-  .provider-overview strong { overflow: hidden; color: var(--text-primary); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-overview small { color: var(--text-tertiary); font-size: 11px; }
-  .provider-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .provider-search { width: 280px; }
-  .provider-search input { min-height: 35px; font-size: 13px; }
-  .provider-toolbar > span { color: var(--text-tertiary); font-size: 12px; }
-  .provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
-  .provider-card { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); box-shadow: var(--shadow-xs); transition: border-color .14s, box-shadow .14s; }
-  .provider-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
-  .provider-card.active-provider { border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color)); box-shadow: 0 0 0 3px var(--accent-glow); }
-  .provider-head { display: grid; grid-template-columns: 40px minmax(0,1fr) 34px; align-items: center; gap: 10px; padding: 14px 14px 0; }
-  .provider-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
-  .provider-name { display: flex; min-width: 0; flex-direction: column; }
-  .provider-name > div { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .provider-name h3 { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-name > span { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
-
-  .provider-model-head { grid-template-columns: 30px minmax(0,1fr); align-items: start; }
-  .provider-model-head .btn { grid-column: 2; justify-self: start; min-height: 34px; margin-top: 9px; white-space: nowrap; }
-  .model-picker-field { gap: 8px; }
-  .model-choice { width: 100%; min-height: 40px; padding: 0 36px 0 11px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-card); font: inherit; }
-  .model-choice:disabled { color: var(--text-tertiary); background: var(--bg-subtle); cursor: not-allowed; }
-  .field-help { display: block; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
-  .provider-models { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 14px 0; }
-  .provider-models > div { display: flex; min-width: 0; flex-direction: column; padding: 8px; border-radius: 8px; background: var(--bg-subtle); }
-  .provider-models span { display: flex; align-items: center; gap: 4px; color: var(--text-tertiary); font-size: 11px; }
-  .provider-models strong { margin-top: 3px; overflow: hidden; color: var(--text-primary); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-capability { display: grid; grid-template-columns: auto auto; gap: 3px 8px; align-items: center; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; color: var(--text-tertiary); background: var(--bg-subtle); font-size: 11px; }
-  .provider-capability strong { justify-self: start; padding: 2px 7px; border-radius: 999px; color: var(--text-tertiary); background: var(--bg-hover); font-size: 11px; }
-  .provider-capability small { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-capability.pass strong { color: var(--success-color); background: var(--success-soft); }
-  .provider-capability.fail strong { color: var(--danger-color); background: var(--danger-soft); }
-  .provider-endpoint { display: flex; flex-direction: column; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
-  .provider-endpoint span { color: var(--text-tertiary); font-size: 10px; font-weight: 750; letter-spacing: .08em; }
-  .provider-endpoint code { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-  .provider-key { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 14px 0; }
-  .key-status { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); }
-  .key-status.configured { color: var(--success-color); }
-  .key-status > span { display: flex; flex-direction: column; }
-  .key-status strong { color: var(--text-secondary); font-size: 12px; }
-  .key-status small { margin-top: 1px; color: var(--text-tertiary); font-size: 11px; }
-  .text-danger { border: 0; color: var(--danger-color); background: transparent; cursor: pointer; font-size: 11px; }
-  .provider-footer { display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
-  .active-note { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--success-color); font-size: 12px; font-weight: 650; }
-  .delete-provider { width: 32px; height: 32px; margin-left: auto; color: var(--text-tertiary); }
-  .delete-provider:hover { color: var(--danger-color); background: var(--danger-soft); }
-
   .selected-template-banner { display: grid; grid-template-columns: 54px minmax(0,1fr) auto; align-items: center; gap: 13px; margin: 18px 0; padding: 15px; border: 1px solid color-mix(in srgb, var(--accent-color) 26%, var(--border-color)); border-radius: 14px; background: linear-gradient(145deg, var(--accent-faint), var(--bg-card)); }
   .template-hero-icon { display: grid; place-items: center; width: 54px; height: 54px; border-radius: 16px; color: var(--accent-color); background: var(--accent-soft); }
   .selected-template-banner > div:nth-child(2) { display: flex; min-width: 0; flex-direction: column; }
@@ -1455,28 +1237,9 @@
   .floating-save-bar strong { font-size: 13px; }
   .floating-save-bar small { color: var(--text-tertiary); font-size: 11px; }
 
-  .provider-modal { width: min(780px, calc(100vw - 48px)); }
-  .modal-title-wrap { display: flex; align-items: flex-start; gap: 11px; }
-  .modal-provider-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: var(--accent-color); background: var(--accent-soft); }
-  .modal-title-wrap > div:last-child { display: flex; flex-direction: column; }
-  .modal-title-wrap > div:last-child > span { color: var(--accent-color); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
-  .provider-form { display: flex; flex-direction: column; gap: 18px; }
-  .form-section { padding-bottom: 18px; border-bottom: 1px solid var(--border-color); }
-  .form-section:last-child { padding-bottom: 0; border-bottom: 0; }
-  .form-section-head { display: grid; grid-template-columns: 30px minmax(0,1fr); align-items: start; gap: 10px; margin-bottom: 13px; }
-  .form-section-head > span:first-child { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--accent-color); background: var(--accent-soft); font-size: 12px; font-weight: 800; }
-  .form-section-head > div { display: flex; flex-direction: column; }
-  .form-section-head h3 { font-size: 14px; }
-  .form-section-head p { margin-top: 2px; color: var(--text-secondary); font-size: 12px; }
-  .secure-section .form-section-head { grid-template-columns: 30px minmax(0,1fr) auto; }
-  .secure-badge { display: flex !important; align-items: center; gap: 5px; width: auto !important; height: 26px !important; padding: 0 8px; border-radius: 8px !important; color: var(--success-color) !important; background: var(--success-soft) !important; font-size: 11px !important; letter-spacing: 0 !important; }
-  .provider-modal-footer { justify-content: space-between; }
-  .provider-modal-footer > span { display: flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 12px; }
-  .provider-modal-footer > div { display: flex; gap: 8px; }
-
   @media (max-width: 1120px) {
     .settings-shell { grid-template-columns: minmax(190px, 210px) minmax(0,1fr); }
-    .provider-grid, .template-grid { grid-template-columns: 1fr; }
+    .template-grid { grid-template-columns: 1fr; }
     .model-cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   }
 
@@ -1494,8 +1257,6 @@
   .model-cards { padding: 4px; gap: 4px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-subtle); }
   .model-card { min-height: 94px; padding: 10px; border-color: transparent; border-radius: 9px; background: transparent; }
   .model-card.selected { border-color: var(--border-color); background: var(--bg-card); box-shadow: var(--shadow-xs); }
-  .provider-modal { width: min(740px, calc(100vw - 48px)); }
-  .form-section { border-radius: 13px; }
 
 
   /* UI v7 — settings designed as a readable control center */
@@ -1524,31 +1285,12 @@
   .setting-toggle-card { min-height: 76px; padding: 16px; }
   .toggle-copy strong { font-size: 14px; }
   .toggle-copy small { font-size: 12px; }
-  .provider-overview > div { min-height: 76px; padding: 14px; }
-  .provider-overview strong { font-size: 18px; }
-  .provider-overview small { font-size: 11px; }
-  .provider-search input { min-height: 42px; font-size: 13px; }
-  .provider-card { border-radius: 13px; }
-  .provider-head { padding: 14px 14px 0; }
-  .provider-name h3 { font-size: 14px; }
-  .provider-name > span { font-size: 11px; }
-  .provider-models { padding: 10px 14px 0; gap: 6px; }
-  .provider-models span { font-size: 11px; }
-  .provider-models strong { font-size: 13px; }
-  .provider-endpoint { margin: 10px 14px 0; padding: 8px 10px; }
-  .provider-endpoint span { font-size: 10px; }
-  .provider-endpoint code { font-size: 11px; }
-  .provider-key { margin: 10px 14px 0; }
-  .provider-footer { padding: 10px 14px; }
   .template-card { min-height: 126px; padding: 16px; }
   .template-card-copy strong { font-size: 14px; }
   .template-card-copy p { font-size: 12px; }
   .check-row { min-height: 62px; padding: 12px 14px; }
   .check-name strong { font-size: 13px; }
   .check-row p { font-size: 12px; }
-  .provider-modal { width: min(820px, calc(100vw - 48px)); }
-  .form-section-head h3 { font-size: 15px; }
-  .form-section-head p { font-size: 12px; }
 
   @media (max-width: 920px) {
     .group-head.with-action { grid-template-columns: 38px minmax(0,1fr); }
@@ -1566,7 +1308,7 @@
   @media (max-width: 1180px) {
     .settings-shell { grid-template-columns: 220px minmax(0,1fr); }
     .settings-pane { padding: 24px; }
-    .provider-grid, .template-grid { grid-template-columns: 1fr; }
+    .template-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 1050px) {
@@ -1661,11 +1403,9 @@
     .security-note { display: none; }
     .form-grid.two-cols { grid-template-columns: 1fr; }
     .model-cards { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
-    .provider-grid { grid-template-columns: 1fr; }
     .template-grid { grid-template-columns: 1fr; }
     .plugin-grid { grid-template-columns: 1fr; }
     .enhancement-settings-grid { grid-template-columns: 1fr; }
-    .provider-overview { grid-template-columns: 1fr; }
     .runtime-settings-grid { grid-template-columns: 1fr; }
     .storage-grid { grid-template-columns: 1fr; }
     .check-head, .check-row { grid-template-columns: minmax(100px, .5fr) 70px minmax(140px, 1fr); gap: 8px; }
@@ -1675,7 +1415,5 @@
     .diagnostic-actions { flex-wrap: wrap; }
     .group-head.with-action { grid-template-columns: 1fr; gap: 10px; }
     .group-actions { grid-column: 1; justify-content: flex-start; }
-    .provider-toolbar { flex-direction: column; gap: 8px; }
-    .provider-search { width: 100%; }
   }
 </style>

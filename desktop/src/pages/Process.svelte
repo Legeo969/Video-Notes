@@ -2,11 +2,9 @@
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { engineCall, runningInTauri, toErrorMessage } from "../lib/api";
-  import { jobs, refreshJobs } from "../lib/stores/jobs";
+  import { jobs, refreshJobs, navigateTo } from "../lib/stores/jobs";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
-  import EmptyState from "../lib/components/EmptyState.svelte";
-  import StatusPill from "../lib/components/StatusPill.svelte";
   import type { ProviderProfile } from "../lib/types";
   import {
     buildWhisperModelCatalog,
@@ -60,9 +58,7 @@
   let currentJob = $derived(
     startedJobId === null ? undefined : $jobs.find((job) => job.id === startedJobId)
   );
-  let activeCount = $derived($jobs.filter((job) => ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status)).length);
-  let completedCount = $derived($jobs.filter((job) => job.status === "completed").length);
-  let recentJob = $derived($jobs[0]);
+
   let visionCapability = $derived.by(() => {
     if (!visionEnabled || !activeProvider) return null;
     const profile = providers.find((p) => p.active);
@@ -253,14 +249,7 @@
     title="创建视频笔记"
     description="导入本地媒体或公开视频链接，AI 将自动完成转录、画面分析与结构化笔记生成。"
     icon="sparkles"
-  >
-    {#snippet actions()}
-      <div class="header-stats">
-        <div><strong>{activeCount}</strong><span>处理中</span></div>
-        <div><strong>{completedCount}</strong><span>已完成</span></div>
-      </div>
-    {/snippet}
-  </PageHeader>
+  />
 
   <div class="workspace-grid">
     <section class="builder-card surface-raised">
@@ -483,56 +472,26 @@
           </button>
         </div>
       </div>
+
+      {#if startedJobId !== null && currentJob}
+        <div class="submit-success">
+          <div class="success-icon"><Icon name="check" size={24} /></div>
+          <div class="success-copy">
+            <strong>任务已提交</strong>
+            <p>任务 #{currentJob.id} 已进入后台处理，可在<button class="link-btn" onclick={() => navigateTo.set("tasks")}>任务中心</button>查看实时进度。</p>
+          </div>
+        </div>
+      {/if}
     </section>
 
-    <aside class="side-column">
-      <section class="current-task surface">
-        <div class="side-title"><div><span>LIVE STATUS</span><h2>当前任务</h2></div>{#if currentJob}<StatusPill status={currentJob.status} />{/if}</div>
-        {#if currentJob}
-          <div class="current-job-head">
-            <div class="job-media-icon"><Icon name="video" size={19} /></div>
-            <div><strong>{currentJob.title || fileName(currentJob.input) || "未命名任务"}</strong><small>任务 #{currentJob.id} · 第 {currentJob.attempt || 1} 次执行</small></div>
-          </div>
-          <div class="big-progress-number"><strong>{Math.round(currentJob.progress || 0)}</strong><span>%</span></div>
-          <div class="progress-track"><div class="progress-bar" style={`width:${Math.max(1, currentJob.progress || 0)}%`}></div></div>
-          <div class="progress-caption"><span>{currentJob.progress_message || currentJob.stage}</span><span>实时同步</span></div>
-          {#if currentJob.error_message}<div class="alert alert-error mini-alert"><Icon name="alert" size={15} /><span>{currentJob.error_message}</span></div>{/if}
-          <div class="persistence-note"><Icon name="shield" size={16} /><p>当前任务进度实时同步；导出的笔记和 assets 会保存在输出目录。</p></div>
-        {:else}
-          <EmptyState icon="activity" title="尚未提交任务" description="开始处理后，实时阶段和进度会显示在这里。" compact />
-        {/if}
-      </section>
 
-      <section class="quick-overview surface">
-        <div class="side-title"><div><span>WORKSPACE</span><h2>工作概览</h2></div></div>
-        <div class="overview-grid">
-          <div><span class="overview-icon active"><Icon name="activity" size={17} /></span><strong>{activeCount}</strong><small>活动任务</small></div>
-          <div><span class="overview-icon done"><Icon name="check" size={17} /></span><strong>{completedCount}</strong><small>完成任务</small></div>
-        </div>
-        {#if recentJob}
-          <div class="recent-row"><span>最近任务</span><strong>{recentJob.title || fileName(recentJob.input)}</strong><StatusPill status={recentJob.status} /></div>
-        {:else}
-          <div class="recent-row empty"><span>最近任务</span><strong>暂无任务记录</strong></div>
-        {/if}
-      </section>
-
-      <section class="tips-card">
-        <div class="tip-icon"><Icon name="info" size={17} /></div>
-        <div><strong>首次运行建议</strong><p>先用 30–60 秒视频关闭 OCR 和视觉理解测试主链路，再逐项启用增强功能。</p></div>
-      </section>
-    </aside>
   </div>
 </div>
 
 <style>
 .process-page { max-width: 1380px; }
-  .header-stats { display: flex; align-items: center; gap: 6px; padding: 5px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
-  .header-stats div { min-width: 70px; padding: 5px 11px; text-align: center; }
-  .header-stats div + div { border-left: 1px solid var(--border-color); }
-  .header-stats strong { display: block; font-size: 20px; line-height: 1.1; }
-  .header-stats span { color: var(--text-tertiary); font-size: 13px; }
 
-  .workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 328px; gap: 20px; align-items: start; }
+  .workspace-grid { display: flex; flex-direction: column; gap: 0; }
   .builder-card { overflow: hidden; }
   .workflow-steps { display: flex; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
   .workflow-step { display: flex; align-items: center; gap: 9px; color: var(--text-tertiary); }
@@ -605,59 +564,8 @@
   .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  .side-column { display: flex; flex-direction: column; gap: 14px; }
-  .current-task, .quick-overview { padding: 19px; }
-  .side-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
-  .side-title > div { display: flex; flex-direction: column; }
-  .side-title span:first-child { color: var(--accent-color); font-size: 12px; font-weight: 800; letter-spacing: .12em; }
-  .side-title h2 { margin-top: 3px; font-size: 16px; }
-  .current-job-head { display: flex; align-items: center; gap: 10px; }
-  .job-media-icon { display: grid; place-items: center; width: 40px; height: 40px; flex: 0 0 auto; border-radius: 12px; color: var(--accent-color); background: var(--accent-soft); }
-  .current-job-head > div:last-child { display: flex; min-width: 0; flex-direction: column; }
-  .current-job-head strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-  .current-job-head small { margin-top: 2px; color: var(--text-tertiary); font-size: 13px; }
-  .big-progress-number { display: flex; align-items: baseline; margin: 20px 0 9px; }
-  .big-progress-number strong { font-size: 40px; line-height: 1; font-weight: 760; letter-spacing: -.05em; }
-  .big-progress-number span { margin-left: 3px; color: var(--text-tertiary); font-size: 15px; }
-  .progress-caption { display: flex; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--text-secondary); font-size: 12px; }
-  .progress-caption span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .progress-caption span:last-child { flex: 0 0 auto; color: var(--success-color); }
-  .mini-alert { margin-top: 12px; }
-  .persistence-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--border-color); color: var(--text-tertiary); }
-  .persistence-note p { font-size: 12px; line-height: 1.55; }
-
-  .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .overview-grid > div { display: grid; grid-template-columns: 34px 1fr; grid-template-rows: auto auto; column-gap: 9px; padding: 11px; border-radius: 11px; background: var(--bg-subtle); border: 1px solid var(--border-color); }
-  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; }
-  .overview-icon.active { color: var(--info-color); background: var(--info-soft); }
-  .overview-icon.done { color: var(--success-color); background: var(--success-soft); }
-  .overview-grid strong { font-size: 18px; line-height: 1.1; }
-  .overview-grid small { color: var(--text-tertiary); font-size: 12px; }
-  .recent-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--border-color); }
-  .recent-row > span:first-child { color: var(--text-tertiary); font-size: 12px; }
-  .recent-row > strong { min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-  .recent-row.empty { grid-template-columns: auto 1fr; }
-
-  .tips-card { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border: 1px solid color-mix(in srgb, var(--info-color) 17%, var(--border-color)); border-radius: 13px; background: var(--info-soft); }
-  .tip-icon { color: var(--info-color); }
-  .tips-card div:last-child { display: flex; flex-direction: column; }
-  .tips-card strong { color: var(--info-color); font-size: 13px; }
-  .tips-card p { margin-top: 3px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
-
-  @media (max-width: 1180px) {
-    .workspace-grid { grid-template-columns: 1fr; }
-    .side-column { display: grid; grid-template-columns: 1fr 1fr; }
-    .tips-card { grid-column: 1 / -1; }
-  }
-
-  @media (max-width: 1100px) {
-    .side-column { grid-template-columns: 1fr; }
-  }
-
   .process-page { max-width: 1280px; }
-  .header-stats { padding: 3px; border-radius: 10px; box-shadow: none; }
-  .header-stats div { min-width: 66px; padding: 4px 10px; }
-  .workspace-grid { grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
+  .workspace-grid { gap: 16px; }
   .builder-card { border-radius: 18px; box-shadow: var(--shadow-sm); }
   .workflow-steps { padding: 13px 20px; background: var(--bg-card); }
   .workflow-step > span { width: 24px; height: 24px; border-radius: 8px; }
@@ -670,10 +578,10 @@
   .media-picker:hover { background: var(--accent-faint); }
   .enhancement-card { min-height: 70px; border-radius: 12px; }
   .submit-bar { padding: 14px 23px; }
-  .side-column { position: sticky; top: 0; }
-  .current-task, .quick-overview { padding: 17px; border-radius: 15px; }
-  .tips-card { border-radius: 13px; }
-  @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 1fr; } .side-column { position: static; } }
+
+  @media (max-width: 1180px) {
+    .workspace-grid { gap: 14px; }
+  }
 
   @media (max-width: 1100px) {
     .workspace-grid { gap: 14px; }
@@ -692,7 +600,6 @@
 
   /* UI v7 — usable creator workspace */
   .process-page { max-width: 1240px; }
-  .workspace-grid { grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; }
   .builder-card { border-radius: 16px; box-shadow: var(--shadow-sm); }
   .workflow-steps { padding: 16px 24px; }
   .workflow-step > span { width: 30px; height: 30px; }
@@ -716,27 +623,13 @@
   .submit-bar { padding: 16px 30px; }
   .submit-summary strong { font-size: 13px; }
   .submit-summary small { font-size: 11px; color: var(--text-tertiary); }
-  .side-column { position: sticky; top: 0; gap: 14px; }
-  .current-task, .quick-overview { padding: 18px; }
-  .side-title span:first-child { font-size: 10px; }
-  .side-title h2 { font-size: 15px; }
-  .current-job-head strong { font-size: 13px; }
-  .current-job-head small { font-size: 10px; color: var(--text-tertiary); }
-  .progress-caption, .persistence-note p { font-size: 10px; }
-  .overview-grid small, .recent-row > span:first-child { font-size: 10px; }
-  .recent-row > strong, .tips-card strong { font-size: 11px; }
-  .tips-card p { font-size: 10px; }
   .task-preflight { font-size: 11px; color: var(--text-tertiary); }
 
   @media (max-width: 1280px) {
-    .workspace-grid { grid-template-columns: 1fr; }
-    .side-column { position: static; display: grid; grid-template-columns: 1fr 1fr; }
-    .tips-card { grid-column: 1 / -1; }
+    .workspace-grid { gap: 16px; }
   }
 
   @media (max-width: 960px) {
-    .workspace-grid { grid-template-columns: 1fr; }
-    .side-column { position: static; display: flex; flex-direction: column; }
     .enhancement-grid { grid-template-columns: 1fr; }
     .model-picker-control { grid-template-columns: 1fr; }
     .whisper-runtime-grid { grid-template-columns: 1fr; }
@@ -744,7 +637,6 @@
     .submit-summary { min-width: 0; }
     .submit-summary small { white-space: normal; }
     .submit-actions { justify-content: flex-end; }
-    .header-stats { flex-wrap: wrap; }
     .workflow-step small { display: none; }
     .advanced-panel { grid-template-columns: 1fr; }
     .picker-copy span { white-space: normal; }
@@ -805,4 +697,25 @@
   .whisper-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
   @media (max-width: 980px) { .enhancement-grid { grid-template-columns: 1fr; } .ocr-backend-card select { width: 100%; } }
   @media (max-width: 760px) { .whisper-runtime-grid { grid-template-columns: 1fr; } }
+
+  /* Submit success state */
+  .submit-success {
+    display: flex; align-items: flex-start; gap: 14px;
+    margin-top: 18px; padding: 16px 18px;
+    border: 1px solid color-mix(in srgb, var(--success-color) 25%, var(--border-color));
+    border-radius: 12px;
+    background: var(--success-soft);
+  }
+  .success-icon {
+    display: grid; place-items: center;
+    width: 42px; height: 42px; flex: 0 0 auto;
+    border-radius: 11px;
+    color: var(--success-color);
+    background: color-mix(in srgb, var(--success-color) 12%, transparent);
+  }
+  .success-copy { display: flex; flex-direction: column; gap: 4px; }
+  .success-copy strong { font-size: 15px; }
+  .success-copy p { color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+  .link-btn { border: 0; color: var(--accent-color); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; padding: 0; text-decoration: underline; }
+  .link-btn:hover { color: var(--accent-strong); }
 </style>

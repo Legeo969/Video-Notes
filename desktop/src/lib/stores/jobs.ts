@@ -1,6 +1,6 @@
 import { derived, get, writable } from "svelte/store";
 import { engineCall, onEngineEvent } from "../api";
-import type { JobInfo, JobProgressEvent } from "../types";
+import type { JobInfo, JobProgressEvent, PageName } from "../types";
 
 export const jobs = writable<JobInfo[]>([]);
 export const jobsLoading = writable(false);
@@ -8,6 +8,12 @@ export const jobsError = writable("");
 export const activeJobs = derived(jobs, ($jobs) =>
   $jobs.filter((job) => ["pending", "running", "pausing", "cancelling", "paused"].includes(job.status))
 );
+
+/** Set by Tasks.svelte to auto-select a note on the Notes page */
+export const selectedNoteId = writable<number | null>(null);
+
+/** Set by Tasks.svelte to trigger page navigation in App.svelte */
+export const navigateTo = writable<PageName | null>(null);
 
 let eventUnlisten: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import type { PageName } from "../types";
 
@@ -11,6 +12,22 @@
     collections: { title: "合集" },
     settings: { title: "设置" },
   };
+
+  // Command palette state
+  let commandOpen = $state(false);
+  let commandQuery = $state("");
+
+  function handleKeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      e.preventDefault();
+      commandOpen = !commandOpen;
+    }
+  }
+
+  onMount(() => {
+    document.addEventListener("keydown", handleKeydown);
+    return () => document.removeEventListener("keydown", handleKeydown);
+  });
 </script>
 
 <header class="topbar" data-tauri-drag-region>
@@ -34,11 +51,37 @@
       <span>{engineOnline ? "Native 引擎在线" : "引擎离线"}</span>
     </div>
 
-    <button class="command-chip" type="button" title="前往笔记库搜索" onclick={() => navigate("notes")}>
+    <button class="command-chip" type="button" onclick={() => commandOpen = true} title="搜索 (Ctrl+K)">
       <Icon name="search" size={16} />
-      <span>搜索笔记</span>
+      <span>搜索命令…</span>
       <kbd>Ctrl K</kbd>
     </button>
+
+    {#if commandOpen}
+      <!-- Command palette overlay -->
+      <div class="command-overlay" role="presentation" onclick={() => commandOpen = false}>
+        <div class="command-palette" role="dialog" aria-modal="true" onclick={(e) => e.stopPropagation()}>
+          <div class="command-input-wrap">
+            <Icon name="search" size={18} />
+            <input type="text" class="command-input" placeholder="搜索页面、任务、笔记…" autofocus onkeydown={(e) => { if (e.key === "Escape") commandOpen = false; }} bind:value={commandQuery} />
+          </div>
+          <div class="command-results">
+            {#if commandQuery}
+              <div class="command-group">
+                <p class="command-group-label">页面</p>
+                <button class="command-item" onclick={() => { navigate("process"); commandOpen = false; }}><Icon name="sparkles" size={16} />创建笔记</button>
+                <button class="command-item" onclick={() => { navigate("tasks"); commandOpen = false; }}><Icon name="tasks" size={16} />任务中心</button>
+                <button class="command-item" onclick={() => { navigate("notes"); commandOpen = false; }}><Icon name="note" size={16} />笔记库</button>
+                <button class="command-item" onclick={() => { navigate("collections"); commandOpen = false; }}><Icon name="folder" size={16} />合集</button>
+                <button class="command-item" onclick={() => { navigate("settings"); commandOpen = false; }}><Icon name="settings" size={16} />设置</button>
+              </div>
+            {:else}
+              <p class="command-hint">输入关键词搜索页面、任务或笔记</p>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 </header>
 
@@ -160,6 +203,57 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: .45; }
+  }
+
+  .command-overlay {
+    position: fixed; inset: 0; z-index: 2000;
+    display: grid; place-items: start center; padding-top: 15vh;
+    background: rgba(14, 17, 28, .64); backdrop-filter: blur(10px);
+    animation: fade-in .12s ease;
+  }
+  .command-palette {
+    width: min(580px, calc(100vw - 48px));
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    animation: modal-in .15s ease;
+  }
+  .command-input-wrap {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-tertiary);
+  }
+  .command-input {
+    flex: 1; border: 0; outline: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 16px;
+  }
+  .command-input::placeholder { color: var(--text-tertiary); }
+  .command-results { padding: 8px; max-height: 360px; overflow-y: auto; }
+  .command-group { display: flex; flex-direction: column; gap: 2px; }
+  .command-group-label { padding: 6px 10px; color: var(--text-tertiary); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .command-item {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 9px 10px;
+    border: 0; border-radius: 8px;
+    color: var(--text-primary); background: transparent;
+    cursor: pointer; font-size: 14px; text-align: left;
+  }
+  .command-item:hover { background: var(--bg-hover); }
+  .command-hint { padding: 24px 16px; color: var(--text-tertiary); font-size: 14px; text-align: center; }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(-8px) scale(.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   @media (max-width: 1120px) {

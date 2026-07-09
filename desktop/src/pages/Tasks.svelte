@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { engineCall, toErrorMessage } from "../lib/api";
-  import { deleteJob, jobs, jobsError, jobsLoading, refreshJobs, runJobAction } from "../lib/stores/jobs";
+  import { deleteJob, jobs, jobsError, jobsLoading, navigateTo, refreshJobs, runJobAction, selectedNoteId } from "../lib/stores/jobs";
   import type { JobInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -170,6 +170,13 @@
       actionJobId = null;
     }
   }
+
+  function openNote(job: JobInfo) {
+    if (job.note_id) {
+      selectedNoteId.set(job.note_id);
+      navigateTo.set("notes");
+    }
+  }
 </script>
 
 <div class="page tasks-page">
@@ -270,6 +277,9 @@
                     <button class="icon-btn danger-action" title="再次请求取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if canRetry(job)}
                     <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />按原任务参数重试</button>
+                    {#if job.note_id}
+                      <button class="btn btn-primary btn-sm" onclick={() => openNote(job)}><Icon name="note" size={13} />打开笔记</button>
+                    {/if}
                   {:else}
                     <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
                   {/if}
@@ -305,6 +315,9 @@
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />再次取消</button>
             {:else if canRetry(selectedJob)}
               <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />按原任务参数重试</button>
+              {#if selectedJob.note_id}
+                <button class="btn btn-primary btn-sm" onclick={() => openNote(selectedJob)}><Icon name="note" size={13} />在笔记库中打开</button>
+              {/if}
             {/if}
             {#if canDelete(selectedJob)}
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>

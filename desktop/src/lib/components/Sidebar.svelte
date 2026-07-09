@@ -3,7 +3,7 @@
   import type { PageName } from "../types";
   import Icon from "./Icon.svelte";
 
-  let { navigate, active, engineOnline = true, activeJobCount = 0 }: { navigate: (page: string) => void; active: string; engineOnline?: boolean; activeJobCount?: number } = $props();
+  let { navigate, active }: { navigate: (page: string) => void; active: string } = $props();
   const pages: { id: PageName; label: string; icon: string }[] = [
     { id: "process", label: "创建笔记", icon: "sparkles" },
     { id: "tasks", label: "任务中心", icon: "tasks" },
@@ -11,9 +11,12 @@
     { id: "collections", label: "合集", icon: "folder" },
   ];
   const appVersion = __APP_VERSION__;
-  let darkMode = $state(false);
-  function applyTheme(isDark: boolean) { darkMode = isDark; document.documentElement.classList.toggle("dark", isDark); localStorage.setItem("video-notes-theme", isDark ? "dark" : "light"); }
-  onMount(() => { const saved = localStorage.getItem("video-notes-theme"); const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches; applyTheme(saved ? saved === "dark" : Boolean(prefersDark)); });
+  onMount(() => {
+    const saved = localStorage.getItem("video-notes-theme");
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    const isDark = saved ? saved === "dark" : Boolean(prefersDark);
+    document.documentElement.classList.toggle("dark", isDark);
+  });
 </script>
 
 <aside class="sidebar">
@@ -25,18 +28,14 @@
     <p class="nav-label">工作空间</p>
     <ul>
       {#each pages as page}
-        <li><button class="nav-item" class:active={active === page.id} onclick={() => navigate(page.id)} aria-current={active === page.id ? "page" : undefined}><span class="nav-icon"><Icon name={page.icon} size={17} /></span><span>{page.label}</span>{#if page.id === "tasks" && activeJobCount > 0}<em>{activeJobCount}</em>{/if}</button></li>
+        <li><button class="nav-item" class:active={active === page.id} onclick={() => navigate(page.id)} aria-current={active === page.id ? "page" : undefined}><span class="nav-icon"><Icon name={page.icon} size={17} /></span><span>{page.label}</span></button></li>
       {/each}
     </ul>
     <p class="nav-label second">系统</p>
     <ul><li><button class="nav-item" class:active={active === "settings"} onclick={() => navigate("settings")}><span class="nav-icon"><Icon name="settings" size={17} /></span><span>设置</span></button></li></ul>
   </nav>
   <div class="sidebar-spacer"></div>
-  <section class="engine-card" class:offline={!engineOnline}>
-    <div class="engine-row"><span class="engine-symbol"><Icon name="activity" size={15} /></span><div><strong>{engineOnline ? "Native 引擎正常" : "处理引擎离线"}</strong><small>{engineOnline ? "设置和插件管理可用" : "查看页面顶部诊断"}</small></div><span class="engine-status-dot"></span></div>
-    {#if activeJobCount > 0}<div class="engine-progress"><span style={`width:${Math.min(100, 28 + activeJobCount * 14)}%`}></span></div>{/if}
-  </section>
-  <footer><button class="theme-button" onclick={() => applyTheme(!darkMode)}><Icon name={darkMode ? "sun" : "moon"} size={15} /><span>{darkMode ? "浅色外观" : "深色外观"}</span></button><span class="version">{appVersion}</span></footer>
+  <footer><span class="version">{appVersion}</span></footer>
 </aside>
 
 <style>
@@ -58,33 +57,15 @@
   .nav-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--text-tertiary); }
   .nav-item.active .nav-icon { color: var(--accent-color); }
   .nav-item > span:nth-child(2) { font-size: 14px; font-weight: 620; }
-  .nav-item em { display: grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 99px; color: #fff; background: var(--accent-color); font-size: 12px; font-style: normal; font-weight: 760; }
   .sidebar-spacer { flex: 1; min-height: 18px; }
-  .engine-card { margin: 0 1px 12px; padding: 13px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-card); }
-  .engine-row { display: grid; grid-template-columns: 34px minmax(0,1fr) 8px; align-items: center; gap: 8px; }
-  .engine-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--success-color); background: var(--success-soft); }
-  .offline .engine-symbol { color: var(--danger-color); background: var(--danger-soft); }
-  .engine-row div { min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
-  .engine-row strong { font-size: 13px; } .engine-row small { margin-top: 3px; color: var(--text-tertiary); font-size: 11px; }
-  .engine-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success-color); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success-color) 12%, transparent); }
-  .offline .engine-status-dot { background: var(--danger-color); box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger-color) 12%, transparent); }
-  .engine-progress { height: 3px; margin-top: 9px; overflow: hidden; border-radius: 99px; background: var(--bg-progress); }
-  .engine-progress span { display: block; height: 100%; border-radius: inherit; background: var(--accent-color); }
-  footer { display: flex; align-items: center; justify-content: space-between; padding: 9px 2px 0; border-top: 1px solid var(--border-color); }
-  .theme-button { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 5px 7px; border: 0; border-radius: 8px; color: var(--text-tertiary); background: transparent; cursor: pointer; font-size: 13px; }
-  .theme-button:hover { color: var(--text-primary); background: var(--bg-hover); }
+  footer { display: flex; align-items: center; justify-content: center; padding: 9px 2px 0; border-top: 1px solid var(--border-color); }
   .version { color: var(--text-tertiary); font-size: 12px; }
   @media (max-width: 1180px) { .sidebar { width: 220px; min-width: 220px; } }
   @media (max-width: 1050px) {
     .sidebar { width: 64px; min-width: 64px; padding: 18px 8px 14px; }
-    .brand-copy, nav p.nav-label, .nav-item > span:nth-child(2), .nav-item em, .engine-row div, .theme-button span, .version { display: none; }
+    .brand-copy, nav p.nav-label, .nav-item > span:nth-child(2), .version { display: none; }
     .brand { justify-content: center; padding: 0; }
     .nav-item { grid-template-columns: 1fr; justify-items: center; padding: 8px; min-height: 42px; }
     .nav-item.active::before { left: -4px; height: 14px; }
-    .engine-card { padding: 8px; }
-    .engine-row { grid-template-columns: 1fr; justify-items: center; }
-    .engine-status-dot { width: 6px; height: 6px; }
-    footer { justify-content: center; }
-    .theme-button { padding: 6px; }
   }
 </style>

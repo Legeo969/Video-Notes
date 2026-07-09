@@ -6,6 +6,7 @@
   import DOMPurify from "dompurify";
   import Icon from "../lib/components/Icon.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
+  import { selectedNoteId as selectedNoteIdStore } from "../lib/stores/jobs";
 
   let notes = $state<NoteInfo[]>([]);
   let searchQuery = $state("");
@@ -169,7 +170,14 @@
 
   function basename(path: string) { return path.split(/[\\/]/).pop() || path; }
 
-  $effect(() => { loadNotes(); });
+  $effect(() => {
+    loadNotes();
+    const targetNoteId = $selectedNoteIdStore;
+    if (targetNoteId !== null) {
+      selectedNoteId = targetNoteId;
+      selectedNoteIdStore.set(null);
+    }
+  });
 </script>
 
 <div class="notes-workspace">
