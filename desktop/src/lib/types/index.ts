@@ -117,7 +117,7 @@ export interface RpcEvent {
   params: Record<string, unknown>;
 }
 
-// Study Assistant types
+// ── Legacy tree type (for TreeAdapter compatibility) ──────────────
 export interface KnowledgeNode {
   id: string;
   label: string;
@@ -125,35 +125,55 @@ export interface KnowledgeNode {
   children: KnowledgeNode[];
 }
 
+// ── V2 Knowledge Graph types ─────────────────────────────────────
+
 export interface KnowledgeGraph {
-  nodes: GraphNode[];
-  relations: KnowledgeRelation[];
+  entities: Entity[];
+  relations: Relation[];
+  chapters: Chapter[];
   source: "ai" | "markdown";
 }
 
-export interface GraphNode {
+export interface Entity {
   id: string;
   name: string;
-  nodeType: GraphNodeType;
-  importance: number;
+  entityType: EntityType;
   summary: string;
-  source: string;
+  importance: number;
+  aliases: string[];
+  sourceRefs: SourceRef[];
 }
 
-export type GraphNodeType =
-  | "concept" | "tool" | "method" | "technology"
-  | "person" | "formula" | "problem" | "solution" | "chapter";
+export type EntityType =
+  | "concept" | "tool" | "technology" | "workflow" | "asset"
+  | "library" | "method" | "person" | "organization"
+  | "problem" | "solution";
 
-export interface KnowledgeRelation {
-  sourceId: string;
-  targetId: string;
+export interface Relation {
+  source: string;
+  target: string;
   relationType: RelationType;
   confidence: number;
+  evidence: string;
 }
 
 export type RelationType =
-  | "depends_on" | "used_for" | "part_of" | "improves"
-  | "replaces" | "conflicts_with" | "similar_to";
+  | "uses" | "depends_on" | "part_of" | "implements"
+  | "improves" | "generates" | "imports" | "exports"
+  | "related_to" | "similar_to" | "conflicts_with"
+  | "requires" | "produces" | "consumes";
+
+export interface Chapter {
+  title: string;
+  entityIds: string[];
+}
+
+export interface SourceRef {
+  noteId: string;
+  chapter: string;
+  timestamp: number | null;
+  quote: string;
+}
 
 export interface QuizQuestion {
   question: string;

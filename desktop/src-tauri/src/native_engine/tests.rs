@@ -1268,4 +1268,97 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
         assert_eq!(segments[1].ocr_text.as_deref(), Some("slide 2"));
         let _ = fs::remove_dir_all(&frame_dir);
     }
+
+    #[test]
+    fn collapse_repeated_segments_merges_consecutive_duplicates() {
+        let segments = vec![
+            TimelineSegment {
+                start_sec: 0.0, end_sec: 5.0, text: "hello".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+            TimelineSegment {
+                start_sec: 5.0, end_sec: 10.0, text: "hello".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+            TimelineSegment {
+                start_sec: 10.0, end_sec: 15.0, text: "hello".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+            TimelineSegment {
+                start_sec: 15.0, end_sec: 20.0, text: "world".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+        ];
+        let result = collapse_repeated_segments(segments);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "hello");
+        assert!((result[0].start_sec - 0.0).abs() < 0.01);
+        assert!((result[0].end_sec - 15.0).abs() < 0.01);
+        assert_eq!(result[1].text, "world");
+        assert!((result[1].start_sec - 15.0).abs() < 0.01);
+        assert!((result[1].end_sec - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn collapse_repeated_segments_keeps_non_consecutive_duplicates() {
+        let segments = vec![
+            TimelineSegment {
+                start_sec: 0.0, end_sec: 5.0, text: "A".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+            TimelineSegment {
+                start_sec: 5.0, end_sec: 10.0, text: "B".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+            TimelineSegment {
+                start_sec: 10.0, end_sec: 15.0, text: "A".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+        ];
+        let result = collapse_repeated_segments(segments);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].text, "A");
+        assert_eq!(result[1].text, "B");
+        assert_eq!(result[2].text, "A");
+    }
+
+    #[test]
+    fn collapse_repeated_segments_merges_frame_paths() {
+        let segments = vec![
+            TimelineSegment {
+                start_sec: 0.0, end_sec: 5.0, text: "dup".to_string(),
+                ocr_text: None, vision_summary: None,
+                frame_paths: vec![PathBuf::from("frame-001.png")],
+            },
+            TimelineSegment {
+                start_sec: 5.0, end_sec: 10.0, text: "dup".to_string(),
+                ocr_text: None, vision_summary: None,
+                frame_paths: vec![PathBuf::from("frame-002.png")],
+            },
+        ];
+        let result = collapse_repeated_segments(segments);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "dup");
+        assert!((result[0].end_sec - 10.0).abs() < 0.01);
+        assert_eq!(result[0].frame_paths.len(), 2);
+    }
+
+    #[test]
+    fn collapse_repeated_segments_handles_empty() {
+        let result = collapse_repeated_segments(Vec::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collapse_repeated_segments_handles_single() {
+        let segments = vec![
+            TimelineSegment {
+                start_sec: 0.0, end_sec: 5.0, text: "only".to_string(),
+                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
+            },
+        ];
+        let result = collapse_repeated_segments(segments);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "only");
+    }
 }

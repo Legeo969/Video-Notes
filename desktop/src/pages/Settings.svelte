@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { engineCall } from "../lib/api";
+  import { engineCall, onEngineEvent } from "../lib/api";
   import type { ProviderProfile } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -160,6 +160,7 @@
   let componentsLoading = $state(false);
   let runtimeComponents = $state<RuntimeComponent[]>([]);
   let componentAction = $state<string | null>(null);
+  let downloadProgress = $state<Record<string, number>>({});
   let checkingUpdates = $state(false);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
@@ -179,6 +180,23 @@
   let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
   let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || item.component === "whisper-cpp-cuda-tools" || (item.provides ?? []).includes("transcription-native")));
   let ocrComponents = $derived(runtimeComponents.filter((item) => item.component === "tesseract-ocr-tools" || (item.provides ?? []).includes("ocr-native")));
+
+  interface ComponentDownloadProgress {
+    component: string;
+    downloaded_bytes: number;
+    total_bytes: number;
+    stage: string;
+  }
+
+  $effect(() => {
+    const promise = onEngineEvent<ComponentDownloadProgress>("component.download-progress", (payload) => {
+      downloadProgress = {
+        ...downloadProgress,
+        [payload.component]: Math.round((payload.downloaded_bytes / payload.total_bytes) * 100),
+      };
+    });
+    return () => { promise.then((fn) => fn()); };
+  });
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     toast = { msg, type };
@@ -596,6 +614,9 @@
       showToast(`${updating ? "更新" : "安装"} ${component.component} 失败：${e?.message ?? e}`, "error");
     } finally {
       componentAction = null;
+      // Clear progress bar when done
+      const { [component.component]: _, ...rest } = downloadProgress;
+      downloadProgress = rest;
     }
   }
 
@@ -777,6 +798,12 @@
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
+                      {#if downloadProgress[component.component] !== undefined}
+                        <div class="plugin-download-progress">
+                          <div class="progress-bar"><div class="progress-fill" style="width: {downloadProgress[component.component]}%"></div></div>
+                          <span class="progress-label">{downloadProgress[component.component]}%</span>
+                        </div>
+                      {/if}
                       <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
                       {#if component.missing_files?.length}
                         <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
@@ -820,6 +847,12 @@
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
+                      {#if downloadProgress[component.component] !== undefined}
+                        <div class="plugin-download-progress">
+                          <div class="progress-bar"><div class="progress-fill" style="width: {downloadProgress[component.component]}%"></div></div>
+                          <span class="progress-label">{downloadProgress[component.component]}%</span>
+                        </div>
+                      {/if}
                       <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
                       {#if component.missing_files?.length}
                         <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
@@ -863,6 +896,12 @@
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
                         <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
                       </div>
+                      {#if downloadProgress[component.component] !== undefined}
+                        <div class="plugin-download-progress">
+                          <div class="progress-bar"><div class="progress-fill" style="width: {downloadProgress[component.component]}%"></div></div>
+                          <span class="progress-label">{downloadProgress[component.component]}%</span>
+                        </div>
+                      {/if}
                       <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
                       {#if component.missing_files?.length}
                         <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
@@ -1142,6 +1181,10 @@
   .plugin-path { display: flex; min-width: 0; flex-direction: column; gap: 0; margin: 0 14px; padding: 8px 10px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
   .plugin-path span { display: none; }
   .plugin-path code { overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .plugin-download-progress { display: flex; align-items: center; gap: 8px; padding: 0 14px 10px; }
+  .plugin-download-progress .progress-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--bg-subtle); overflow: hidden; }
+  .plugin-download-progress .progress-fill { height: 100%; border-radius: 3px; background: var(--accent-color); transition: width 0.3s ease; }
+  .plugin-download-progress .progress-label { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; min-width: 36px; text-align: right; }
   .plugin-warning { display: flex; align-items: center; gap: 6px; margin: 0 14px; padding: 7px 10px; border-radius: 8px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
   .plugin-note { color: var(--text-secondary); background: var(--bg-subtle); }
   .plugin-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }

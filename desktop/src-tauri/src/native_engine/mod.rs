@@ -195,6 +195,14 @@ struct OcrExtraction {
     frame_sampling: Option<FrameSamplingMetrics>,
 }
 
+#[derive(Clone, Serialize)]
+struct ComponentDownloadProgress {
+    component: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    stage: String,
+}
+
 impl From<&FrameSampleResult> for FrameSamplingMetrics {
     fn from(result: &FrameSampleResult) -> Self {
         Self {
@@ -1369,6 +1377,7 @@ impl NativeEngine {
 
     /// Check all installed downloadable components for updates via GitHub API.
     /// Called manually by the frontend "检查更新" button — never auto-triggered.
+    /// Fails gracefully: if the GitHub API is unreachable, no update is shown.
     fn components_check_updates(&self) -> Result<Value, String> {
         let mut results = Vec::new();
         for manifest in self.component_manifests()? {
@@ -1381,15 +1390,16 @@ impl NativeEngine {
             };
             let component_path = self.runtime_dir.join("components").join(component);
             let installed = component_path.is_dir();
+            // Compare the actual binary version against the latest upstream
+            // GitHub release tag. If either is unavailable (binary not found,
+            // network down, timeout), skip silently.
             let installed_version = if installed {
                 component_runtime_version(component, &component_path)
                     .unwrap_or_default()
             } else {
                 String::new()
             };
-            // Fetch latest version from GitHub (5s timeout per call).
             let latest_version = component_latest_version(&manifest).unwrap_or_default();
-            // Update is available if we have both versions and they differ.
             let update_available = installed
                 && !installed_version.is_empty()
                 && !latest_version.is_empty()
@@ -1435,15 +1445,25 @@ impl NativeEngine {
         let source = self.runtime_dir.join("packages").join(&safe);
         let target = self.runtime_dir.join("components").join(&safe);
         if !source.is_dir() {
+            // If the manifest has a download_url, try downloading it.
             let download_error = if manifest_string(&manifest, "download_url").is_some() {
-                match install_component_from_download(&manifest, &target) {
-                    Ok(()) => {
-                        write_component_marker(&manifest, &target)?;
-                        return Ok(
-                            json!({ "ok": true, "component": component, "status": "installed" }),
-                        );
+                match self.app_handle.as_ref() {
+                    Some(handle) => {
+                        match install_component_from_download(
+                            &manifest, &target, &component, handle,
+                        ) {
+                            Ok(()) => {
+                                write_component_marker(&manifest, &target)?;
+                                return Ok(json!({
+                                    "ok": true,
+                                    "component": component,
+                                    "status": "installed"
+                                }));
+                            }
+                            Err(error) => Some(error),
+                        }
                     }
-                    Err(error) => Some(error),
+                    None => Some("App handle not available for download".to_string()),
                 }
             } else {
                 None
@@ -2971,18 +2991,15 @@ impl NativeEngine {
         let settings = self.read_settings();
         if let Ok(profile) = active_provider_profile(&settings) {
             match crate::study::knowledge::build_knowledge_graph_ai(&profile, &content) {
-                Ok(kg) if !kg.nodes.is_empty() => {
+                Ok(kg) if kg.is_populated() => {
                     return Ok(serde_json::to_value(kg).unwrap_or_default());
                 }
                 _ => {}
             }
         }
 
-        // Fallback: heading-based tree → convert to KnowledgeGraph
-        let tree_value = crate::study::knowledge::build_knowledge_graph(&content);
-        let tree_nodes: Vec<crate::study::KnowledgeNode> =
-            serde_json::from_value(tree_value).unwrap_or_default();
-        let kg: crate::study::KnowledgeGraph = tree_nodes.into();
+        // Fallback: heading-based parsing → KnowledgeGraph
+        let kg = crate::study::knowledge::build_knowledge_graph(&content);
         Ok(serde_json::to_value(kg).unwrap_or_default())
     }
 
@@ -3697,6 +3714,7 @@ fn run_native_job(
     let mut segments: Vec<TimelineSegment> = (|| {
         let json_str = whisper_json.as_ref()?;
         let mut segs = parse_whisper_segments(json_str);
+        segs = collapse_repeated_segments(segs);
         if segs.is_empty() {
             return None;
         }
@@ -3779,6 +3797,7 @@ fn run_native_job(
             segments = (|| {
                 let json_str = whisper_json.as_ref()?;
                 let mut segs = parse_whisper_segments(json_str);
+                segs = collapse_repeated_segments(segs);
                 if segs.is_empty() {
                     return None;
                 }
@@ -5338,12 +5357,24 @@ fn component_runtime_version(component: &str, component_path: &Path) -> Option<S
     first_non_empty_line(&output).map(|line| line.chars().take(120).collect())
 }
 
+fn first_non_empty_line(output: &Output) -> Option<String> {
+    let text = if output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stderr)
+    } else {
+        String::from_utf8_lossy(&output.stdout)
+    };
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn component_latest_version(manifest: &Value) -> Option<String> {
     let url = manifest_string(manifest, "download_url")?;
     let (owner, repo) = github_repo_from_url(&url)?;
     let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
     let response = client
@@ -5367,7 +5398,6 @@ fn component_latest_version(manifest: &Value) -> Option<String> {
 fn github_repo_from_url(url: &str) -> Option<(String, String)> {
     let marker = "github.com/";
     let rest = url.split(marker).nth(1)?;
-    // Strip query string and fragment before parsing path segments.
     let path = rest.split(['?', '#']).next()?;
     let mut parts = path.split('/');
     let owner = parts.next()?.trim();
@@ -5377,18 +5407,6 @@ fn github_repo_from_url(url: &str) -> Option<(String, String)> {
     } else {
         Some((owner.to_string(), repo.to_string()))
     }
-}
-
-fn first_non_empty_line(output: &Output) -> Option<String> {
-    let text = if output.stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr)
-    } else {
-        String::from_utf8_lossy(&output.stdout)
-    };
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Option<PathBuf> {
@@ -5406,6 +5424,25 @@ fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Opt
             .map(|output| output.status.success())
             .unwrap_or(false)
     })
+}
+
+/// Find yt-dlp on the system PATH (pip, choco, scoop, manual install).
+/// Prefer this over the bundled PyInstaller exe which frequently fails
+/// with PYI-21004 due to Python DLL loading issues on Windows.
+fn resolve_system_ytdlp() -> Option<PathBuf> {
+    let exe = executable_name("yt-dlp");
+    let candidate = PathBuf::from(&exe);
+    // Verify it actually runs (not just that the file exists).
+    if hidden_command(&candidate)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn whisper_model_dirs(settings: &Map<String, Value>, data_dir: &Path) -> Vec<PathBuf> {
@@ -5593,14 +5630,36 @@ fn download_with_ytdlp(
     runtime_dir: &Path,
     control: &Arc<JobControl>,
 ) -> Result<PathBuf, String> {
-    let ytdlp = resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir).ok_or_else(|| {
-        "yt-dlp not found; install download-tools or add yt-dlp to PATH".to_string()
-    })?;
+    // Prefer system-installed yt-dlp (pip, choco, scoop) over the bundled
+    // PyInstaller version.  The bundled exe is a PyInstaller archive that
+    // requires Python DLLs at runtime and frequently fails with PYI-21004
+    // on Windows.  System-installed yt-dlp (pip install yt-dlp) runs
+    // directly through Python and avoids this issue entirely.
+    let ytdlp = resolve_system_ytdlp()
+        .or_else(|| resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir))
+        .ok_or_else(|| {
+            "yt-dlp not found. Install via: pip install yt-dlp, or install the download-tools plugin in Settings → 插件".to_string()
+        })?;
     let download_dir = output_dir.join(format!("download-{id}"));
     fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
     let template = download_dir.join("%(title).180s.%(ext)s");
     let mut command = hidden_command(&ytdlp);
-    command.args(["--no-playlist", "-o", &template.to_string_lossy(), url]);
+    command.args(["--no-playlist", "-o", &template.to_string_lossy()]);
+    // Read bilibili_cookie_file from AppData settings and pass --cookies if set.
+    if let Ok(settings_dir) = std::env::var("APPDATA") {
+        let settings_path = Path::new(&settings_dir).join("Video Notes AI").join("settings.json");
+        if let Ok(text) = fs::read_to_string(&settings_path) {
+            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
+                let cookie = string_value(cfg.as_object().unwrap_or(&Default::default()), "bilibili_cookie_file");
+                if let Some(ref cookie_path) = cookie {
+                    if Path::new(cookie_path).is_file() {
+                        command.arg("--cookies").arg(cookie_path);
+                    }
+                }
+            }
+        }
+    }
+    command.arg(url);
     let output = run_controlled_command_piped(command, control, "yt-dlp")?;
     if !output.status.success() {
         return Err(format!(
@@ -6326,6 +6385,33 @@ fn parse_whisper_segments(json_str: &str) -> Vec<TimelineSegment> {
             })
         })
         .collect()
+}
+
+/// Merge consecutive TimelineSegments that have identical text into one,
+/// keeping the start time of the first and extending end time to the last.
+/// This suppresses whisper.cpp hallucination loops where the model repeats
+/// a single phrase across many short segments (e.g. "秦岚养老院" × 84).
+fn collapse_repeated_segments(segments: Vec<TimelineSegment>) -> Vec<TimelineSegment> {
+    let mut result: Vec<TimelineSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = result.last_mut() {
+            if last.text == seg.text {
+                // Extend the end time of the existing segment
+                last.end_sec = seg.end_sec;
+                // Merge frame_paths from the duplicate segment,
+                // skipping paths already present in the first occurrence.
+                let existing = &mut last.frame_paths;
+                for fp in seg.frame_paths {
+                    if !existing.contains(&fp) {
+                        existing.push(fp);
+                    }
+                }
+                continue;
+            }
+        }
+        result.push(seg);
+    }
+    result
 }
 
 fn frame_index_from_path(path: &Path) -> Option<usize> {
@@ -7367,7 +7453,12 @@ fn default_component_manifest(component: &str) -> Option<Value> {
         .and_then(|(_, manifest)| serde_json::from_str::<Value>(manifest).ok())
 }
 
-fn install_component_from_download(manifest: &Value, target: &Path) -> Result<(), String> {
+fn install_component_from_download(
+    manifest: &Value,
+    target: &Path,
+    component: &str,
+    handle: &AppHandle,
+) -> Result<(), String> {
     let url = manifest_string(manifest, "download_url")
         .ok_or_else(|| "manifest has no download_url".to_string())?;
     let files = manifest
@@ -7387,7 +7478,7 @@ fn install_component_from_download(manifest: &Value, target: &Path) -> Result<()
     fs::create_dir_all(&stage).map_err(|error| error.to_string())?;
     let result = (|| -> Result<(), String> {
         let package_path = temp.join(download_filename(&url));
-        download_file_with_fallback(&url, &package_path)?;
+        download_file_with_fallback(&url, &package_path, component, handle)?;
         ensure_non_empty_file(&package_path, "component package")?;
         // Verify SHA256 hash if the manifest specifies one.
         if let Some(expected_hash) = manifest_string(manifest, "sha256") {
@@ -7450,7 +7541,7 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
     fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
     let result = (|| -> Result<(), String> {
         let exe = temp.join("yt-dlp.exe");
-        download_file_with_fallback(YTDLP_DOWNLOAD_URL, &exe)?;
+        download_file(YTDLP_DOWNLOAD_URL, &exe)?;
         ensure_non_empty_file(&exe, "yt-dlp.exe")?;
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
@@ -7464,8 +7555,8 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
     result
 }
 
-fn download_file_with_fallback(url: &str, target: &Path) -> Result<(), String> {
-    match download_file_with_reqwest(url, target) {
+fn download_file(url: &str, target: &Path) -> Result<(), String> {
+    match download_file_with_reqwest_no_progress(url, target) {
         Ok(()) => Ok(()),
         Err(primary_error) => match download_file_with_curl(url, target) {
             Ok(()) => Ok(()),
@@ -7479,7 +7570,32 @@ fn download_file_with_fallback(url: &str, target: &Path) -> Result<(), String> {
     }
 }
 
-fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
+fn download_file_with_fallback(
+    url: &str,
+    target: &Path,
+    component: &str,
+    handle: &AppHandle,
+) -> Result<(), String> {
+    match download_file_with_reqwest(url, target, component, handle) {
+        Ok(()) => Ok(()),
+        Err(primary_error) => match download_file_with_curl(url, target) {
+            Ok(()) => Ok(()),
+            Err(curl_error) => match download_file_with_powershell(url, target) {
+                Ok(()) => Ok(()),
+                Err(powershell_error) => Err(format!(
+                    "reqwest download failed: {primary_error}; curl fallback failed: {curl_error}; PowerShell fallback failed: {powershell_error}"
+                )),
+            },
+        },
+    }
+}
+
+fn download_file_with_reqwest(
+    url: &str,
+    target: &Path,
+    component: &str,
+    handle: &AppHandle,
+) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
@@ -7492,8 +7608,50 @@ fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    // Stream response body to file instead of loading entirely into memory.
-    // Component packages (whisper models, ffmpeg) can be hundreds of MB.
+    let total = response.content_length().unwrap_or(0);
+    let mut file = fs::File::create(target)
+        .map_err(|error| format!("failed to create file: {error}"))?;
+    let mut downloaded = 0u64;
+    let mut buffer = [0u8; 65536];
+    let mut reader = std::io::BufReader::new(&mut response);
+    loop {
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read download stream: {error}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buffer[..n])
+            .map_err(|error| format!("failed to write download: {error}"))?;
+        downloaded += n as u64;
+        if total > 0 {
+            let _ = handle.emit(
+                "component:download-progress",
+                ComponentDownloadProgress {
+                    component: component.to_string(),
+                    downloaded_bytes: downloaded,
+                    total_bytes: total,
+                    stage: "downloading".to_string(),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn download_file_with_reqwest_no_progress(url: &str, target: &Path) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut response = client
+        .get(url)
+        .header("User-Agent", "Video Notes AI")
+        .send()
+        .map_err(|error| format!("failed to download: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
     let mut file = fs::File::create(target)
         .map_err(|error| format!("failed to create file: {error}"))?;
     response
@@ -7563,17 +7721,6 @@ fn manifest_string(manifest: &Value, key: &str) -> Option<String> {
 
 fn component_marker_path(target: &Path) -> PathBuf {
     target.join(".runtime-component.json")
-}
-
-fn read_component_marker_version(target: &Path) -> Option<String> {
-    let text = fs::read_to_string(component_marker_path(target)).ok()?;
-    let marker: Value = serde_json::from_str(&text).ok()?;
-    marker
-        .get("manifest_version")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 fn write_component_marker(manifest: &Value, target: &Path) -> Result<(), String> {

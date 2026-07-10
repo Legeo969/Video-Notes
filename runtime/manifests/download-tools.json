@@ -1,11 +1,11 @@
 {
   "component": "download-tools",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "platform": "windows-x86_64",
   "engine_api": 1,
   "description": "yt-dlp standalone executable",
-  "download_url": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
-  "archive_type": "exe",
+  "download_url": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_win.zip",
+  "archive_type": "zip",
   "sha256": "",
   "signature": "",
   "size_mb": 18,
@@ -14,7 +14,8 @@
     "download"
   ],
   "files": [
-    "yt-dlp.exe"
+    "yt-dlp.exe",
+    "_internal/"
   ],
   "package_sha256": ""
 }

@@ -81,10 +81,10 @@
     {#if commandOpen}
       <!-- Command palette overlay -->
       <div class="command-overlay" role="presentation" onclick={() => commandOpen = false}>
-        <div class="command-palette" role="dialog" aria-modal="true" onclick={(e) => e.stopPropagation()}>
+        <div class="command-palette" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Escape") commandOpen = false; }}>
           <div class="command-input-wrap">
             <Icon name="search" size={18} />
-            <input type="text" class="command-input" placeholder="搜索页面、任务、笔记…" autofocus onkeydown={(e) => { if (e.key === "Escape") commandOpen = false; }} bind:value={commandQuery} />
+            <input type="text" class="command-input" placeholder="搜索页面、任务、笔记…" onkeydown={(e) => { if (e.key === "Escape") commandOpen = false; }} bind:value={commandQuery} />
           </div>
           <div class="command-results">
             {#if commandQuery}

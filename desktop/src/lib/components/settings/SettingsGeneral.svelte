@@ -233,12 +233,10 @@
         <select id="ocr_backend" bind:value={settings.ocr_backend} onchange={onMarkDirty}>
           <option value="tesseract">Tesseract native executable</option>
           <option value="paddleocr_http">PaddleOCR HTTP service</option>
-          <option value="custom_http">Custom OCR HTTP API</option>
         </select>
       </div>
-      {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
-        {#if settings.ocr_backend === "paddleocr_http"}
-          <div class="field">
+      {#if settings.ocr_backend === "paddleocr_http"}
+        <div class="field">
             <div class="field-label-row">
               <label class="field-label" for="ocr_model">PaddleOCR Model</label>
               <button type="button" class="btn btn-secondary btn-xs" onclick={onRefreshOcrModels} disabled={refreshingOcrModels} title="重新加载内置官方模型列表（不调用远程 API）">
@@ -255,23 +253,13 @@
             </select>
             <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；手动输入的非官方模型名会保留为当前选项。</span>
           </div>
-        {:else if settings.ocr_backend === "custom_http"}
-          <div class="field">
-            <label class="field-label" for="ocr_model">OCR Model <small>可选，取决于你的服务</small></label>
-            <input id="ocr_model" type="text" bind:value={settings.ocr_model} oninput={onMarkDirty} placeholder="留空则不发送 model 字段" />
-            <span class="field-hint">部分 Custom OCR 服务（如 olmOCR、Surya、本地 PaddleOCR）支持模型选择；留空则请求体不包含 model。</span>
-          </div>
-        {/if}
         <div class="field">
           <label class="field-label" for="ocr_http_endpoint">OCR HTTP Endpoint <small>本地或远程</small></label>
-          <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={onMarkDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs" : "http://127.0.0.1:8868/ocr"} /></div>
-          {#if settings.ocr_backend === "custom_http" && settings.ocr_http_endpoint.includes("paddleocr")}
-            <small style="color:var(--warn,#d97706);font-size:11px;">⚠ 当前 Endpoint 看起来是 PaddleOCR 地址，切换后端时请记得修改。</small>
-          {/if}
+          <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={onMarkDirty} placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs" /></div>
         </div>
         <div class="field">
-          <label class="field-label" for="ocr_http_api_key">OCR API Key {#if settings.ocr_backend === "paddleocr_http"}<small style="color:var(--danger,#e53e3e)">必填</small>{:else}<small>可选</small>{/if}</label>
-          <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={() => { onMarkDirty(); ocrKeyDirty = true; }} placeholder={settings.ocr_api_key_configured && !settings.ocr_http_api_key ? "API Key 已配置" : (settings.ocr_backend === "paddleocr_http" ? "填官方 TOKEN，不用写 bearer" : "Bearer token，可留空")} /></div>
+          <label class="field-label" for="ocr_http_api_key">OCR API Key <small style="color:var(--danger,#e53e3e)">必填</small></label>
+          <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={() => { onMarkDirty(); ocrKeyDirty = true; }} placeholder={settings.ocr_api_key_configured && !settings.ocr_http_api_key ? "API Key 已配置" : "填官方 TOKEN，不用写 bearer"} /></div>
         </div>
       {/if}
       <div class="field ocr-test-field">
@@ -280,7 +268,7 @@
           type="button"
           class="btn btn-secondary ocr-test-btn"
           onclick={onTestOcrConnection}
-          disabled={testingOcr || ((settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http") && !settings.ocr_http_endpoint.trim())}
+          disabled={testingOcr || (settings.ocr_backend === "paddleocr_http" && !settings.ocr_http_endpoint.trim())}
         >
           <Icon name="activity" size={15} />{testingOcr ? "测试中" : "测试 OCR"}
         </button>

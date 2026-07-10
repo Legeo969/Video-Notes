@@ -374,6 +374,7 @@
               </select>
             </div>
           </div>
+          </div>
 
         <div class="enhancement-grid" aria-label="内容增强开关">
           <button type="button" class="enhancement-card" class:enabled={ocrEnabled} onclick={() => (ocrEnabled = !ocrEnabled)} aria-pressed={ocrEnabled}>
