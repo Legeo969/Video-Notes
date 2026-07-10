@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { engineCall, toErrorMessage } from "../lib/api";
-  import { deleteJob, jobs, jobsError, jobsLoading, navigateTo, refreshJobs, runJobAction, selectedNoteId } from "../lib/stores/jobs";
+  import { deleteJob, jobs, jobsError, jobsLoading, refreshJobs, requestNavigate, runJobAction, selectedNoteId } from "../lib/stores/jobs";
   import type { JobInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -178,7 +178,7 @@
   function openNote(job: JobInfo) {
     if (job.note_id) {
       selectedNoteId.set(job.note_id);
-      navigateTo.set("notes");
+      requestNavigate("notes");
     }
   }
 </script>

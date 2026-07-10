@@ -12,8 +12,11 @@ export const activeJobs = derived(jobs, ($jobs) =>
 /** Set by Tasks.svelte to auto-select a note on the Notes page */
 export const selectedNoteId = writable<number | null>(null);
 
-/** Set by Tasks.svelte to trigger page navigation in App.svelte */
-export const navigateTo = writable<PageName | null>(null);
+/** Set by pages to trigger page navigation in App.svelte */
+export const navigateQueue = writable<PageName[]>([]);
+export function requestNavigate(page: PageName) {
+  navigateQueue.update(q => [...q, page]);
+}
 
 let eventUnlisten: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;

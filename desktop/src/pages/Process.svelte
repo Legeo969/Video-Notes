@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { engineCall, runningInTauri, toErrorMessage } from "../lib/api";
-  import { jobs, refreshJobs, navigateTo } from "../lib/stores/jobs";
+  import { jobs, refreshJobs, requestNavigate } from "../lib/stores/jobs";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import type { ProviderProfile } from "../lib/types";
@@ -478,7 +478,7 @@
           <div class="success-icon"><Icon name="check" size={24} /></div>
           <div class="success-copy">
             <strong>任务已提交</strong>
-            <p>任务 #{currentJob.id} 已进入后台处理，可在<button class="link-btn" onclick={() => navigateTo.set("tasks")}>任务中心</button>查看实时进度。</p>
+            <p>任务 #{currentJob.id} 已进入后台处理，可在<button class="link-btn" onclick={() => requestNavigate("tasks")}>任务中心</button>查看实时进度。</p>
           </div>
         </div>
       {/if}

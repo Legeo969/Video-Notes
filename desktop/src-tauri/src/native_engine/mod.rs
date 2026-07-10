@@ -55,12 +55,16 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
 
 /// Lock ordering (must never be acquired in reverse):
 ///   1. next_job_id
-///   2. job_controls  
+///   2. job_controls
 ///   3. jobs
 ///   4. settings_lock
 ///   ---
 ///   5. control.lock   (per-job)
 ///   6. current_child  (per-job)
+///
+/// Note: process_resume acquires #3 (jobs) then #2 (job_controls) in
+/// sequence, but never holds both simultaneously — the first lock is
+/// dropped before the second is acquired, so no deadlock risk exists.
 #[derive(Clone)]
 pub struct NativeEngine {
     app_handle: Option<AppHandle>,
@@ -1861,6 +1865,11 @@ impl NativeEngine {
 
         // After restart: job is paused but no JobControl exists
         // Reconstruct parameters from settings_snapshot and spawn a new worker
+        //
+        // Lock order note: this path acquires #3 (jobs) below, drops it,
+        // then later acquires #2 (job_controls). The locks are sequential
+        // (not nested), so no deadlock despite appearing to reverse the
+        // documented order.
         let (input, title, output_dir, whisper_model, whisper_device,
              vision_enabled, frame_interval, max_frames, frame_mode,
              ocr_enabled, ocr_backend, ocr_endpoint, ocr_model) = {
@@ -2636,6 +2645,13 @@ impl NativeEngine {
         let mut active: Vec<(u64, u64)> = Vec::new();
         let mut pending_done = false;
         loop {
+            // Check if collection was deleted mid-batch; stop processing if so
+            {
+                let store = self.read_collection_store();
+                if find_collection(&store, id).is_none() {
+                    break;
+                }
+            }
             while active.len() < max_concurrency && !pending_done {
                 match pending.next() {
                     Some(item) => {

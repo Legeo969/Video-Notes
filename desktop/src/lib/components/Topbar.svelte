@@ -17,6 +17,14 @@
   let commandOpen = $state(false);
   let commandQuery = $state("");
 
+  const commandItems: Array<{ id: PageName; label: string; icon: string }> = [
+    { id: "process", label: "创建笔记", icon: "sparkles" },
+    { id: "tasks", label: "任务中心", icon: "tasks" },
+    { id: "notes", label: "笔记库", icon: "note" },
+    { id: "collections", label: "合集", icon: "folder" },
+    { id: "settings", label: "设置", icon: "settings" },
+  ];
+
   function handleKeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === "k") {
       e.preventDefault();
@@ -69,11 +77,11 @@
             {#if commandQuery}
               <div class="command-group">
                 <p class="command-group-label">页面</p>
-                <button class="command-item" onclick={() => { navigate("process"); commandOpen = false; }}><Icon name="sparkles" size={16} />创建笔记</button>
-                <button class="command-item" onclick={() => { navigate("tasks"); commandOpen = false; }}><Icon name="tasks" size={16} />任务中心</button>
-                <button class="command-item" onclick={() => { navigate("notes"); commandOpen = false; }}><Icon name="note" size={16} />笔记库</button>
-                <button class="command-item" onclick={() => { navigate("collections"); commandOpen = false; }}><Icon name="folder" size={16} />合集</button>
-                <button class="command-item" onclick={() => { navigate("settings"); commandOpen = false; }}><Icon name="settings" size={16} />设置</button>
+                {#each commandItems.filter(item => item.label.includes(commandQuery)) as item}
+                  <button class="command-item" onclick={() => { navigate(item.id); commandOpen = false; }}>
+                    <Icon name={item.icon} size={16} />{item.label}
+                  </button>
+                {/each}
               </div>
             {:else}
               <p class="command-hint">输入关键词搜索页面、任务或笔记</p>

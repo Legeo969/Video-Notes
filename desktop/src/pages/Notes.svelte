@@ -7,6 +7,7 @@
   import Icon from "../lib/components/Icon.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import { selectedNoteId as selectedNoteIdStore } from "../lib/stores/jobs";
+  import { onMount, onDestroy } from "svelte";
 
   let notes = $state<NoteInfo[]>([]);
   let searchQuery = $state("");
@@ -55,6 +56,7 @@
   function resolveImageSrc(src: string, notePath: string): string {
     if (!src || /^(https?:|data:|blob:|asset:|file:)/i.test(src) || src.startsWith("#")) return src;
     const decoded = decodeImagePath(src);
+    if (decoded.includes("..")) return src;
     const absolute = WINDOWS_ABSOLUTE_PATH.test(decoded) || decoded.startsWith("/")
       ? decoded
       : `${noteDirectory(notePath)}\\${decoded}`;
@@ -170,13 +172,21 @@
 
   function basename(path: string) { return path.split(/[\\/]/).pop() || path; }
 
-  $effect(() => {
+  onMount(() => {
     loadNotes();
+  });
+
+  $effect(() => {
     const targetNoteId = $selectedNoteIdStore;
     if (targetNoteId !== null) {
       selectedNoteId = targetNoteId;
       selectedNoteIdStore.set(null);
     }
+  });
+
+  onDestroy(() => {
+    if (searchTimer) clearTimeout(searchTimer);
+    if (successTimer) clearTimeout(successTimer);
   });
 </script>
 

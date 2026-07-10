@@ -4,7 +4,7 @@
   import { engineCall, runningInTauri } from "../lib/api";
   import type { CollectionInfo } from "../lib/types";
   import Icon from "../lib/components/Icon.svelte";
-  import { navigateTo } from "../lib/stores/jobs";
+  import { requestNavigate } from "../lib/stores/jobs";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import StatusPill from "../lib/components/StatusPill.svelte";
@@ -351,7 +351,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
                 </span>
                 <span class="row-actions">
                   {#if item.run_id}
-                    <button class="link-btn" onclick={() => navigateTo.set("tasks")} title="在任务中心查看">
+                    <button class="link-btn" onclick={() => requestNavigate("tasks")} title="在任务中心查看">
                       <Icon name="external" size={13} />任务
                     </button>
                   {/if}
