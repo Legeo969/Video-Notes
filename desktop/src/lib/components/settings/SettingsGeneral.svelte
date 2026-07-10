@@ -33,7 +33,6 @@
     localWhisperModels = $bindable([]),
     scanning = $bindable(false),
     testingOcr = $bindable(false),
-    testingVision = $bindable(false),
     refreshingOcrModels = $bindable(false),
     paddleOcrModelOptions = $bindable([]),
     ocrKeyDirty = $bindable(false),
@@ -42,14 +41,12 @@
     onScanModels,
     onOpenExternalUrl,
     onTestOcrConnection,
-    onTestVisionConnection,
     onRefreshOcrModels,
   }: {
     settings: SettingsBag;
     localWhisperModels?: LocalWhisperModel[];
     scanning?: boolean;
     testingOcr?: boolean;
-    testingVision?: boolean;
     refreshingOcrModels?: boolean;
     paddleOcrModelOptions?: string[];
     ocrKeyDirty?: boolean;
@@ -58,7 +55,6 @@
     onScanModels: () => void;
     onOpenExternalUrl: (url: string) => void;
     onTestOcrConnection: () => void;
-    onTestVisionConnection: () => void;
     onRefreshOcrModels: () => void;
   } = $props();
 
@@ -212,10 +208,10 @@
         </select>
       </div>
       {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
-        {#if settings.ocr_backend === "paddleocr_http"}
+        {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
           <div class="field">
             <div class="field-label-row">
-              <label class="field-label" for="ocr_model">PaddleOCR Model</label>
+              <label class="field-label" for="ocr_model">OCR 模型</label>
               <button type="button" class="btn btn-secondary btn-xs" onclick={onRefreshOcrModels} disabled={refreshingOcrModels} title="官方 API 未提供远程模型发现；刷新内置官方模型列表">
                 <Icon name="refresh" size={12} />{refreshingOcrModels ? "刷新中" : "刷新模型"}
               </button>
@@ -228,7 +224,7 @@
                 <option value={model}>{model}</option>
               {/each}
             </select>
-            <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；自定义模型会保留为当前选项。</span>
+            <span class="field-hint">PaddleOCR / Custom HTTP API 使用静态模型列表；自定义模型会保留为当前选项。</span>
           </div>
         {/if}
         <div class="field">
@@ -251,18 +247,7 @@
           <Icon name="activity" size={15} />{testingOcr ? "测试中" : "测试 OCR"}
         </button>
       </div>
-      <div class="field vision-test-field">
-        <span class="field-label">视觉模型测试</span>
-        <button
-          type="button"
-          class="btn btn-secondary vision-test-btn"
-          onclick={onTestVisionConnection}
-          disabled={testingVision || !settings.active_provider}
-          title={settings.active_provider ? `测试活动供应商 ${settings.active_provider} 的视觉模型` : "请先设置活动 AI 供应商"}
-        >
-          <Icon name="eye" size={15} />{testingVision ? "测试中" : "测试 Vision"}
-        </button>
-      </div>
+            
     </div>
     <div class="enhancement-explain"><Icon name="info" size={14} />OCR 使用配置的 OCR 后端；视觉理解会抽取关键帧并调用当前活动 AI 供应商的视觉模型。首次真实任务建议先关闭两项，确认转录与笔记主链路，再逐项打开。</div>
   </div>
@@ -319,8 +304,6 @@
   .btn-xs { min-height: 26px; padding: 4px 8px; font-size: 12px; }
   .ocr-test-field { justify-content: end; }
   .ocr-test-btn { width: fit-content; min-width: 118px; }
-  .vision-test-field { justify-content: end; }
-  .vision-test-btn { width: fit-content; min-width: 118px; }
 
   .setting-toggle-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .14s, background .14s; }
   .setting-toggle-card.as-button { appearance: none; font: inherit; }

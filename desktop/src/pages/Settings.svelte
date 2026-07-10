@@ -173,9 +173,6 @@
 
   let selectedTemplate = $derived(templates.find((template) => template.id === settings.template));
   let passedChecks = $derived(checkResults.filter((item) => item.status === "pass").length);
-  let whisperCatalog = $derived(buildWhisperModelCatalog(localWhisperModels, settings.whisper_model, true));
-  let selectedWhisperModel = $derived(whisperCatalog.find((model) => model.id === normalizeWhisperModelId(settings.whisper_model)));
-  let selectedWhisperAvailable = $derived(Boolean(selectedWhisperModel?.installed));
   let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
   let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || item.component === "whisper-cpp-cuda-tools" || (item.provides ?? []).includes("transcription-native")));
   let ocrComponents = $derived(runtimeComponents.filter((item) => item.component === "tesseract-ocr-tools" || (item.provides ?? []).includes("ocr-native")));
@@ -236,8 +233,8 @@
 
   function chooseWhisperModel(modelId: string) {
     const normalized = normalizeWhisperModelId(modelId);
-    const model = whisperCatalog.find((item) => item.id === normalized);
-    if (!model?.installed) {
+    const installed = localWhisperModels.some((m) => m.id === normalized);
+    if (!installed) {
       showToast(`模型“${normalized}”未在本地模型目录中找到，不能设为默认模型。`, "error");
       return;
     }
@@ -272,7 +269,8 @@
       });
       dirty = false;
       ocrKeyDirty = false;
-      showToast(selectedWhisperAvailable ? "设置已保存并将在后续任务中生效" : "设置已保存；当前 Whisper 模型未检测到，运行任务前请安装或重新扫描模型。", selectedWhisperAvailable ? "success" : "info");
+      const whisperAvailable = localWhisperModels.some((m) => m.id === normalizeWhisperModelId(settings.whisper_model));
+      showToast(whisperAvailable ? "设置已保存并将在后续任务中生效" : "设置已保存；当前 Whisper 模型未检测到，运行任务前请安装或重新扫描模型。", whisperAvailable ? "success" : "info");
     } catch (e: any) { showToast(`保存失败：${e?.message ?? e}`, "error"); }
     finally { saving = false; }
   }
@@ -665,7 +663,6 @@
             bind:localWhisperModels
             bind:scanning
             bind:testingOcr
-            bind:testingVision
             bind:refreshingOcrModels
             bind:paddleOcrModelOptions
             bind:ocrKeyDirty
@@ -674,7 +671,6 @@
             onScanModels={scanModels}
             onOpenExternalUrl={openExternalUrl}
             onTestOcrConnection={testOcrConnection}
-            onTestVisionConnection={testVisionConnection}
             onRefreshOcrModels={refreshOcrModels}
           />
 
@@ -683,10 +679,12 @@
             {providers}
             activeProvider={settings.active_provider}
             {testingProvider}
+            {testingVision}
             {clearingCapabilities}
             bind:providerSearch
             onSetActive={setActiveProvider}
             onTestConnection={testConnection}
+            onTestVisionConnection={testVisionConnection}
             onClearCapabilities={clearProviderCapabilities}
             onOpenAddProvider={openAddProvider}
             onOpenEditProvider={openEditProvider}

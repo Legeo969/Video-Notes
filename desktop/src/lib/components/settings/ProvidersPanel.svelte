@@ -19,10 +19,12 @@
     providers,
     activeProvider,
     testingProvider,
+    testingVision,
     clearingCapabilities,
     providerSearch = $bindable(""),
     onSetActive,
     onTestConnection,
+    onTestVisionConnection,
     onClearCapabilities,
     onOpenAddProvider,
     onOpenEditProvider,
@@ -32,10 +34,12 @@
     providers: ProviderProfile[];
     activeProvider: string;
     testingProvider: string | null;
+    testingVision: boolean;
     clearingCapabilities: string | null;
     providerSearch?: string;
     onSetActive: (name: string) => void;
     onTestConnection: (p: ProviderProfile) => void;
+    onTestVisionConnection: () => void;
     onClearCapabilities: (name: string) => void;
     onOpenAddProvider: () => void;
     onOpenEditProvider: (p: ProviderProfile) => void;
@@ -208,6 +212,22 @@
       {/each}
     </div>
   {/if}
+
+  <div class="pane-foot">
+    <div class="vision-test-field">
+      <span class="field-label">视觉模型测试</span>
+      <button
+        type="button"
+        class="btn btn-secondary vision-test-btn"
+        onclick={onTestVisionConnection}
+        disabled={testingVision || !activeProvider}
+        title={activeProvider ? `测试活动供应商 ${activeProvider} 的视觉模型` : "请先设置活动 AI 供应商"}
+      >
+        <Icon name="eye" size={15} />{testingVision ? "测试中" : "测试 Vision"}
+      </button>
+    </div>
+    <span class="field-hint">使用当前活动供应商的视觉模型测试视觉理解能力。</span>
+  </div>
 </section>
 
 <style>
@@ -272,6 +292,11 @@
   .provider-endpoint code { font-size: 11px; }
   .provider-key { margin: 10px 14px 0; }
   .provider-footer { padding: 10px 14px; }
+
+  .pane-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
+  .vision-test-field { display: flex; align-items: center; gap: 10px; }
+  .vision-test-field .field-label { color: var(--text-secondary); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .pane-foot .field-hint { color: var(--text-tertiary); font-size: 12px; }
 
   @media (max-width: 1180px) {
     .provider-grid { grid-template-columns: 1fr; }

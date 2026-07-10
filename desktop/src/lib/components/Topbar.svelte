@@ -32,10 +32,19 @@
     }
   }
 
+  let darkMode = $state(false);
   onMount(() => {
     document.addEventListener("keydown", handleKeydown);
+    const saved = localStorage.getItem("video-notes-theme");
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    darkMode = saved ? saved === "dark" : Boolean(prefersDark);
     return () => document.removeEventListener("keydown", handleKeydown);
   });
+  function toggleTheme() {
+    darkMode = !darkMode;
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("video-notes-theme", darkMode ? "dark" : "light");
+  }
 </script>
 
 <header class="topbar" data-tauri-drag-region>
@@ -58,6 +67,10 @@
       <span class="engine-dot"></span>
       <span>{engineOnline ? "Native 引擎在线" : "引擎离线"}</span>
     </div>
+
+    <button class="icon-btn theme-btn" onclick={toggleTheme} title={darkMode ? "切换到浅色模式" : "切换到深色模式"}>
+      <Icon name={darkMode ? "sun" : "moon"} size={16} />
+    </button>
 
     <button class="command-chip" type="button" onclick={() => commandOpen = true} title="搜索 (Ctrl+K)">
       <Icon name="search" size={16} />
@@ -184,6 +197,8 @@
     background: var(--danger-color);
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger-color) 12%, transparent);
   }
+
+  .theme-btn { width: 38px; height: 38px; }
 
   .command-chip {
     min-width: 170px;
