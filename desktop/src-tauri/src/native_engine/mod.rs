@@ -1070,7 +1070,12 @@ impl NativeEngine {
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
             .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
+            .and_then(|message| {
+                // Prefer "content", fallback to "reasoning" for models that
+                // return reasoning-only responses (e.g. sensenova, deepseek-r1)
+                message.get("content")
+                    .or_else(|| message.get("reasoning"))
+            })
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|content| !content.is_empty())
@@ -4744,7 +4749,10 @@ fn analyze_segment_vision(
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
+        .and_then(|message| {
+            message.get("content")
+                .or_else(|| message.get("reasoning"))
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|content| !content.is_empty())
@@ -4810,7 +4818,10 @@ fn synthesize_note_with_provider(
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
+        .and_then(|message| {
+            message.get("content")
+                .or_else(|| message.get("reasoning"))
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|content| !content.is_empty())
