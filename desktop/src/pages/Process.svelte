@@ -25,6 +25,7 @@
   let visionEnabled = $state(false);
   let activeProvider = $state("");
   let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
+  let whisperLanguage = $state("");
   let submitting = $state(false);
   let errorMessage = $state("");
   let startedJobId = $state<number | null>(null);
@@ -92,6 +93,7 @@
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
+      whisperLanguage = String(settings.language || "");
       frameMode = settings.frame_mode === "adaptive" ? "adaptive" : "fixed";
       frameInterval = typeof settings.frame_interval === "number" ? settings.frame_interval : 30;
       maxFrames = typeof settings.max_frames === "number" ? settings.max_frames : 30;
@@ -196,6 +198,7 @@
         ocr_model: ocrModel,
         vision_enabled: visionEnabled,
         whisper_device: whisperDevice,
+        language: whisperLanguage || undefined,
         frame_mode: frameMode,
         frame_interval: frameInterval,
         max_frames: maxFrames,
@@ -360,8 +363,17 @@
                 <option value="cpu">CPU</option>
               </select>
             </div>
+            <div class="field">
+              <label class="field-label" for="task-whisper-language">转录语言</label>
+              <select id="task-whisper-language" bind:value={whisperLanguage}>
+                <option value="">自动检测（中文视频可能误判为英文）</option>
+                <option value="zh">中文（zh）</option>
+                <option value="en">英文（en）</option>
+                <option value="ja">日语（ja）</option>
+                <option value="ko">韩语（ko）</option>
+              </select>
+            </div>
           </div>
-        </div>
 
         <div class="enhancement-grid" aria-label="内容增强开关">
           <button type="button" class="enhancement-card" class:enabled={ocrEnabled} onclick={() => (ocrEnabled = !ocrEnabled)} aria-pressed={ocrEnabled}>
