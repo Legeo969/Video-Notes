@@ -6,3 +6,4 @@
 #![deny(unsafe_code)]
 
 pub mod native_engine;
+pub mod study;

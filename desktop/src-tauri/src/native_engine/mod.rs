@@ -140,11 +140,11 @@ struct NoteEntry {
 }
 
 #[derive(Clone, Debug)]
-struct NativeProviderProfile {
-    base_url: String,
-    api_key: String,
-    model: String,
-    vision_model: String,
+pub(crate) struct NativeProviderProfile {
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) model: String,
+    pub(crate) vision_model: String,
 }
 
 #[derive(Clone, Debug)]
@@ -343,6 +343,8 @@ impl NativeEngine {
             "collection.pause_all" => self.collection_pause_all(params),
             "collection.resume_all" => self.collection_resume_all(params),
             "collection.cancel_all" => self.collection_cancel_all(params),
+            "study.knowledge" => self.study_knowledge(params),
+            "study.quiz" => self.study_quiz(params),
             _ => return None,
         };
         Some(result)
@@ -2909,6 +2911,38 @@ impl NativeEngine {
         self.write_settings(raw)?;
         Ok(result)
     }
+
+    fn study_knowledge(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("note_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "note_id is required".to_string())? as u32;
+        let note = self.note_entries()?
+            .into_iter()
+            .find(|n| n.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))?;
+        let content = std::fs::read_to_string(&note.path)
+            .map_err(|e| format!("Failed to read note: {e}"))?;
+        let graph = crate::study::knowledge::build_knowledge_graph(&content);
+        Ok(graph)
+    }
+
+    fn study_quiz(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("note_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "note_id is required".to_string())? as u32;
+        let note = self.note_entries()?
+            .into_iter()
+            .find(|n| n.id == id)
+            .ok_or_else(|| format!("Note {id} not found"))?;
+        let content = std::fs::read_to_string(&note.path)
+            .map_err(|e| format!("Failed to read note: {e}"))?;
+        let settings = self.read_settings();
+        let profile = active_provider_profile(&settings)
+            .map_err(|e| format!("No active provider: {e}"))?;
+        crate::study::quiz::generate_quiz(&profile, &content)
+    }
 }
 
 impl NativeJob {
@@ -4313,7 +4347,7 @@ fn bearer_token(value: &str) -> String {
     }
 }
 
-fn with_optional_bearer(
+pub(crate) fn with_optional_bearer(
     request: reqwest::blocking::RequestBuilder,
     api_key: &str,
 ) -> reqwest::blocking::RequestBuilder {
@@ -4547,7 +4581,7 @@ fn build_job_settings_snapshot(
     })
 }
 
-fn active_provider_profile(settings: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
+pub(crate) fn active_provider_profile(settings: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
     let active = string_value(settings, "active_provider").ok_or_else(|| {
         "No active provider configured. Set an AI provider in Settings.".to_string()
     })?;

@@ -3,6 +3,7 @@
 
 mod native_engine;
 mod startup_diagnostics;
+mod study;
 
 use native_engine::NativeEngine;
 use tauri::{Emitter, Manager};

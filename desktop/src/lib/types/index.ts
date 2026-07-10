@@ -116,3 +116,18 @@ export interface RpcEvent {
   method: string;
   params: Record<string, unknown>;
 }
+
+// Study Assistant types
+export interface KnowledgeNode {
+  id: string;
+  label: string;
+  kind: "chapter" | "section" | "concept";
+  children: KnowledgeNode[];
+}
+
+export interface QuizQuestion {
+  question: string;
+  choices: string[];
+  correctIndex: number;
+  explanation: string;
+}

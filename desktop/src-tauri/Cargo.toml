@@ -1,6 +1,6 @@
 [package]
 name = "video-notes-ai"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 description = "Video Notes AI — AI-powered video transcription and note generation"
 authors = ["Video Notes AI Team"]

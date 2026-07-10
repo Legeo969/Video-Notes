@@ -323,6 +323,54 @@ const mockResponses: Record<string, (params: any) => any> = {
   }),
   "storage.cleanup_orphans": () => ({ removed: 0 }),
   "storage.cleanup_completed": () => ({ removed: 0 }),
+  "study.knowledge": (params: { note_id: number }) => {
+    const note = mockNotes.find(n => n.id === params.note_id);
+    if (!note) return [];
+    return [
+      {
+        id: "ch1", label: "核心概念", kind: "chapter",
+        children: [
+          {
+            id: "sec1-1", label: "自注意力机制", kind: "section",
+            children: [
+              { id: "c1-1-1", label: "Query-Key-Value 计算", kind: "concept", children: [] },
+              { id: "c1-1-2", label: "注意力权重归一化", kind: "concept", children: [] },
+            ],
+          },
+          {
+            id: "sec1-2", label: "位置编码", kind: "section",
+            children: [
+              { id: "c1-2-1", label: "正弦余弦编码", kind: "concept", children: [] },
+            ],
+          },
+        ],
+      },
+      {
+        id: "ch2", label: "编码器结构", kind: "chapter",
+        children: [
+          { id: "sec2-1", label: "多头自注意力层", kind: "section", children: [] },
+          { id: "sec2-2", label: "前馈神经网络", kind: "section", children: [] },
+          { id: "sec2-3", label: "残差连接与层归一化", kind: "section", children: [] },
+        ],
+      },
+      {
+        id: "ch3", label: "解码器结构", kind: "chapter",
+        children: [
+          { id: "sec3-1", label: "掩码多头自注意力", kind: "section", children: [] },
+          { id: "sec3-2", label: "编码器-解码器注意力", kind: "section", children: [] },
+        ],
+      },
+    ];
+  },
+  "study.quiz": (params: { note_id: number }) => {
+    return [
+      { question: "Transformer 的核心机制是什么？", choices: ["循环神经网络", "自注意力机制", "卷积神经网络", "生成对抗网络"], correctIndex: 1, explanation: "Transformer 的核心是自注意力（Self-Attention）机制，它允许模型在处理序列时直接关注所有位置。" },
+      { question: "Transformer 编码器中的残差连接有什么作用？", choices: ["加速训练收敛", "防止梯度消失", "两者都是", "两者都不是"], correctIndex: 2, explanation: "残差连接既能帮助梯度在深层网络中传播（防止梯度消失），也能加速训练收敛。" },
+      { question: "注意力公式中为什么要除以 √d_k？", choices: ["增加数值稳定性", "使概率分布更尖锐", "减少计算量", "标准化输入"], correctIndex: 0, explanation: "除以 √d_k 是缩放点积注意力的关键步骤，防止点积值过大导致 softmax 输出过于尖锐。" },
+      { question: "Transformer 位置编码的作用是？", choices: ["提供词嵌入", "注入位置信息", "加速计算", "减少参数量"], correctIndex: 1, explanation: "由于 Transformer 没有循环结构，需要额外注入位置信息来区分不同位置的 token。" },
+      { question: "Transformer 为什么比 RNN 更适合并行计算？", choices: ["参数更少", "使用注意力机制", "不需要梯度", "使用卷积操作"], correctIndex: 1, explanation: "注意力机制允许同时计算所有位置的关联，而 RNN 必须按顺序逐步计算。" },
+    ];
+  },
   "components.list": () => [
     {
       component: "download-tools",

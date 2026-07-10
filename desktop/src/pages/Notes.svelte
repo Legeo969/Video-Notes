@@ -1,11 +1,13 @@
 <script lang="ts">
   import { engineCall } from "../lib/api";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import type { NoteInfo, NoteDetail } from "../lib/types";
+  import type { NoteInfo, NoteDetail, KnowledgeNode } from "../lib/types";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import Icon from "../lib/components/Icon.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
+  import KnowledgeTree from "../lib/components/study/KnowledgeTree.svelte";
+  import QuizPanel from "../lib/components/study/QuizPanel.svelte";
   import { selectedNoteId as selectedNoteIdStore } from "../lib/stores/jobs";
   import { onMount, onDestroy } from "svelte";
 
@@ -22,6 +24,9 @@
   let error = $state<string | null>(null);
   let successMsg = $state<string | null>(null);
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let studyMode = $state(false);
+  let graphNodes = $state<KnowledgeNode[]>([]);
+  let graphLoading = $state(false);
 
   let filteredNotes = $derived.by(() => {
     if (!searchQuery.trim()) return notes;
@@ -56,10 +61,15 @@
   function resolveImageSrc(src: string, notePath: string): string {
     if (!src || /^(https?:|data:|blob:|asset:|file:)/i.test(src) || src.startsWith("#")) return src;
     const decoded = decodeImagePath(src);
-    if (decoded.includes("..")) return src;
+    const noteDir = noteDirectory(notePath);
+    // Resolve the absolute path
     const absolute = WINDOWS_ABSOLUTE_PATH.test(decoded) || decoded.startsWith("/")
       ? decoded
-      : `${noteDirectory(notePath)}\\${decoded}`;
+      : `${noteDir}\\${decoded}`;
+    // Path traversal guard: reject if resolved path goes above note directory
+    if (absolute.includes("..") && !absolute.startsWith(noteDir.replace(/[\\/]$/, ''))) {
+      return src;
+    }
     return convertFileSrc(absolute);
   }
 
@@ -99,13 +109,31 @@
 
   async function selectNote(id: number) {
     if (selectedNoteId === id) return;
-    selectedNoteId = id; selectedNote = null; sourceView = false; error = null; loadingDetail = true;
+    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; graphNodes = []; error = null; loadingDetail = true;
     try {
       selectedNote = await engineCall<NoteDetail>("notes.get", { note_id: id });
       editContent = selectedNote.content;
     } catch (e) {
       error = String(e); selectedNoteId = null;
     } finally { loadingDetail = false; }
+  }
+
+  async function loadGraph() {
+    if (!selectedNote) return;
+    graphLoading = true;
+    try {
+      graphNodes = await engineCall<KnowledgeNode[]>("study.knowledge", { note_id: selectedNote.id });
+    } catch (e) {
+      error = String(e);
+    } finally {
+      graphLoading = false;
+    }
+  }
+
+  function toggleStudyMode() {
+    if (!selectedNote) return;
+    studyMode = !studyMode;
+    sourceView = false;
   }
 
   function toggleSourceView() { if (selectedNote) sourceView = !sourceView; }
@@ -184,6 +212,12 @@
     }
   });
 
+  $effect(() => {
+    if (studyMode && selectedNote && graphNodes.length === 0) {
+      loadGraph();
+    }
+  });
+
   onDestroy(() => {
     if (searchTimer) clearTimeout(searchTimer);
     if (successTimer) clearTimeout(successTimer);
@@ -243,8 +277,9 @@
         <div class="reader-breadcrumb"><span>笔记库</span><Icon name="chevron-right" size={12} /><strong>{selectedNote.title}</strong></div>
         <div class="reader-actions">
           <div class="view-toggle">
-            <button class:active={!sourceView} onclick={() => sourceView = false}><Icon name="eye" size={14} />阅读</button>
-            <button class:active={sourceView} onclick={() => sourceView = true}><Icon name="edit" size={14} />源码</button>
+            <button class:active={!sourceView && !studyMode} onclick={() => { sourceView = false; studyMode = false; }}><Icon name="eye" size={14} />阅读</button>
+            <button class:active={sourceView} onclick={() => { sourceView = true; studyMode = false; }}><Icon name="edit" size={14} />源码</button>
+            <button class:active={studyMode} onclick={toggleStudyMode} disabled={!selectedNote}><Icon name="brain" size={14} />学习</button>
           </div>
           {#if sourceView}<button class="btn btn-primary btn-sm" onclick={saveNote} disabled={saving}><Icon name="save" size={14} />{saving ? "保存中" : "保存"}</button>{/if}
           <button class="icon-btn" onclick={copyContent} title="复制内容"><Icon name="copy" size={15} /></button>
@@ -258,24 +293,46 @@
       {#if successMsg}<div class="reader-feedback success"><Icon name="check" size={15} /><span>{successMsg}</span></div>{/if}
 
       <div class="reader-scroll">
-        <article class="document-shell">
-          <div class="document-head">
-            <span class="document-kicker">AI VIDEO NOTE</span>
-            <h1>{selectedNote.title}</h1>
-            <div class="document-meta">
-              <span><Icon name="file-text" size={13} />Markdown 笔记</span>
-              <span><Icon name="activity" size={13} />约 {wordCount.toLocaleString()} 字</span>
-              <span><Icon name="clock" size={13} />约 {readingMinutes} 分钟阅读</span>
+        {#if studyMode}
+          <div class="study-layout">
+            <div class="study-graph">
+              <h3>知识图谱</h3>
+              {#if graphLoading}
+                <div class="study-loading"><span class="loading-ring"></span></div>
+              {:else if graphNodes.length > 0}
+                <KnowledgeTree nodes={graphNodes} />
+              {:else}
+                <p class="study-empty">点击下方按钮生成知识图谱</p>
+              {/if}
+              <button class="btn btn-secondary btn-sm" onclick={loadGraph} disabled={graphLoading}>
+                <Icon name="refresh" size={13} />生成知识图谱
+              </button>
             </div>
-            <div class="document-path"><Icon name="folder" size={13} /><code>{selectedNote.path}</code></div>
+            <div class="study-quiz">
+              <h3>测验</h3>
+              <QuizPanel noteId={selectedNote.id} onError={(msg) => error = msg} />
+            </div>
           </div>
+        {:else}
+          <article class="document-shell">
+            <div class="document-head">
+              <span class="document-kicker">AI VIDEO NOTE</span>
+              <h1>{selectedNote.title}</h1>
+              <div class="document-meta">
+                <span><Icon name="file-text" size={13} />Markdown 笔记</span>
+                <span><Icon name="activity" size={13} />约 {wordCount.toLocaleString()} 字</span>
+                <span><Icon name="clock" size={13} />约 {readingMinutes} 分钟阅读</span>
+              </div>
+              <div class="document-path"><Icon name="folder" size={13} /><code>{selectedNote.path}</code></div>
+            </div>
 
-          {#if sourceView}
-            <textarea class="source-editor" bind:value={editContent} spellcheck="false" aria-label="Markdown 源码编辑器"></textarea>
-          {:else}
-            <div class="preview-area">{@html renderMarkdown(selectedNote.content, selectedNote.path)}</div>
-          {/if}
-        </article>
+            {#if sourceView}
+              <textarea class="source-editor" bind:value={editContent} spellcheck="false" aria-label="Markdown 源码编辑器"></textarea>
+            {:else}
+              <div class="preview-area">{@html renderMarkdown(selectedNote.content, selectedNote.path)}</div>
+            {/if}
+          </article>
+        {/if}
       </div>
     {:else}
       <div class="welcome-reader">
@@ -476,6 +533,66 @@
     .document-head h1 { font-size: 20px; }
     .preview-area { padding: 16px 14px 32px; }
     .source-editor { padding: 16px 14px; }
+  }
+
+  /* Study mode layout */
+  .study-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    width: min(920px, 100%);
+    margin: 0 auto;
+    min-height: calc(100vh - 140px);
+  }
+  .study-graph, .study-quiz {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    box-shadow: var(--shadow-xs);
+  }
+  .study-graph {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: calc(100vh - 180px);
+    overflow-y: auto;
+  }
+  .study-graph h3, .study-quiz h3 {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+  .study-quiz {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .study-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+  }
+  .study-loading .loading-ring {
+    width: 28px; height: 28px;
+    border: 3px solid var(--bg-progress);
+    border-top-color: var(--accent-color);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  .study-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+
+  @media (max-width: 768px) {
+    .study-layout { grid-template-columns: 1fr; }
   }
 
 </style>
