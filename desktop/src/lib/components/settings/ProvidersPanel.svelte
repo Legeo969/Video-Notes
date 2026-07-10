@@ -86,18 +86,15 @@
 </script>
 
 <section class="settings-pane">
-  <div class="pane-head actions-head">
+  <div class="pane-head">
     <div>
       <span>AI PROVIDERS</span>
       <h2>AI 供应商</h2>
       <p>管理笔记生成与视觉理解使用的模型服务。</p>
     </div>
-    <button class="btn btn-primary" onclick={onOpenAddProvider}>
-      <Icon name="plus" size={15} />添加供应商
-    </button>
   </div>
 
-  <div class="provider-overview">
+  <div class="settings-summary-grid provider-overview">
     <div>
       <span class="overview-icon"><Icon name="server" size={18} /></span>
       <strong>{providers.length}</strong>
@@ -120,7 +117,12 @@
       <span class="input-icon"><Icon name="search" size={15} /></span>
       <input type="search" bind:value={providerSearch} placeholder="搜索供应商、模型或类型" />
     </div>
-    <span>{filteredProviders.length} 个配置</span>
+    <div class="provider-toolbar-actions">
+      <span>{filteredProviders.length} 个配置</span>
+      <button class="btn btn-primary btn-sm" onclick={onOpenAddProvider}>
+        <Icon name="plus" size={14} />添加供应商
+      </button>
+    </div>
   </div>
 
   {#if filteredProviders.length === 0}
@@ -138,7 +140,7 @@
   {:else}
     <div class="provider-grid">
       {#each filteredProviders as p (p.name)}
-        <article class="provider-card" class:active-provider={p.name === activeProvider}>
+        <article class="provider-card settings-card-section" class:active-provider={p.name === activeProvider}>
           <header class="provider-head">
             <div class="provider-avatar"><Icon name="bot" size={20} /></div>
             <div class="provider-name">
@@ -231,19 +233,28 @@
 </section>
 
 <style>
-  .provider-overview { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin: 16px 0; }
-  .provider-overview > div { display: grid; grid-template-columns: 34px minmax(0,1fr); grid-template-rows: auto auto; align-items: center; column-gap: 9px; padding: 10px; border-radius: 10px; background: var(--bg-subtle); }
-  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
+  .settings-pane { padding: 30px 34px 42px; }
+  .pane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--border-color); }
+  .pane-head > div:first-child { display: flex; flex-direction: column; }
+  .pane-head > div:first-child > span { color: var(--accent-color); font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+  .pane-head h2 { margin-top: 3px; font-size: 26px; letter-spacing: -.02em; text-wrap: balance; }
+  .pane-head p { margin-top: 7px; color: var(--text-secondary); font-size: 13px; text-wrap: pretty; }
+
+  .settings-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0 18px; }
+  .provider-overview > div { display: grid; grid-template-columns: 38px minmax(0,1fr); grid-template-rows: auto auto; align-items: center; column-gap: 10px; min-height: 78px; padding: 14px; border-radius: 12px; background: var(--bg-subtle); }
+  .overview-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
   .overview-icon.active { color: var(--success-color); background: var(--success-soft); }
   .overview-icon.secure { color: var(--warning-color); background: var(--warning-soft); }
-  .provider-overview strong { overflow: hidden; color: var(--text-primary); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+  .provider-overview strong { overflow: hidden; color: var(--text-primary); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .provider-overview small { color: var(--text-tertiary); font-size: 11px; }
-  .provider-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .provider-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding-top: 2px; }
   .provider-search { width: 280px; }
   .provider-search input { min-height: 35px; font-size: 13px; }
-  .provider-toolbar > span { color: var(--text-tertiary); font-size: 12px; }
+  .provider-toolbar-actions { display: flex; align-items: center; gap: 10px; }
+  .provider-toolbar-actions > span { color: var(--text-tertiary); font-size: 12px; }
   .provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
   .provider-card { display: flex; min-width: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); box-shadow: var(--shadow-xs); transition: border-color .14s, box-shadow .14s; }
+  .settings-card-section { border-radius: 13px; box-shadow: var(--shadow-xs); }
   .provider-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
   .provider-card.active-provider { border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color)); box-shadow: 0 0 0 3px var(--accent-glow); }
   .provider-head { display: grid; grid-template-columns: 40px minmax(0,1fr) 34px; align-items: center; gap: 10px; padding: 14px 14px 0; }
@@ -276,9 +287,6 @@
   .delete-provider { width: 32px; height: 32px; margin-left: auto; color: var(--text-tertiary); }
   .delete-provider:hover { color: var(--danger-color); background: var(--danger-soft); }
 
-  .provider-overview > div { min-height: 76px; padding: 14px; }
-  .provider-overview strong { font-size: 18px; }
-  .provider-overview small { font-size: 11px; }
   .provider-search input { min-height: 42px; font-size: 13px; }
   .provider-card { border-radius: 13px; }
   .provider-head { padding: 14px 14px 0; }
@@ -304,8 +312,12 @@
 
   @media (max-width: 960px) {
     .provider-grid { grid-template-columns: 1fr; }
-    .provider-overview { grid-template-columns: 1fr; }
+    .settings-summary-grid { grid-template-columns: 1fr; }
     .provider-toolbar { flex-direction: column; gap: 8px; }
     .provider-search { width: 100%; }
+    .provider-toolbar-actions { width: 100%; justify-content: space-between; }
   }
+  @media (max-width: 1180px) { .settings-pane { padding: 24px; } }
+  @media (max-width: 960px) { .settings-pane { padding: 18px 14px 24px; } }
+  @media (max-width: 900px) { .settings-pane { padding: 16px 12px 20px; } }
 </style>

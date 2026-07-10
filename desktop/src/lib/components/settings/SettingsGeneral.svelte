@@ -77,7 +77,25 @@
 <section class="settings-pane">
   <div class="pane-head"><div><span>GENERAL & TRANSCRIPTION</span><h2>通用与转录</h2><p>设置默认输出位置、Whisper 模型与文字识别能力。</p></div></div>
 
-  <div class="setting-group">
+  <div class="settings-summary-grid">
+    <div class="summary-card">
+      <span class="summary-icon"><Icon name="folder" size={18} /></span>
+      <strong>{settings.vault_path ? "Obsidian Vault" : "默认导出目录"}</strong>
+      <small title={settings.vault_path || settings.output_dir}>{settings.vault_path || settings.output_dir || "未配置"}</small>
+    </div>
+    <div class="summary-card">
+      <span class="summary-icon model"><Icon name="audio" size={18} /></span>
+      <strong>{selectedWhisperModel?.label || settings.whisper_model}</strong>
+      <small>{selectedWhisperAvailable ? "本地模型已就绪" : "等待扫描或安装"}</small>
+    </div>
+    <div class="summary-card">
+      <span class="summary-icon enhance"><Icon name="scan" size={18} /></span>
+      <strong>{settings.ocr_enabled || settings.vision_enabled ? "增强已启用" : "基础转录"}</strong>
+      <small>OCR {settings.ocr_enabled ? "开启" : "关闭"} · Vision {settings.vision_enabled ? "开启" : "关闭"}</small>
+    </div>
+  </div>
+
+  <div class="setting-group settings-card-section">
     <div class="group-head"><div class="group-icon"><Icon name="folder" size={18} /></div><div><h3>文件与模型目录</h3><p>配置笔记产物与本地模型的存储位置。</p></div></div>
     <div class="form-grid two-cols">
       <div class="field"><label class="field-label" for="vault_path">Obsidian 笔记库 <small>可选，归档到 vault\video-notes</small></label><div class="input-wrap has-icon path-input"><span class="input-icon"><Icon name="folder" size={15} /></span><input id="vault_path" type="text" bind:value={settings.vault_path} title={settings.vault_path} oninput={onMarkDirty} placeholder="D:\Note_Obsidian" /></div></div>
@@ -85,7 +103,7 @@
     </div>
   </div>
 
-  <div class="setting-group online-video-settings">
+  <div class="setting-group settings-card-section online-video-settings">
     <div class="group-head"><div class="group-icon"><Icon name="link" size={18} /></div><div><h3>在线视频下载与 Cookie</h3><p>用于 B站等需要登录态的视频下载。公开免费视频可留空。</p></div></div>
     <div class="field">
       <label class="field-label" for="bilibili_cookie_file">Cookie 文件或 Cookie 字符串 <small>可选</small></label>
@@ -94,7 +112,7 @@
     </div>
   </div>
 
-  <div class="setting-group">
+  <div class="setting-group settings-card-section">
     <div class="group-head with-action">
       <div class="group-icon"><Icon name="audio" size={18} /></div>
       <div><h3>默认 Whisper 模型</h3><p>选择新任务默认使用的语音转录模型。</p></div>
@@ -159,7 +177,7 @@
     </div>
   </div>
 
-  <div class="setting-group">
+  <div class="setting-group settings-card-section">
     <div class="group-head"><div class="group-icon"><Icon name="image" size={18} /></div><div><h3>默认抽帧设置</h3><p>控制新任务与合集任务默认的帧抽取策略。创建任务页仍可单次覆盖。</p></div></div>
     <div class="runtime-settings-grid">
       <div class="field">
@@ -184,7 +202,7 @@
     </div>
   </div>
 
-  <div class="setting-group">
+  <div class="setting-group settings-card-section">
     <div class="group-head"><div class="group-icon"><Icon name="ocr" size={18} /></div><div><h3>内容增强</h3><p>控制新任务默认启用的 OCR 与视觉理解。这里保存的是默认值，创建任务页仍可单次覆盖。</p></div></div>
     <div class="enhancement-settings-grid">
       <button type="button" class="setting-toggle-card as-button" class:enabled={settings.ocr_enabled} onclick={() => { settings.ocr_enabled = !settings.ocr_enabled; onMarkDirty(); }} aria-pressed={settings.ocr_enabled}>
@@ -254,6 +272,27 @@
 </section>
 
 <style>
+  .settings-pane { padding: 30px 34px 42px; }
+  .pane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--border-color); }
+  .pane-head > div:first-child { display: flex; flex-direction: column; }
+  .pane-head > div:first-child > span { color: var(--accent-color); font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+  .pane-head h2 { margin-top: 3px; font-size: 26px; letter-spacing: -.02em; text-wrap: balance; }
+  .pane-head p { margin-top: 7px; color: var(--text-secondary); font-size: 13px; text-wrap: pretty; }
+
+  .settings-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0 18px; }
+  .summary-card { display: grid; grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; column-gap: 10px; min-height: 78px; padding: 14px; border-radius: 12px; background: var(--bg-subtle); }
+  .summary-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
+  .summary-icon.model { color: var(--success-color); background: var(--success-soft); }
+  .summary-icon.enhance { color: var(--warning-color); background: var(--warning-soft); }
+  .summary-card strong { overflow: hidden; color: var(--text-primary); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+  .summary-card small { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+  .settings-card-section { margin-top: 14px; padding: 18px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
+  .settings-card-section + .settings-card-section { margin-top: 12px; }
+  .setting-group.settings-card-section { border-bottom: 0; }
+  .settings-card-section .group-head { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+  .settings-card-section .group-head.with-action { margin-bottom: 14px; }
+
   .online-video-settings .input-wrap input { min-height: 38px; }
   .field-help { display: block; margin-top: 4px; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
 
@@ -307,8 +346,6 @@
 
   .setting-toggle-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .14s, background .14s; }
   .setting-toggle-card.as-button { appearance: none; font: inherit; }
-  .setting-toggle-card.disabled { opacity: .62; cursor: not-allowed; }
-  .setting-toggle-card.disabled:hover { border-color: var(--border-color); background: var(--bg-card); }
   .enhancement-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .enhancement-explain { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: 10px; color: var(--text-secondary); background: var(--bg-subtle); border: 1px solid var(--border-color); font-size: 12px; line-height: 1.55; }
   .setting-toggle-card.enabled { border-color: color-mix(in srgb, var(--accent-color) 50%, var(--border-color)); background: var(--accent-faint); }
@@ -321,4 +358,8 @@
   @media (max-width: 760px) { .runtime-settings-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .enhancement-settings-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .model-cards { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); } }
+  @media (max-width: 760px) { .settings-summary-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 1180px) { .settings-pane { padding: 24px; } }
+  @media (max-width: 960px) { .settings-pane { padding: 18px 14px 24px; } }
+  @media (max-width: 900px) { .settings-pane { padding: 16px 12px 20px; } }
 </style>
