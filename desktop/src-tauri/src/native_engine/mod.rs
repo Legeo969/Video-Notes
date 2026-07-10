@@ -397,14 +397,6 @@ impl NativeEngine {
         }))
     }
 
-    fn preview_api_key(key: Option<String>) -> String {
-        match key {
-            Some(k) if k.len() > 8 => format!("{}…{}", &k[..4], &k[k.len() - 4..]),
-            Some(k) if !k.is_empty() => "••••••••".to_string(),
-            _ => String::new(),
-        }
-    }
-
     fn settings_get(&self) -> Result<Value, String> {
         let raw = self.read_settings();
         let template = string_value(&raw, "template")
@@ -430,13 +422,9 @@ impl NativeEngine {
             "ocr_http_endpoint": string_value(&raw, "ocr_http_endpoint")
                 .or_else(|| string_value(&raw, "ocr_api_url"))
                 .unwrap_or_default(),
-            "ocr_http_api_key": Self::preview_api_key(
-                string_value(&raw, "ocr_http_api_key")
-                    .or_else(|| string_value(&raw, "ocr_api_key"))
-            ),
-            "ocr_api_key_configured": string_value(&raw, "ocr_http_api_key")
+            "ocr_http_api_key": string_value(&raw, "ocr_http_api_key")
                 .or_else(|| string_value(&raw, "ocr_api_key"))
-                .is_some(),
+                .unwrap_or_default(),
             "ocr_model": string_value(&raw, "ocr_model").unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string()),
             "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
