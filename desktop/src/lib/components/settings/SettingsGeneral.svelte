@@ -208,10 +208,10 @@
         </select>
       </div>
       {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
-        {#if settings.ocr_backend === "paddleocr_http" || settings.ocr_backend === "custom_http"}
+        {#if settings.ocr_backend === "paddleocr_http"}
           <div class="field">
             <div class="field-label-row">
-              <label class="field-label" for="ocr_model">OCR 模型</label>
+              <label class="field-label" for="ocr_model">PaddleOCR Model</label>
               <button type="button" class="btn btn-secondary btn-xs" onclick={onRefreshOcrModels} disabled={refreshingOcrModels} title="官方 API 未提供远程模型发现；刷新内置官方模型列表">
                 <Icon name="refresh" size={12} />{refreshingOcrModels ? "刷新中" : "刷新模型"}
               </button>
@@ -224,7 +224,7 @@
                 <option value={model}>{model}</option>
               {/each}
             </select>
-            <span class="field-hint">PaddleOCR / Custom HTTP API 使用静态模型列表；自定义模型会保留为当前选项。</span>
+            <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；自定义模型会保留为当前选项。</span>
           </div>
         {/if}
         <div class="field">

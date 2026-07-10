@@ -1887,7 +1887,7 @@ impl NativeEngine {
                 .ok_or_else(|| format!("Job {id} has no settings snapshot; cannot resume"))?;
             let task = snapshot.get("task_params")
                 .ok_or_else(|| "Missing task_params in snapshot".to_string())?;
-            let _workspace = job.workspace_dir.as_ref()
+            job.workspace_dir.as_ref()
                 .filter(|d| Path::new(d).exists())
                 .ok_or_else(|| format!("Job {id} workspace not found; cannot resume"))?;
 
