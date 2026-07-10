@@ -323,45 +323,29 @@ const mockResponses: Record<string, (params: any) => any> = {
   }),
   "storage.cleanup_orphans": () => ({ removed: 0 }),
   "storage.cleanup_completed": () => ({ removed: 0 }),
-  "study.knowledge": (params: { note_id: number }) => {
-    const note = mockNotes.find(n => n.id === params.note_id);
-    if (!note) return [];
-    return [
-      {
-        id: "ch1", label: "核心概念", kind: "chapter",
-        children: [
-          {
-            id: "sec1-1", label: "自注意力机制", kind: "section",
-            children: [
-              { id: "c1-1-1", label: "Query-Key-Value 计算", kind: "concept", children: [] },
-              { id: "c1-1-2", label: "注意力权重归一化", kind: "concept", children: [] },
-            ],
-          },
-          {
-            id: "sec1-2", label: "位置编码", kind: "section",
-            children: [
-              { id: "c1-2-1", label: "正弦余弦编码", kind: "concept", children: [] },
-            ],
-          },
-        ],
-      },
-      {
-        id: "ch2", label: "编码器结构", kind: "chapter",
-        children: [
-          { id: "sec2-1", label: "多头自注意力层", kind: "section", children: [] },
-          { id: "sec2-2", label: "前馈神经网络", kind: "section", children: [] },
-          { id: "sec2-3", label: "残差连接与层归一化", kind: "section", children: [] },
-        ],
-      },
-      {
-        id: "ch3", label: "解码器结构", kind: "chapter",
-        children: [
-          { id: "sec3-1", label: "掩码多头自注意力", kind: "section", children: [] },
-          { id: "sec3-2", label: "编码器-解码器注意力", kind: "section", children: [] },
-        ],
-      },
-    ];
-  },
+  "study.knowledge": (params: { note_id: number }) => ({
+    nodes: [
+      { id: "ch1", name: "Transformer Architecture", nodeType: "chapter", importance: 5, summary: "Core architecture of modern LLMs", source: "Section 1" },
+      { id: "n1", name: "Self-Attention", nodeType: "concept", importance: 5, summary: "Mechanism that weighs input tokens against each other", source: "1.1" },
+      { id: "n2", name: "Multi-Head Attention", nodeType: "concept", importance: 4, summary: "Parallel attention heads capture different relationships", source: "1.2" },
+      { id: "n3", name: "Positional Encoding", nodeType: "method", importance: 4, summary: "Adds position information to token embeddings", source: "1.3" },
+      { id: "n4", name: "Feed-Forward Network", nodeType: "method", importance: 3, summary: "Per-token MLP transformation", source: "1.4" },
+      { id: "ch2", name: "Training & Optimization", nodeType: "chapter", importance: 4, summary: "How transformers are trained", source: "Section 2" },
+      { id: "n5", name: "Cross-Entropy Loss", nodeType: "formula", importance: 3, summary: "Loss function for language modeling", source: "2.1" },
+      { id: "n6", name: "Adam Optimizer", nodeType: "tool", importance: 3, summary: "Adaptive learning rate optimizer", source: "2.2" },
+    ],
+    relations: [
+      { sourceId: "n1", targetId: "ch1", relationType: "part_of", confidence: 5 },
+      { sourceId: "n2", targetId: "ch1", relationType: "part_of", confidence: 5 },
+      { sourceId: "n3", targetId: "ch1", relationType: "part_of", confidence: 5 },
+      { sourceId: "n4", targetId: "ch1", relationType: "part_of", confidence: 5 },
+      { sourceId: "n5", targetId: "ch2", relationType: "part_of", confidence: 5 },
+      { sourceId: "n6", targetId: "ch2", relationType: "part_of", confidence: 5 },
+      { sourceId: "n1", targetId: "n2", relationType: "improves", confidence: 4 },
+      { sourceId: "n3", targetId: "n1", relationType: "depends_on", confidence: 4 },
+    ],
+    source: "ai",
+  }),
   "study.quiz": (params: { note_id: number }) => {
     return [
       { question: "Transformer 的核心机制是什么？", choices: ["循环神经网络", "自注意力机制", "卷积神经网络", "生成对抗网络"], correctIndex: 1, explanation: "Transformer 的核心是自注意力（Self-Attention）机制，它允许模型在处理序列时直接关注所有位置。" },

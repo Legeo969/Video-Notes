@@ -1,54 +1,75 @@
 <script lang="ts">
-  import Icon from "../Icon.svelte";
-  import type { KnowledgeNode } from "../../types";
+  import type { KnowledgeGraph, GraphNode } from "../../types";
 
-  let { nodes, depth = 0 }: { nodes: KnowledgeNode[]; depth?: number } = $props();
+  let { graph }: { graph: KnowledgeGraph } = $props();
 
-  let expanded = $state(new Set<string>());
-
-  function toggle(id: string) {
-    if (expanded.has(id)) {
-      expanded.delete(id);
-      expanded = expanded;
-    } else {
-      expanded.add(id);
-      expanded = expanded;
+  // Build children map from part_of relations
+  let children = $derived.by(() => {
+    const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
+    const map = new Map<string, GraphNode[]>();
+    for (const rel of graph.relations) {
+      if (rel.relationType === "part_of") {
+        if (!map.has(rel.targetId)) map.set(rel.targetId, []);
+        const child = nodeMap.get(rel.sourceId);
+        if (child) map.get(rel.targetId)!.push(child);
+      }
     }
-  }
+    return map;
+  });
+
+  // Root = chapter types or nodes not listed as child in any part_of relation
+  let treeRoots = $derived.by(() => {
+    const hasParent = new Set(
+      graph.relations
+        .filter(r => r.relationType === "part_of")
+        .map(r => r.sourceId)
+    );
+    return graph.nodes.filter(n =>
+      n.nodeType === "chapter" || !hasParent.has(n.id)
+    );
+  });
 </script>
 
-{#each nodes as node (node.id)}
+{#snippet treeNode(node: GraphNode, depth: number)}
   <div class="tree-node" style="padding-left: {depth * 20}px">
-    <button class="tree-toggle" class:leaf={node.children.length === 0} onclick={() => toggle(node.id)}>
-      {#if node.children.length > 0}
-        <Icon name="chevron-right" size={14} className={expanded.has(node.id) ? "expanded" : ""} />
-      {:else}
-        <span class="tree-dot" class:chapter={node.kind === "chapter"} class:section={node.kind === "section"} class:concept={node.kind === "concept"}></span>
-      {/if}
-    </button>
-    <span class="tree-label" class:chapter={node.kind === "chapter"} class:section={node.kind === "section"} class:concept={node.kind === "concept"}>
-      {node.label}
-    </span>
+    <span
+      class="node-type-dot"
+      class:concept={node.nodeType === "concept"}
+      class:tool={node.nodeType === "tool"}
+      class:method={node.nodeType === "method"}
+      class:chapter={node.nodeType === "chapter"}
+    ></span>
+    <span class="node-name">{node.name}</span>
+    {#if node.importance > 0}
+      <span class="node-importance">{'★'.repeat(node.importance)}</span>
+    {/if}
+    {#if node.summary}
+      <span class="node-summary">{node.summary}</span>
+    {/if}
   </div>
-  {#if expanded.has(node.id) && node.children.length > 0}
-    <svelte:self nodes={node.children} depth={depth + 1} />
+  {#if children.has(node.id)}
+    {#each children.get(node.id)! as child (child.id)}
+      {@render treeNode(child, depth + 1)}
+    {/each}
   {/if}
+{/snippet}
+
+{#each treeRoots as root (root.id)}
+  <div class="graph-node" data-id={root.id}>
+    {@render treeNode(root, 0)}
+  </div>
 {/each}
 
 <style>
-  .tree-node { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
-  .tree-toggle { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 auto; border: 0; background: transparent; cursor: pointer; color: var(--text-tertiary); padding: 0; border-radius: 4px; transition: transform .15s; }
-  .tree-toggle:hover { background: var(--bg-hover); }
-  .tree-toggle.leaf { cursor: default; }
-  .tree-toggle.leaf:hover { background: transparent; }
-  .tree-toggle :global(svg) { transition: transform .15s; }
-  .tree-toggle :global(svg.expanded) { transform: rotate(90deg); }
-  .tree-dot { width: 8px; height: 8px; border-radius: 50%; }
-  .tree-dot.chapter { background: var(--accent-color); }
-  .tree-dot.section { background: var(--warning-color); }
-  .tree-dot.concept { background: var(--success-color); }
-  .tree-label { font-size: 13px; line-height: 1.4; color: var(--text-primary); }
-  .tree-label.chapter { font-weight: 700; font-size: 14px; }
-  .tree-label.section { font-weight: 600; }
-  .tree-label.concept { font-weight: 400; color: var(--text-secondary); }
+  .graph-node { margin-bottom: 2px; }
+  .tree-node { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .node-type-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .node-type-dot.chapter { background: var(--accent-color); }
+  .node-type-dot.concept { background: var(--success-color); }
+  .node-type-dot.tool { background: var(--warning-color); }
+  .node-type-dot.method { background: var(--info-color); }
+  .node-name { font-size: 13px; line-height: 1.4; color: var(--text-primary); }
+  .tree-node:has(.node-type-dot.chapter) .node-name { font-weight: 700; font-size: 14px; }
+  .node-importance { color: var(--warning-color); font-size: 11px; letter-spacing: 1px; }
+  .node-summary { color: var(--text-tertiary); font-size: 11px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

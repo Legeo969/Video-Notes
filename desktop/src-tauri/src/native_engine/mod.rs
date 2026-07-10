@@ -2911,8 +2911,24 @@ impl NativeEngine {
             .ok_or_else(|| format!("Note {id} not found"))?;
         let content = std::fs::read_to_string(&note.path)
             .map_err(|e| format!("Failed to read note: {e}"))?;
-        let graph = crate::study::knowledge::build_knowledge_graph(&content);
-        Ok(graph)
+
+        // Try AI-powered knowledge graph first
+        let settings = self.read_settings();
+        if let Ok(profile) = active_provider_profile(&settings) {
+            match crate::study::knowledge::build_knowledge_graph_ai(&profile, &content) {
+                Ok(kg) if !kg.nodes.is_empty() => {
+                    return Ok(serde_json::to_value(kg).unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback: heading-based tree → convert to KnowledgeGraph
+        let tree_value = crate::study::knowledge::build_knowledge_graph(&content);
+        let tree_nodes: Vec<crate::study::KnowledgeNode> =
+            serde_json::from_value(tree_value).unwrap_or_default();
+        let kg: crate::study::KnowledgeGraph = tree_nodes.into();
+        Ok(serde_json::to_value(kg).unwrap_or_default())
     }
 
     fn study_quiz(&self, params: Value) -> Result<Value, String> {
