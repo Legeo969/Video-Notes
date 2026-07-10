@@ -186,6 +186,7 @@
 
   async function loadAll() {
     loading = true;
+    dirty = false;
     ocrKeyDirty = false;
     try {
       const [s, provs, tmpls, localModels] = await Promise.all([
