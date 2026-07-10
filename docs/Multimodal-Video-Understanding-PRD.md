@@ -1,4 +1,4 @@
-# Video Notes AI 多模态视频理解 PRD / v1.6.2 Hotfix Release
+# Video Notes AI 多模态视频理解 PRD / v1.7.0 Release
 
 ## 1. 背景
 
@@ -530,7 +530,7 @@ marker 内容：
 ```json
 {
   "component": "ffmpeg-tools",
-  "manifest_version": "1.6.2",
+  "manifest_version": "1.7.0",
   "installed_at": "RFC3339"
 }
 ```
