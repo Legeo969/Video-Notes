@@ -1,6 +1,15 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
+    use chrono::Utc;
+    use serde_json::{json, Map, Value};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        sync::Arc,
+        time::Duration,
+    };
     use uuid::Uuid;
 
     fn temp_engine() -> (NativeEngine, PathBuf) {
@@ -85,6 +94,24 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
         } else {
             shell_command("sleep 5")
         }
+    }
+
+    #[test]
+    fn tauri_csp_allows_windows_asset_protocol_images() {
+        let config: Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"].as_str().unwrap();
+        let img_src = csp
+            .split(';')
+            .map(str::trim)
+            .find(|directive| directive.starts_with("img-src "))
+            .unwrap();
+
+        assert!(
+            img_src
+                .split_whitespace()
+                .any(|source| source == "http://asset.localhost"),
+            "img-src must allow http://asset.localhost because Tauri convertFileSrc returns it on Windows"
+        );
     }
 
     fn provider_settings() -> Map<String, Value> {
@@ -309,6 +336,7 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
             attempt: 1,
             parent_run_id: None,
             artifact_cleanup_policy: default_artifact_cleanup_policy(),
+            note_id: None,
         };
         save_jobs(&engine.jobs_state_path, &[job]).unwrap();
 

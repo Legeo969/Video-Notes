@@ -1,7 +1,7 @@
 <script lang="ts">
   import { engineCall } from "../lib/api";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import type { NoteInfo, NoteDetail, KnowledgeNode } from "../lib/types";
+  import type { NoteInfo, NoteDetail, KnowledgeGraph } from "../lib/types";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import Icon from "../lib/components/Icon.svelte";
@@ -25,7 +25,7 @@
   let successMsg = $state<string | null>(null);
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let studyMode = $state(false);
-  let graphNodes = $state<KnowledgeNode[]>([]);
+  let graphData = $state<KnowledgeGraph | null>(null);
   let graphLoading = $state(false);
 
   let filteredNotes = $derived.by(() => {
@@ -61,12 +61,13 @@
   function resolveImageSrc(src: string, notePath: string): string {
     if (!src || /^(https?:|data:|blob:|asset:|file:)/i.test(src) || src.startsWith("#")) return src;
     const decoded = decodeImagePath(src);
+    // Strip angle brackets added by decode_markdown_image_paths for Obsidian compat
+    const cleaned = decoded.replace(/^<|>$/g, '');
     const noteDir = noteDirectory(notePath);
-    // Resolve the absolute path
-    const absolute = WINDOWS_ABSOLUTE_PATH.test(decoded) || decoded.startsWith("/")
-      ? decoded
-      : `${noteDir}\\${decoded}`;
-    // Path traversal guard: reject if resolved path goes above note directory
+    const absolute = WINDOWS_ABSOLUTE_PATH.test(cleaned) || cleaned.startsWith("/")
+      ? cleaned
+      : `${noteDir}\\${cleaned}`;
+    // Path traversal guard
     if (absolute.includes("..") && !absolute.startsWith(noteDir.replace(/[\\/]$/, ''))) {
       return src;
     }
@@ -109,7 +110,7 @@
 
   async function selectNote(id: number) {
     if (selectedNoteId === id) return;
-    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; graphNodes = []; error = null; loadingDetail = true;
+    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; graphData = null; error = null; loadingDetail = true;
     try {
       selectedNote = await engineCall<NoteDetail>("notes.get", { note_id: id });
       editContent = selectedNote.content;
@@ -122,7 +123,7 @@
     if (!selectedNote) return;
     graphLoading = true;
     try {
-      graphNodes = await engineCall<KnowledgeNode[]>("study.knowledge", { note_id: selectedNote.id });
+      graphData = await engineCall<KnowledgeGraph>("study.knowledge", { note_id: selectedNote.id });
     } catch (e) {
       error = String(e);
     } finally {
@@ -213,7 +214,7 @@
   });
 
   $effect(() => {
-    if (studyMode && selectedNote && graphNodes.length === 0) {
+    if (studyMode && selectedNote && (!graphData || graphData.nodes.length === 0)) {
       loadGraph();
     }
   });
@@ -299,8 +300,8 @@
               <h3>知识图谱</h3>
               {#if graphLoading}
                 <div class="study-loading"><span class="loading-ring"></span></div>
-              {:else if graphNodes.length > 0}
-                <KnowledgeTree nodes={graphNodes} />
+              {:else if graphData && graphData.nodes.length > 0}
+                <KnowledgeTree graph={graphData} />
               {:else}
                 <p class="study-empty">点击下方按钮生成知识图谱</p>
               {/if}

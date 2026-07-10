@@ -125,6 +125,36 @@ export interface KnowledgeNode {
   children: KnowledgeNode[];
 }
 
+export interface KnowledgeGraph {
+  nodes: GraphNode[];
+  relations: KnowledgeRelation[];
+  source: "ai" | "markdown";
+}
+
+export interface GraphNode {
+  id: string;
+  name: string;
+  nodeType: GraphNodeType;
+  importance: number;
+  summary: string;
+  source: string;
+}
+
+export type GraphNodeType =
+  | "concept" | "tool" | "method" | "technology"
+  | "person" | "formula" | "problem" | "solution" | "chapter";
+
+export interface KnowledgeRelation {
+  sourceId: string;
+  targetId: string;
+  relationType: RelationType;
+  confidence: number;
+}
+
+export type RelationType =
+  | "depends_on" | "used_for" | "part_of" | "improves"
+  | "replaces" | "conflicts_with" | "similar_to";
+
 export interface QuizQuestion {
   question: string;
   choices: string[];
