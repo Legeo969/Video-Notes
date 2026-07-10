@@ -564,20 +564,9 @@
   .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  .process-page { max-width: 1280px; }
   .workspace-grid { gap: 16px; }
-  .builder-card { border-radius: 18px; box-shadow: var(--shadow-sm); }
-  .workflow-steps { padding: 13px 20px; background: var(--bg-card); }
-  .workflow-step > span { width: 24px; height: 24px; border-radius: 8px; }
-  .workflow-step small { display: none; }
   .step-line { margin: 0 10px; }
-  .builder-section { gap: 15px; padding: 22px 23px; }
-  .builder-divider { margin: 0 23px; }
-  .section-number { width: 28px; height: 28px; border-radius: 9px; }
-  .media-picker { min-height: 106px; border-radius: 13px; background: var(--bg-subtle); }
   .media-picker:hover { background: var(--accent-faint); }
-  .enhancement-card { min-height: 70px; border-radius: 12px; }
-  .submit-bar { padding: 14px 23px; }
 
   @media (max-width: 1180px) {
     .workspace-grid { gap: 14px; }

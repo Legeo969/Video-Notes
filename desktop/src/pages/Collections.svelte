@@ -514,19 +514,10 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
     .collection-workspace { grid-template-columns: minmax(220px, 245px) minmax(0,1fr); }
   }
 
-  .collections-page { max-width: 1320px; }
-  .collection-metrics { gap: 9px; margin-bottom: 13px; }
-  .metric { min-height: 64px; padding: 11px 13px; border-radius: 13px; }
-  .metric-icon { width: 35px; height: 35px; border-radius: 10px; }
-  .collection-workspace { grid-template-columns: minmax(230px, 258px) minmax(0,1fr); min-height: 570px; border-radius: 16px; box-shadow: var(--shadow-sm); }
   .collection-sidebar { background: var(--bg-sidebar); }
   .collection-search { margin: 12px 11px 7px; }
   .collection-list { padding: 0 6px; }
-  .collection-item { padding: 8px; border-radius: 10px; }
   .collection-item.selected { box-shadow: none; }
-  .detail-header { padding: 17px 19px; }
-  .detail-folder { width: 41px; height: 41px; border-radius: 12px; }
-  .detail-progress-strip { padding: 10px 19px; }
   .items-toolbar { padding: 16px 19px 9px; }
   .items-list { padding: 0 19px 19px; }
 

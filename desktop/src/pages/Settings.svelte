@@ -78,6 +78,7 @@
     ocr_backend: string;
     ocr_http_endpoint: string;
     ocr_http_api_key: string;
+    ocr_api_key_configured: boolean;
     ocr_model: string;
     vision_enabled: boolean;
     frame_mode: string;
@@ -129,6 +130,7 @@
     ocr_backend: "tesseract",
     ocr_http_endpoint: "",
     ocr_http_api_key: "",
+    ocr_api_key_configured: false,
     ocr_model: "PaddleOCR-VL-1.6",
     vision_enabled: false,
     frame_mode: "fixed",
@@ -159,6 +161,7 @@
   let componentAction = $state<string | null>(null);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
+  let ocrKeyDirty = $state(false);
 
   let showProviderModal = $state(false);
   let editingProviderName = $state<string | null>(null);
@@ -187,6 +190,7 @@
 
   async function loadAll() {
     loading = true;
+    ocrKeyDirty = false;
     try {
       const [s, provs, tmpls, localModels] = await Promise.all([
         engineCall<SettingsBag>("settings.get"),
@@ -257,7 +261,7 @@
           ocr_enabled: settings.ocr_enabled,
           ocr_backend: settings.ocr_backend,
           ocr_http_endpoint: settings.ocr_http_endpoint,
-          ocr_http_api_key: settings.ocr_http_api_key,
+          ...(ocrKeyDirty ? { ocr_http_api_key: settings.ocr_http_api_key } : {}),
           ocr_model: settings.ocr_model,
           vision_enabled: settings.vision_enabled,
           frame_mode: settings.frame_mode,
@@ -268,6 +272,7 @@
         },
       });
       dirty = false;
+      ocrKeyDirty = false;
       showToast(selectedWhisperAvailable ? "设置已保存并将在后续任务中生效" : "设置已保存；当前 Whisper 模型未检测到，运行任务前请安装或重新扫描模型。", selectedWhisperAvailable ? "success" : "info");
     } catch (e: any) { showToast(`保存失败：${e?.message ?? e}`, "error"); }
     finally { saving = false; }
@@ -815,7 +820,7 @@
                   </div>
                   <div class="field">
                     <label class="field-label" for="ocr_http_api_key">OCR API Key <small>可选</small></label>
-                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={markDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "填官方 TOKEN，不用写 bearer" : "Bearer token，可留空"} /></div>
+                    <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={() => { markDirty(); ocrKeyDirty = true; }} placeholder={settings.ocr_api_key_configured && !settings.ocr_http_api_key ? "API Key 已配置" : (settings.ocr_backend === "paddleocr_http" ? "填官方 TOKEN，不用写 bearer" : "Bearer token，可留空")} /></div>
                   </div>
                 {/if}
                 <div class="field ocr-test-field">
@@ -1243,19 +1248,8 @@
     .model-cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   }
 
-  .settings-page { max-width: 1280px; }
-  .settings-shell { grid-template-columns: 220px minmax(0,1fr); min-height: 620px; border-radius: 16px; box-shadow: var(--shadow-sm); }
-  .settings-nav { padding: 13px 9px; background: var(--bg-sidebar); }
-  .settings-nav > button { grid-template-columns: 31px minmax(0,1fr) 14px; padding: 8px; border-radius: 10px; }
   .settings-nav > button.active { box-shadow: none; }
-  .tab-icon { width: 30px; height: 30px; border-radius: 9px; }
-  .settings-pane { padding: 21px 23px 29px; }
   .pane-head { padding-bottom: 17px; }
-  .pane-head h2 { font-size: 21px; }
-  .setting-group { padding: 19px 0; }
-  .group-icon { width: 35px; height: 35px; border-radius: 10px; }
-  .model-cards { padding: 4px; gap: 4px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-subtle); }
-  .model-card { min-height: 94px; padding: 10px; border-color: transparent; border-radius: 9px; background: transparent; }
   .model-card.selected { border-color: var(--border-color); background: var(--bg-card); box-shadow: var(--shadow-xs); }
 
 

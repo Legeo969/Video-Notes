@@ -13,6 +13,7 @@
   let actionJobId = $state<number | null>(null);
   let localError = $state("");
   let searchQuery = $state("");
+  let actionPending = $state(false);
   let nowMs = $state(Date.now());
 
   let filteredJobs = $derived.by(() => {
@@ -112,7 +113,9 @@
   }
 
   async function action(method: "process.pause" | "process.cancel" | "process.resume" | "process.retry", job: JobInfo) {
+    if (actionPending) return;
     if (method === "process.cancel" && !window.confirm("确定取消该任务吗？")) return;
+    actionPending = true;
     actionJobId = job.id;
     localError = "";
     try {
@@ -121,6 +124,7 @@
     } catch (error) {
       localError = toErrorMessage(error);
     } finally {
+      actionPending = false;
       actionJobId = null;
     }
   }
@@ -265,18 +269,18 @@
 
                 <div class="row-actions">
                   {#if ["running", "pending"].includes(job.status)}
-                    <button class="icon-btn" title="请求暂停：当前 native 命令结束后生效" disabled={actionJobId === job.id} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
-                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                    <button class="icon-btn" title="请求暂停：当前 native 命令结束后生效" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.pause", job)}><Icon name="pause" size={15} /></button>
+                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if job.status === "pausing"}
-                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />撤销暂停</button>
-                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />撤销暂停</button>
+                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if job.status === "paused"}
-                    <button class="btn btn-primary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />继续</button>
-                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                    <button class="btn btn-primary btn-sm" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.resume", job)}><Icon name="play" size={13} />继续</button>
+                    <button class="icon-btn danger-action" title="取消" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if job.status === "cancelling"}
-                    <button class="icon-btn danger-action" title="再次请求取消" disabled={actionJobId === job.id} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
+                    <button class="icon-btn danger-action" title="再次请求取消" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.cancel", job)}><Icon name="stop" size={15} /></button>
                   {:else if canRetry(job)}
-                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />按原任务参数重试</button>
+                    <button class="btn btn-secondary btn-sm" disabled={actionJobId === job.id || actionPending} onclick={() => action("process.retry", job)}><Icon name="rotate" size={13} />按原任务参数重试</button>
                     {#if job.note_id}
                       <button class="btn btn-primary btn-sm" onclick={() => openNote(job)}><Icon name="note" size={13} />打开笔记</button>
                     {/if}
@@ -284,7 +288,7 @@
                     <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
                   {/if}
                   {#if canDelete(job)}
-                    <button class="icon-btn danger-action" title="删除任务" aria-label={`删除任务 ${titleOf(job)}`} disabled={actionJobId === job.id} onclick={() => removeJob(job)}><Icon name="trash" size={15} /></button>
+                    <button class="icon-btn danger-action" title="删除任务" aria-label={`删除任务 ${titleOf(job)}`} disabled={actionJobId === job.id || actionPending} onclick={() => removeJob(job)}><Icon name="trash" size={15} /></button>
                   {/if}
                 </div>
               </article>
@@ -303,28 +307,28 @@
 
           <div class="detail-actions">
             {#if ["running", "pending"].includes(selectedJob.status)}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />请求暂停</button>
-              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.pause", selectedJob)}><Icon name="pause" size={13} />请求暂停</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
             {:else if selectedJob.status === "pausing"}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />撤销暂停</button>
-              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />撤销暂停</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
             {:else if selectedJob.status === "paused"}
-              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />继续</button>
-              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
+              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.resume", selectedJob)}><Icon name="play" size={13} />继续</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />取消</button>
             {:else if selectedJob.status === "cancelling"}
-              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />再次取消</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.cancel", selectedJob)}><Icon name="stop" size={13} />再次取消</button>
             {:else if canRetry(selectedJob)}
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />按原任务参数重试</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => action("process.retry", selectedJob)}><Icon name="rotate" size={13} />按原任务参数重试</button>
               {#if selectedJob.note_id}
                 <button class="btn btn-primary btn-sm" onclick={() => openNote(selectedJob)}><Icon name="note" size={13} />在笔记库中打开</button>
               {/if}
             {/if}
             {#if canDelete(selectedJob)}
-              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>
+              <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>
             {/if}
             {#if selectedJob.output_path}
-              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => openOutput(selectedJob)}><Icon name="external" size={13} />打开笔记</button>
-              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id} onclick={() => openOutput(selectedJob, true)}><Icon name="folder-open" size={13} />定位文件</button>
+              <button class="btn btn-primary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => openOutput(selectedJob)}><Icon name="external" size={13} />打开笔记</button>
+              <button class="btn btn-secondary btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => openOutput(selectedJob, true)}><Icon name="folder-open" size={13} />定位文件</button>
             {/if}
           </div>
 
@@ -469,18 +473,8 @@
     .detail-panel { border-top: 1px solid var(--border-color); border-left: 0; }
   }
 
-  .tasks-page { max-width: 1320px; }
-  .metrics-row { gap: 9px; margin-bottom: 13px; }
-  .metric-card { min-height: 66px; padding: 11px 12px; border-radius: 13px; }
-  .metric-icon { width: 34px; height: 34px; border-radius: 10px; }
-  .metric-card strong { font-size: 21px; }
-  .task-workspace { border-radius: 16px; box-shadow: var(--shadow-sm); }
-  .task-toolbar { padding: 10px 12px; background: var(--bg-card); }
-  .table-head { padding: 9px 14px; background: var(--bg-subtle); }
-  .task-main { padding-left: 14px; }
   .task-row:hover { background: var(--bg-subtle); }
   .task-row.selected { background: var(--accent-faint); }
-  .detail-panel { background: var(--bg-subtle); }
 
 
   /* UI v7 — desktop-density and readability pass */
