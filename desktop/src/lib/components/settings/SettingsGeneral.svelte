@@ -13,6 +13,7 @@
     whisper_model: string;
     whisper_model_dir: string;
     whisper_device: string;
+    language: string;
     ocr_enabled: boolean;
     ocr_backend: string;
     ocr_http_endpoint: string;
@@ -174,6 +175,17 @@
           <option value="cpu">CPU</option>
         </select>
       </div>
+      <div class="field">
+        <label class="field-label" for="whisper_language">转录语言</label>
+        <select id="whisper_language" bind:value={settings.language} onchange={onMarkDirty}>
+          <option value="">自动检测（中文视频可能误判为英文）</option>
+          <option value="zh">中文（zh）</option>
+          <option value="en">英文（en）</option>
+          <option value="ja">日语（ja）</option>
+          <option value="ko">韩语（ko）</option>
+          <option value="auto">auto（显式自动检测）</option>
+        </select>
+      </div>
     </div>
   </div>
 
@@ -207,7 +219,7 @@
     <div class="enhancement-settings-grid">
       <button type="button" class="setting-toggle-card as-button" class:enabled={settings.ocr_enabled} onclick={() => { settings.ocr_enabled = !settings.ocr_enabled; onMarkDirty(); }} aria-pressed={settings.ocr_enabled}>
         <span class="toggle-feature-icon"><Icon name="scan" size={20} /></span>
-        <span class="toggle-copy"><strong>OCR 文字识别</strong><small>识别幻灯片、字幕和画面文字。未安装 OCR 后端时任务会给出明确错误，不会静默忽略。</small></span>
+        <span class="toggle-copy"><strong>OCR 文字识别</strong><small>识别幻灯片、字幕和画面文字。OCR 后端未配置或不可用时任务会给出明确错误，不会静默忽略。</small></span>
         <span class="switch" aria-hidden="true"><input type="checkbox" checked={settings.ocr_enabled} tabindex="-1" /><span class="switch-track"></span></span>
       </button>
       <button type="button" class="setting-toggle-card as-button" class:enabled={settings.vision_enabled} onclick={() => { settings.vision_enabled = !settings.vision_enabled; onMarkDirty(); }} aria-pressed={settings.vision_enabled}>
@@ -230,8 +242,8 @@
           <div class="field">
             <div class="field-label-row">
               <label class="field-label" for="ocr_model">PaddleOCR Model</label>
-              <button type="button" class="btn btn-secondary btn-xs" onclick={onRefreshOcrModels} disabled={refreshingOcrModels} title="官方 API 未提供远程模型发现；刷新内置官方模型列表">
-                <Icon name="refresh" size={12} />{refreshingOcrModels ? "刷新中" : "刷新模型"}
+              <button type="button" class="btn btn-secondary btn-xs" onclick={onRefreshOcrModels} disabled={refreshingOcrModels} title="重新加载内置官方模型列表（不调用远程 API）">
+                <Icon name="refresh" size={12} />{refreshingOcrModels ? "刷新中" : "重置模型列表"}
               </button>
             </div>
             <select id="ocr_model" bind:value={settings.ocr_model} onchange={onMarkDirty}>
@@ -242,15 +254,24 @@
                 <option value={model}>{model}</option>
               {/each}
             </select>
-            <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；自定义模型会保留为当前选项。</span>
+            <span class="field-hint">PaddleOCR hosted API 使用官方静态模型列表；手动输入的非官方模型名会保留为当前选项。</span>
+          </div>
+        {:else if settings.ocr_backend === "custom_http"}
+          <div class="field">
+            <label class="field-label" for="ocr_model">OCR Model <small>可选，取决于你的服务</small></label>
+            <input id="ocr_model" type="text" bind:value={settings.ocr_model} oninput={onMarkDirty} placeholder="留空则不发送 model 字段" />
+            <span class="field-hint">部分 Custom OCR 服务（如 olmOCR、Surya、本地 PaddleOCR）支持模型选择；留空则请求体不包含 model。</span>
           </div>
         {/if}
         <div class="field">
           <label class="field-label" for="ocr_http_endpoint">OCR HTTP Endpoint <small>本地或远程</small></label>
           <div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="ocr_http_endpoint" type="text" bind:value={settings.ocr_http_endpoint} oninput={onMarkDirty} placeholder={settings.ocr_backend === "paddleocr_http" ? "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs" : "http://127.0.0.1:8868/ocr"} /></div>
+          {#if settings.ocr_backend === "custom_http" && settings.ocr_http_endpoint.includes("paddleocr")}
+            <small style="color:var(--warn,#d97706);font-size:11px;">⚠ 当前 Endpoint 看起来是 PaddleOCR 地址，切换后端时请记得修改。</small>
+          {/if}
         </div>
         <div class="field">
-          <label class="field-label" for="ocr_http_api_key">OCR API Key <small>可选</small></label>
+          <label class="field-label" for="ocr_http_api_key">OCR API Key {#if settings.ocr_backend === "paddleocr_http"}<small style="color:var(--danger,#e53e3e)">必填</small>{:else}<small>可选</small>{/if}</label>
           <div class="input-wrap has-icon"><span class="input-icon"><Icon name="key" size={15} /></span><input id="ocr_http_api_key" type="password" bind:value={settings.ocr_http_api_key} oninput={() => { onMarkDirty(); ocrKeyDirty = true; }} placeholder={settings.ocr_api_key_configured && !settings.ocr_http_api_key ? "API Key 已配置" : (settings.ocr_backend === "paddleocr_http" ? "填官方 TOKEN，不用写 bearer" : "Bearer token，可留空")} /></div>
         </div>
       {/if}

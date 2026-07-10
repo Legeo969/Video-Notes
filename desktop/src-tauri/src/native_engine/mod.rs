@@ -218,6 +218,8 @@ impl NativeEngine {
             .map(|root| root.join("runtime").join("manifests"))
             .unwrap_or_else(|| data_dir.join("runtime").join("manifests"));
         let default_export_dir = default_export_dir(app_handle);
+        // Clean up stale temp files from previous crashed runs.
+        cleanup_stale_temp_files(&runtime_dir);
         Self {
             app_handle: Some(app_handle.clone()),
             settings_path,
@@ -306,6 +308,7 @@ impl NativeEngine {
             "doctor.run" => self.doctor_run(),
             "diagnostics.bundle" => self.diagnostics_bundle(),
             "components.list" => self.components_list(),
+            "components.check_updates" => self.components_check_updates(),
             "components.verify" => self.components_verify(params),
             "components.install" => self.components_install(params),
             "components.remove" => self.components_remove(params),
@@ -347,7 +350,9 @@ impl NativeEngine {
             "study.quiz" => self.study_quiz(params),
             _ => return None,
         };
-        Some(result)
+        // Redact potential API keys/tokens from error messages before
+        // returning to the frontend (defense in depth).
+        Some(result.map_err(|e| redact_secrets(&e)))
     }
 
     fn system_info(&self) -> Result<Value, String> {
@@ -884,12 +889,16 @@ impl NativeEngine {
             };
         }
 
+        let test_model = string_param(&params, "ocr_model")
+            .or_else(|| string_value(&settings, "ocr_model"))
+            .unwrap_or_default();
         match ocr_http_json_with_image(
             &client,
             endpoint.trim(),
             &api_key,
             OCR_TEST_IMAGE_BASE64,
             "ocr-test.png",
+            &test_model,
         ) {
             Ok(value) => {
                 let text_count = extract_text_from_ocr_json(&value).len();
@@ -1336,31 +1345,17 @@ impl NativeEngine {
             } else {
                 Value::Null
             };
-            let latest_version =
-                if installed && manifest_string(&manifest, "download_url").is_some() {
-                    component_latest_version(&manifest)
-                        .map(Value::String)
-                        .unwrap_or(Value::Null)
-                } else {
-                    Value::Null
-                };
-            let manifest_version = manifest_string(&manifest, "version").unwrap_or_default();
-            let marker_version = read_component_marker_version(&component_path);
-            let update_available = installed
-                && missing.is_empty()
-                && manifest_string(&manifest, "download_url").is_some()
-                && marker_version
-                    .as_deref()
-                    .map(|version| version != manifest_version)
-                    .unwrap_or(false);
+            // Do NOT call GitHub API here — that was blocking and rate-limited.
+            // latest_version and update_available are populated on-demand via
+            // components_check_updates (triggered by the "检查更新" button).
             result.push(json!({
                 "component": component,
                 "version": manifest.get("version").and_then(Value::as_str).unwrap_or(""),
                 "description": manifest.get("description").and_then(Value::as_str).unwrap_or(""),
                 "installed": installed,
                 "installed_version": installed_version,
-                "latest_version": latest_version,
-                "update_available": update_available,
+                "latest_version": Value::Null,
+                "update_available": false,
                 "status": if installed && missing.is_empty() { "ok" } else if installed { "missing_files" } else { "not_installed" },
                 "size_mb": manifest.get("size_mb").cloned().unwrap_or(Value::Null),
                 "component_path": component_path.to_string_lossy(),
@@ -1372,10 +1367,49 @@ impl NativeEngine {
         Ok(json!(result))
     }
 
+    /// Check all installed downloadable components for updates via GitHub API.
+    /// Called manually by the frontend "检查更新" button — never auto-triggered.
+    fn components_check_updates(&self) -> Result<Value, String> {
+        let mut results = Vec::new();
+        for manifest in self.component_manifests()? {
+            let Some(component) = manifest.get("component").and_then(Value::as_str) else {
+                continue;
+            };
+            let download_url = match manifest_string(&manifest, "download_url") {
+                Some(url) if !url.is_empty() => url,
+                _ => continue,
+            };
+            let component_path = self.runtime_dir.join("components").join(component);
+            let installed = component_path.is_dir();
+            let installed_version = if installed {
+                component_runtime_version(component, &component_path)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            // Fetch latest version from GitHub (5s timeout per call).
+            let latest_version = component_latest_version(&manifest).unwrap_or_default();
+            // Update is available if we have both versions and they differ.
+            let update_available = installed
+                && !installed_version.is_empty()
+                && !latest_version.is_empty()
+                && installed_version != latest_version;
+            results.push(json!({
+                "component": component,
+                "installed_version": installed_version,
+                "latest_version": latest_version,
+                "update_available": update_available,
+                "download_url": download_url,
+            }));
+        }
+        Ok(json!(results))
+    }
+
     fn components_verify(&self, params: Value) -> Result<Value, String> {
         let component = required_string(&params, "component")?;
-        let manifest = self.read_manifest(&component)?;
-        let component_path = self.runtime_dir.join("components").join(&component);
+        let safe = sanitize_component_name(&component)?;
+        let manifest = self.read_manifest(&safe)?;
+        let component_path = self.runtime_dir.join("components").join(&safe);
         let files = manifest
             .get("files")
             .and_then(Value::as_array)
@@ -1396,9 +1430,10 @@ impl NativeEngine {
 
     fn components_install(&self, params: Value) -> Result<Value, String> {
         let component = required_string(&params, "component")?;
-        let manifest = self.read_manifest(&component)?;
-        let source = self.runtime_dir.join("packages").join(&component);
-        let target = self.runtime_dir.join("components").join(&component);
+        let safe = sanitize_component_name(&component)?;
+        let manifest = self.read_manifest(&safe)?;
+        let source = self.runtime_dir.join("packages").join(&safe);
+        let target = self.runtime_dir.join("components").join(&safe);
         if !source.is_dir() {
             let download_error = if manifest_string(&manifest, "download_url").is_some() {
                 match install_component_from_download(&manifest, &target) {
@@ -1610,6 +1645,9 @@ impl NativeEngine {
         let whisper_device = string_param(&params, "whisper_device")
             .or_else(|| string_value(&settings, "whisper_device"))
             .unwrap_or_else(|| "auto".to_string());
+        let whisper_language = string_param(&params, "language")
+            .or_else(|| string_value(&settings, "language"))
+            .unwrap_or_default();
         let provider = provider_profile_for_job(&settings, &params).ok();
         let ocr_enabled = params
             .get("ocr_enabled")
@@ -1685,6 +1723,7 @@ impl NativeEngine {
             &output_dir,
             &whisper_model,
             &whisper_device,
+            &whisper_language,
             &provider_name,
             provider.as_ref(),
             &ocr_config,
@@ -1771,7 +1810,7 @@ impl NativeEngine {
                 run_native_job(
                     jobs, jobs_state_path, app_handle, data_dir, id,
                     input, title, output_dir, runtime_dir,
-                    model_dirs, whisper_model, whisper_device,
+                    model_dirs, whisper_model, whisper_device, whisper_language,
                     provider, ocr_config, vision_enabled,
                     frame_interval, max_frames, frame_mode,
                     control, job_controls,
@@ -1865,7 +1904,7 @@ impl NativeEngine {
         // then later acquires #2 (job_controls). The locks are sequential
         // (not nested), so no deadlock despite appearing to reverse the
         // documented order.
-        let (input, title, output_dir, whisper_model, whisper_device,
+        let (input, title, output_dir, whisper_model, whisper_device, whisper_language,
              vision_enabled, frame_interval, max_frames, frame_mode,
              ocr_enabled, ocr_backend, ocr_endpoint, ocr_model) = {
             let jobs = self.jobs.lock()
@@ -1892,6 +1931,7 @@ impl NativeEngine {
             let output_dir_str = required_string(task, "output_dir")?;
             let whisper_model = string_param(task, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
             let whisper_device = string_param(task, "whisper_device").unwrap_or_else(|| "auto".to_string());
+            let whisper_language = string_param(task, "whisper_language").unwrap_or_default();
             let vision_enabled = task.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false);
             let frame_interval = task.get("frame_interval").and_then(Value::as_f64).unwrap_or(30.0);
             let max_frames = task.get("max_frames").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(30);
@@ -1903,7 +1943,7 @@ impl NativeEngine {
             drop(jobs);
 
             (input, title, PathBuf::from(output_dir_str),
-             whisper_model, whisper_device,
+             whisper_model, whisper_device, whisper_language,
              vision_enabled, frame_interval, max_frames, frame_mode,
              ocr_enabled, ocr_backend, ocr_endpoint, ocr_model)
         };
@@ -1957,7 +1997,7 @@ impl NativeEngine {
                 run_native_job(
                     jobs, jobs_state_path, app_handle, data_dir, id,
                     input, title, output_dir, runtime_dir,
-                    model_dirs, whisper_model, whisper_device,
+                    model_dirs, whisper_model, whisper_device, whisper_language,
                     provider, ocr_config, vision_enabled,
                     frame_interval, max_frames, frame_mode,
                     control, job_controls,
@@ -2159,6 +2199,19 @@ impl NativeEngine {
         let path = PathBuf::from(path);
         if !path.is_file() {
             return Err(format!("Note not found: {}", path.display()));
+        }
+        // Constrain reads to known note output directories to prevent
+        // arbitrary file access via crafted paths.
+        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+        let allowed_roots = [
+            self.default_export_dir.canonicalize().unwrap_or_else(|_| self.default_export_dir.to_path_buf()),
+            effective_note_output_dir(&self.read_settings(), &self.default_export_dir)
+                .canonicalize()
+                .unwrap_or_else(|_| self.default_export_dir.to_path_buf()),
+        ];
+        let is_allowed = allowed_roots.iter().any(|root| canonical.starts_with(root));
+        if !is_allowed {
+            return Err(format!("Access denied: path is outside note output directories"));
         }
         note_detail(note_entry_from_path(path)?)
     }
@@ -2830,12 +2883,14 @@ impl NativeEngine {
     }
 
     fn read_manifest(&self, component: &str) -> Result<Value, String> {
-        read_json_file(&self.manifests_dir.join(format!("{component}.json")))
+        // Reject path traversal attempts in component name.
+        let safe = sanitize_component_name(component)?;
+        read_json_file(&self.manifests_dir.join(format!("{safe}.json")))
             .or_else(|_| {
-                default_component_manifest(component)
-                    .ok_or_else(|| format!("manifest '{component}' not found in bundled defaults"))
+                default_component_manifest(&safe)
+                    .ok_or_else(|| format!("manifest '{safe}' not found in bundled defaults"))
             })
-            .map_err(|error| format!("manifest '{component}' not found or invalid: {error}"))
+            .map_err(|error| format!("manifest '{safe}' not found or invalid: {error}"))
     }
 
     fn component_manifests(&self) -> Result<Vec<Value>, String> {
@@ -2986,8 +3041,22 @@ fn jobs_state_path(data_dir: &Path) -> PathBuf {
 }
 
 fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
-    let mut jobs = fs::read_to_string(jobs_state_path)
+    // Guard against unbounded memory: if jobs.json exceeds 16 MB, something
+    // is wrong (likely thousands of stale jobs). Read anyway but log a warning.
+    let mut jobs = fs::metadata(jobs_state_path)
         .ok()
+        .filter(|m| m.len() <= 16 * 1024 * 1024)
+        .and_then(|_| fs::read_to_string(jobs_state_path).ok())
+        .or_else(|| {
+            // Large file fallback: try reading anyway but warn
+            match fs::read_to_string(jobs_state_path) {
+                Ok(raw) => {
+                    eprintln!("[warn] jobs.json is large (>16MB), consider cleaning old jobs");
+                    Some(raw)
+                }
+                Err(_) => None,
+            }
+        })
         .and_then(|raw| serde_json::from_str::<Vec<NativeJob>>(&raw).ok())
         .unwrap_or_default();
     let now = Utc::now().to_rfc3339();
@@ -3263,7 +3332,10 @@ impl Drop for JobProfileMetrics {
                 "duration_ms": s.duration_ms,
             })).collect::<Vec<_>>(),
         })) {
-            let _ = fs::write(&metrics_path, json);
+            let _ = fs::write(&metrics_path, &json).map_err(|e| {
+                eprintln!("[metrics] failed to write {}: {e}", metrics_path.display());
+                e
+            });
         }
     }
 }
@@ -3314,6 +3386,7 @@ fn run_native_job(
     model_dirs: Vec<PathBuf>,
     whisper_model: String,
     whisper_device: String,
+    whisper_language: String,
     provider: Option<NativeProviderProfile>,
     ocr_config: OcrRuntimeConfig,
     vision_enabled: bool,
@@ -3469,16 +3542,29 @@ fn run_native_job(
     checkpoint!("downloading", 25, "媒体输入已准备");
     profile.stages.push(t_dl.finish());
 
-    let base_title = title
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            input_path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| format!("native-job-{id}"));
+    let base_title = if input.starts_with("http://") || input.starts_with("https://") {
+        // For online videos, prefer the real title from the downloaded
+        // filename (yt-dlp uses the actual video title). Fall back to the
+        // URL-derived title or user-provided title if unavailable.
+        input_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| title.clone().filter(|value| !value.trim().is_empty()))
+            .unwrap_or_else(|| format!("native-job-{id}"))
+    } else {
+        title
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                input_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| format!("native-job-{id}"))
+    };
     let base_file_stem = sanitize_filename(&base_title);
     let file_stem = format!("{base_file_stem}-{run_stamp}");
     profile.file_stem = file_stem.clone();
@@ -3512,6 +3598,7 @@ fn run_native_job(
         &model_dirs,
         &whisper_model,
         &whisper_device,
+        &whisper_language,
         &control,
     ) {
         Ok((text, json)) => (text, json),
@@ -3795,7 +3882,7 @@ fn run_native_job(
     }
     profile.stages.push(t_vision.finish());
     checkpoint!("indexing", 69, "准备写入 transcript");
-    if let Err(error) = fs::write(&transcript_path, transcript) {
+    if let Err(error) = fs::write(&transcript_path, &transcript) {
         update_job(
             &jobs,
             &jobs_state_path,
@@ -3830,13 +3917,16 @@ fn run_native_job(
         Some(transcript_path.to_string_lossy().to_string()),
     );
 
-    let transcript_text = fs::read_to_string(&transcript_path).unwrap_or_default();
+    let transcript_text = transcript;
     let transcript_preview = transcript_text.chars().take(6000).collect::<String>();
     let image_context = if ocr_config.enabled || vision_enabled {
         let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
         if let Some(asset_dir) =
             copy_frame_assets(&frame_dir, &output_dir, &format!("{file_stem}-{id}"))
         {
+            // Frames have been copied to the output directory; remove the
+            // workspace copy to reclaim disk space (can be 30+ MB per job).
+            let _ = fs::remove_dir_all(&frame_dir);
             markdown_image_context(
                 &note_path,
                 &asset_dir,
@@ -4513,6 +4603,7 @@ fn build_job_settings_snapshot(
     output_dir: &Path,
     whisper_model: &str,
     whisper_device: &str,
+    whisper_language: &str,
     provider_name: &str,
     provider: Option<&NativeProviderProfile>,
     ocr_config: &OcrRuntimeConfig,
@@ -4531,6 +4622,7 @@ fn build_job_settings_snapshot(
     );
     task_params.insert("whisper_model".to_string(), json!(whisper_model));
     task_params.insert("whisper_device".to_string(), json!(whisper_device));
+    task_params.insert("whisper_language".to_string(), json!(whisper_language));
     task_params.insert("provider_name".to_string(), json!(provider_name));
     if let Some(provider) = provider {
         if provider_name.trim().is_empty() {
@@ -5017,7 +5109,12 @@ fn collection_item(id: u64, input: &str) -> Value {
 fn source_title(input: &str) -> String {
     let value = input.trim();
     if value.starts_with("http://") || value.starts_with("https://") {
-        return value
+        // Strip query string and fragment before extracting the last path
+        // segment. Without this, a URL like
+        //   https://www.bilibili.com/video/BV1BoM76iEih/?vd_source=abc123
+        // would produce the title "?vd_source=abc123" instead of "BV1BoM76iEih".
+        let path_part = value.split(['?', '#']).next().unwrap_or(value);
+        return path_part
             .trim_end_matches('/')
             .rsplit('/')
             .next()
@@ -5270,7 +5367,9 @@ fn component_latest_version(manifest: &Value) -> Option<String> {
 fn github_repo_from_url(url: &str) -> Option<(String, String)> {
     let marker = "github.com/";
     let rest = url.split(marker).nth(1)?;
-    let mut parts = rest.split('/');
+    // Strip query string and fragment before parsing path segments.
+    let path = rest.split(['?', '#']).next()?;
+    let mut parts = path.split('/');
     let owner = parts.next()?.trim();
     let repo = parts.next()?.trim();
     if owner.is_empty() || repo.is_empty() {
@@ -5358,6 +5457,7 @@ fn transcribe_with_whisper_cpp(
     model_dirs: &[PathBuf],
     whisper_model: &str,
     whisper_device: &str,
+    whisper_language: &str,
     control: &Arc<JobControl>,
 ) -> Result<(String, Option<String>), String> {
     let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
@@ -5412,6 +5512,9 @@ fn transcribe_with_whisper_cpp(
         "-of",
         &out_prefix.to_string_lossy(),
     ]);
+    if !whisper_language.is_empty() {
+        whisper_command.args(["-l", whisper_language]);
+    }
     let whisper_output = run_controlled_command_piped(whisper_command, control, "whisper.cpp")?;
     let _ = fs::remove_file(&audio_path);
     if !whisper_output.status.success() {
@@ -5422,11 +5525,65 @@ fn transcribe_with_whisper_cpp(
     }
 
     let txt_path = out_prefix.with_extension("txt");
-    let text = fs::read_to_string(&txt_path)
+    // Check output existence before reading — whisper-cli exits(0) even on
+    // unknown arguments, so a missing output file is the real error signal.
+    if !txt_path.exists() {
+        let stderr = String::from_utf8_lossy(&whisper_output.stderr).trim().to_string();
+        return Err(format!(
+            "whisper.cpp did not produce transcript output.\nstderr: {stderr}"
+        ));
+    }
+    let raw_text = fs::read_to_string(&txt_path)
         .map(|text| text.trim().to_string())
-        .map_err(|error| format!("whisper.cpp did not produce transcript: {error}"))?;
+        .map_err(|error| format!("whisper.cpp transcript read error: {error}"))?;
+    // Post-process: collapse consecutive repeated lines that indicate
+    // whisper.cpp hallucination loops (the model can repeat a single
+    // phrase thousands of times when language detection fails or audio
+    // has long silent sections).
+    let text = collapse_repeated_lines(&raw_text);
     let json_str = fs::read_to_string(out_prefix.with_extension("json")).ok();
     Ok((text, json_str))
+}
+
+/// Collapse consecutive identical lines in a transcript.
+///
+/// whisper.cpp can fall into a hallucination loop where the same phrase is
+/// repeated hundreds or thousands of times. This function detects runs of
+/// identical consecutive non-empty lines and collapses them to at most 2
+/// occurrences. Empty lines are preserved as-is.
+fn collapse_repeated_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return text.to_string();
+    }
+    let mut result: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let current = lines[i].trim();
+        // Never collapse empty/whitespace-only lines — they are legitimate
+        // paragraph separators in the transcript.
+        if current.is_empty() {
+            result.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+        // Count how many consecutive lines match (ignoring whitespace).
+        let mut count = 1;
+        while i + count < lines.len() && lines[i + count].trim() == current {
+            count += 1;
+        }
+        if count <= 2 {
+            // Keep up to 2 consecutive identical lines (legitimate repetition).
+            for _ in 0..count {
+                result.push(lines[i].to_string());
+            }
+        } else {
+            // Hallucination loop: keep only the first occurrence, drop the rest.
+            result.push(lines[i].to_string());
+        }
+        i += count;
+    }
+    result.join("\n")
 }
 
 fn download_with_ytdlp(
@@ -5472,6 +5629,13 @@ fn extract_ocr_with_tesseract(
 ) -> Result<OcrExtraction, String> {
     let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
         .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
+    // Check for Chinese tessdata to enable chi_sim+eng OCR.
+    // Use find_tessdata_dir for thorough detection (sibling dir + TESSDATA_PREFIX).
+    let tessdata_dir = tesseract
+        .parent()
+        .and_then(find_tessdata_dir)
+        .or_else(|| tesseract.parent().map(|p| p.join("tessdata")))
+        .unwrap_or_else(|| PathBuf::from("tessdata"));
     let mut output = String::new();
     let frame_result = extract_sample_frames(
         input_path,
@@ -5487,18 +5651,38 @@ fn extract_ocr_with_tesseract(
     for frame in &frame_result.frames {
         let mut command = hidden_command(&tesseract);
         command.arg(&frame).arg("stdout");
-        let result = run_controlled_command_piped(command, control, "tesseract")?;
-        if result.status.success() {
-            let text = String::from_utf8_lossy(&result.stdout).trim().to_string();
-            if !text.is_empty() {
-                output.push_str(&format!(
-                    "### {}\n\n{}\n\n",
-                    frame
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("frame"),
-                    text
-                ));
+        // Auto-detect language: use chi_sim+eng if chi_sim tessdata is available,
+        // otherwise fall back to eng (tesseract default).
+        if tessdata_dir.join("chi_sim.traineddata").is_file() {
+            command.arg("-l").arg("chi_sim+eng");
+        }
+        // Catch and log execution errors per frame instead of failing the whole batch.
+        match run_controlled_command_piped(command, control, "tesseract") {
+            Ok(result) => {
+                if result.status.success() {
+                    let text = String::from_utf8(result.stdout)
+                        .unwrap_or_else(|error| {
+                            String::from_utf8_lossy(&error.into_bytes()).into_owned()
+                        })
+                        .trim()
+                        .to_string();
+                    if !text.is_empty() {
+                        output.push_str(&format!(
+                            "### {}\n\n{}\n\n",
+                            frame
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("frame"),
+                            text
+                        ));
+                    }
+                } else {
+                    eprintln!("[ocr] tesseract failed on {}: {}", frame.display(),
+                        String::from_utf8_lossy(&result.stderr).trim());
+                }
+            }
+            Err(e) => {
+                eprintln!("[ocr] tesseract execution error on {}: {}", frame.display(), e);
             }
         }
     }
@@ -5562,7 +5746,7 @@ fn extract_ocr_with_http(
                 control,
             )?
         } else {
-            ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key)?
+            ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key, &config.model)?
         };
         if control.cancel_requested.load(Ordering::SeqCst) {
             return Err(cancellation_error("OCR HTTP"));
@@ -6284,6 +6468,15 @@ fn decode_markdown_image_paths(text: &str) -> String {
                     }
                     end += 1;
                 }
+                if depth > 0 {
+                    // Unmatched '(' — not a valid image reference.
+                    // Treat '!' as a regular character and continue.
+                    let len = utf8_len_from_leading_byte(bytes[i]);
+                    let next = (i + len).min(bytes.len());
+                    result.push_str(&text[i..next]);
+                    i = next;
+                    continue;
+                }
                 result.push_str(&text[i..start]);
                 let raw_path = &text[start..end - 1];
                 let decoded = decode_percent(raw_path);
@@ -6302,20 +6495,46 @@ fn decode_markdown_image_paths(text: &str) -> String {
                 }
                 i = end - 1;
             } else {
-                result.push(bytes[i] as char);
-                i += 1;
+                // Not a valid image reference — copy the original UTF-8 character.
+                // Avoid `bytes[i] as char` which treats each byte as Latin-1,
+                // causing double-encoding (mojibake) for multi-byte characters.
+                let len = utf8_len_from_leading_byte(bytes[i]);
+                let end = (i + len).min(bytes.len());
+                result.push_str(&text[i..end]);
+                i = end;
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            // Regular character — copy preserving UTF-8 encoding.
+            let len = utf8_len_from_leading_byte(bytes[i]);
+            let end = (i + len).min(bytes.len());
+            result.push_str(&text[i..end]);
+            i = end;
         }
     }
     result
 }
 
+/// Returns the number of bytes in the UTF-8 character whose leading byte is `b`.
+fn utf8_len_from_leading_byte(b: u8) -> usize {
+    match b {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        // Continuation bytes (0x80-0xBF) or invalid leading bytes
+        // should never appear at the start of a valid UTF-8 sequence,
+        // but fall back to 1 to avoid infinite loops.
+        _ => 1,
+    }
+}
+
 fn decode_percent(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    // Decode percent-encoded sequences (e.g. %20 -> space, %E4%B8%AD -> 中)
+    // while preserving literal UTF-8 bytes. Collect raw bytes first, then
+    // interpret as UTF-8 — this avoids the `bytes[i] as char` pattern that
+    // treats each byte as Latin-1 and causes mojibake for non-ASCII text.
     let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
@@ -6325,14 +6544,14 @@ fn decode_percent(s: &str) -> String {
         {
             let hi = (bytes[i + 1] as char).to_digit(16).unwrap_or(0);
             let lo = (bytes[i + 2] as char).to_digit(16).unwrap_or(0);
-            out.push(char::from((hi * 16 + lo) as u8));
+            out.push((hi * 16 + lo) as u8);
             i += 3;
         } else {
-            out.push(bytes[i] as char);
+            out.push(bytes[i]);
             i += 1;
         }
     }
-    out
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 fn ocr_text_by_frame(transcript: &str) -> HashMap<String, String> {
@@ -6513,6 +6732,12 @@ fn fetch_paddleocr_jsonl_text(
     client: &reqwest::blocking::Client,
     json_url: &str,
 ) -> Result<String, String> {
+    // Validate URL scheme to prevent SSRF — only allow HTTPS.
+    if !json_url.starts_with("https://") {
+        return Err(format!(
+            "PaddleOCR result URL must be HTTPS, got: {json_url}"
+        ));
+    }
     let response = client
         .get(json_url)
         .send()
@@ -6579,6 +6804,7 @@ fn ocr_frame_with_http(
     frame: &Path,
     endpoint: &str,
     api_key: &str,
+    model: &str,
 ) -> Result<String, String> {
     let bytes = fs::read(frame).map_err(|error| error.to_string())?;
     let image = general_purpose::STANDARD.encode(bytes);
@@ -6586,7 +6812,7 @@ fn ocr_frame_with_http(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("frame.png");
-    let value = ocr_http_json_with_image(client, endpoint, api_key, &image, filename)?;
+    let value = ocr_http_json_with_image(client, endpoint, api_key, &image, filename, model)?;
     let text = extract_text_from_ocr_json(&value).join("\n");
     Ok(text)
 }
@@ -6597,11 +6823,16 @@ fn ocr_http_json_with_image(
     api_key: &str,
     image_base64: &str,
     filename: &str,
+    model: &str,
 ) -> Result<Value, String> {
-    let mut request = client.post(endpoint).json(&json!({
+    let mut body = json!({
         "image": image_base64,
         "filename": filename,
-    }));
+    });
+    if !model.trim().is_empty() {
+        body["model"] = json!(model.trim());
+    }
+    let mut request = client.post(endpoint).json(&body);
     if !api_key.trim().is_empty() {
         request = request.bearer_auth(bearer_token(api_key));
     }
@@ -6627,6 +6858,14 @@ fn extract_text_from_ocr_json(value: &Value) -> Vec<String> {
 }
 
 fn collect_ocr_text(value: &Value, key: Option<&str>, result: &mut Vec<String>) {
+    collect_ocr_text_depth(value, key, result, 0);
+}
+
+fn collect_ocr_text_depth(value: &Value, key: Option<&str>, result: &mut Vec<String>, depth: usize) {
+    // Prevent stack overflow from deeply nested JSON.
+    if depth > 20 {
+        return;
+    }
     match value {
         Value::String(text) => {
             let key = key.unwrap_or("");
@@ -6641,9 +6880,6 @@ fn collect_ocr_text(value: &Value, key: Option<&str>, result: &mut Vec<String>) 
                     | "label"
                     | "word"
                     | "words"
-                    | "data"
-                    | "result"
-                    | "results"
             ) && !text.trim().is_empty()
             {
                 result.push(text.trim().to_string());
@@ -6651,12 +6887,12 @@ fn collect_ocr_text(value: &Value, key: Option<&str>, result: &mut Vec<String>) 
         }
         Value::Array(items) => {
             for item in items {
-                collect_ocr_text(item, key, result);
+                collect_ocr_text_depth(item, key, result, depth + 1);
             }
         }
         Value::Object(map) => {
             for (child_key, child) in map {
-                collect_ocr_text(child, Some(child_key.as_str()), result);
+                collect_ocr_text_depth(child, Some(child_key.as_str()), result, depth + 1);
             }
         }
         _ => {}
@@ -6915,21 +7151,161 @@ fn check_item(name: &str, ok: bool, detail: &str) -> Value {
     })
 }
 
+/// Rename a directory, falling back to copy+remove for cross-volume moves.
+/// `fs::rename` fails with "Invalid cross-device link" on Windows when
+/// source and target are on different volumes/drives.
+fn rename_dir_cross_volume(source: &Path, target: &Path) -> Result<(), String> {
+    match fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(17) || e.to_string().contains("cross-device") => {
+            // Cross-volume: copy recursively then remove source.
+            copy_dir_recursive(source, target)?;
+            let _ = fs::remove_dir_all(source);
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Verify the SHA256 hash of a downloaded file against the expected value.
+fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    use sha2::{Sha256, Digest};
+    let bytes = fs::read(path).map_err(|e| format!("failed to read file for hash check: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = hasher.finalize();
+    let actual_hex = actual.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if actual_hex.to_lowercase() != expected.trim().to_lowercase() {
+        return Err(format!(
+            "SHA256 mismatch: expected {expected}, got {actual_hex}"
+        ));
+    }
+    Ok(())
+}
+
+/// Redact potential API keys and bearer tokens from error messages
+/// before returning to the frontend. Looks for common patterns:
+/// `Bearer xxxx`, `token=xxxx`, `api_key=xxxx`, `SESSDATA=xxxx`.
+fn redact_secrets(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let patterns = ["bearer ", "token=", "api_key=", "api-key=", "sessdata=", "authorization:"];
+    let mut result = text.to_string();
+    for pat in &patterns {
+        if let Some(pos) = lower.find(pat) {
+            let value_start = pos + pat.len();
+            let value_end = result[value_start..]
+                .find(|c: char| c.is_whitespace() || c == '&' || c == '"' || c == '\'')
+                .map(|e| value_start + e)
+                .unwrap_or(result.len());
+            if value_end > value_start + 4 {
+                result = format!("{}{}[REDACTED]{}", &result[..value_start], pat, &result[value_end..]);
+            }
+        }
+    }
+    result
+}
+
+/// Remove stale temporary files left behind by previous crashed runs.
+/// Cleans up `.{name}.{uuid}.tmp` files and `{uuid}.download` directories
+/// in the runtime directory and its packages/components subdirectories.
+fn cleanup_stale_temp_files(runtime_dir: &Path) {
+    let scan_dirs = [
+        runtime_dir.to_path_buf(),
+        runtime_dir.join("packages"),
+        runtime_dir.join("components"),
+    ];
+    for dir in &scan_dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Atomic write temp files: ".{name}.{uuid}.tmp"
+            // Download temp dirs: "{uuid}.download" or "{uuid}.install"
+            if (name.starts_with('.') && name.ends_with(".tmp"))
+                || name.ends_with(".download")
+                || name.ends_with(".install")
+            {
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(&path);
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
+}
+
 fn sanitize_filename(value: &str) -> String {
     let cleaned: String = value
         .chars()
         .map(|ch| match ch {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            ch if ch.is_control() => '_',
+            // Filter Cc (control) and Cf (format) characters — includes
+            // null bytes, BOM (U+FEFF), zero-width spaces (U+200B-200D),
+            // LTR/RTL marks (U+200E-200F), bidi controls (U+202A-202E).
+            ch if ch.is_control() || is_format_char(ch) => '_',
             ch => ch,
         })
         .collect();
     let trimmed = cleaned.trim().trim_matches('.').to_string();
-    if trimmed.is_empty() {
-        "video-note".to_string()
+    // Truncate to 180 chars (matching yt-dlp's %(title).180s template)
+    // to avoid Windows 255-char path limit when suffixed with timestamp + id.
+    let truncated = if trimmed.chars().count() > 180 {
+        trimmed.chars().take(180).collect::<String>()
     } else {
         trimmed
+    };
+    if truncated.is_empty() {
+        return "video-note".to_string();
     }
+    // Block Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+    // Even with suffixes, a leading "CON." can cause issues on some Windows versions.
+    let upper = truncated.to_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL",
+        "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+        "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"];
+    if reserved.contains(&upper.as_str()) {
+        return format!("video-note-{truncated}");
+    }
+    truncated
+}
+
+/// Returns true for Unicode Cf (format) characters that are invisible
+/// but not caught by `char::is_control()` (which only covers Cc).
+fn is_format_char(ch: char) -> bool {
+    matches!(ch,
+        '\u{00AD}' | // Soft hyphen
+        '\u{0600}'..='\u{0605}' | // Arabic number signs
+        '\u{061C}' | // Arabic letter mark
+        '\u{06DD}' | // Arabic end of ayah
+        '\u{070F}' | // Syriac abbreviation mark
+        '\u{180E}' | // Mongolian vowel separator
+        '\u{200B}'..='\u{200F}' | // Zero-width space, ZWJ, ZWNJ, LTR/RTL marks
+        '\u{202A}'..='\u{202E}' | // Bidi embedding controls
+        '\u{2060}'..='\u{2064}' | // Word joiner, invisible operators
+        '\u{2066}'..='\u{2069}' | // Isolate controls
+        '\u{FEFF}' | // BOM / ZWNBSP
+        '\u{FFF9}'..='\u{FFFB}' // Interlinear annotation
+    )
+}
+
+/// Validate a component name to prevent path traversal.
+/// Component names must be simple identifiers (alphanumeric, hyphens,
+/// underscores) — no path separators, no `..`, no leading dots.
+fn sanitize_component_name(component: &str) -> Result<String, String> {
+    if component.is_empty() {
+        return Err("component name cannot be empty".to_string());
+    }
+    if component.contains('/')
+        || component.contains('\\')
+        || component.contains("..")
+        || component.starts_with('.')
+    {
+        return Err(format!("invalid component name: '{component}'"));
+    }
+    Ok(component.to_string())
 }
 
 fn collect_whisper_models(dir: &Path, result: &mut Vec<Value>) {
@@ -7013,6 +7389,14 @@ fn install_component_from_download(manifest: &Value, target: &Path) -> Result<()
         let package_path = temp.join(download_filename(&url));
         download_file_with_fallback(&url, &package_path)?;
         ensure_non_empty_file(&package_path, "component package")?;
+        // Verify SHA256 hash if the manifest specifies one.
+        if let Some(expected_hash) = manifest_string(manifest, "sha256") {
+            if !expected_hash.is_empty() {
+                verify_sha256(&package_path, &expected_hash)?;
+            } else {
+                eprintln!("[warn] component package has empty sha256 in manifest, skipping integrity check");
+            }
+        }
         let archive_type =
             manifest_string(manifest, "archive_type").unwrap_or_else(|| infer_archive_type(&url));
         match archive_type.as_str() {
@@ -7050,7 +7434,7 @@ fn install_component_from_download(manifest: &Value, target: &Path) -> Result<()
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
-        fs::rename(&stage, target).map_err(|error| error.to_string())?;
+        rename_dir_cross_volume(&stage, target)?;
         Ok(())
     })();
     let _ = fs::remove_dir_all(&temp);
@@ -7071,7 +7455,7 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
-        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        rename_dir_cross_volume(&temp, target)?;
         Ok(())
     })();
     if result.is_err() {
@@ -7097,10 +7481,10 @@ fn download_file_with_fallback(url: &str, target: &Path) -> Result<(), String> {
 
 fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| error.to_string())?;
-    let response = client
+    let mut response = client
         .get(url)
         .header("User-Agent", "Video Notes AI")
         .send()
@@ -7108,10 +7492,14 @@ fn download_file_with_reqwest(url: &str, target: &Path) -> Result<(), String> {
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|error| format!("failed to read response body: {error}"))?;
-    fs::write(target, bytes).map_err(|error| error.to_string())
+    // Stream response body to file instead of loading entirely into memory.
+    // Component packages (whisper models, ffmpeg) can be hundreds of MB.
+    let mut file = fs::File::create(target)
+        .map_err(|error| format!("failed to create file: {error}"))?;
+    response
+        .copy_to(&mut file)
+        .map_err(|error| format!("failed to write download: {error}"))?;
+    Ok(())
 }
 
 fn download_file_with_curl(url: &str, target: &Path) -> Result<(), String> {
@@ -7203,6 +7591,8 @@ fn download_filename(url: &str) -> String {
         .next_back()
         .and_then(|part| part.split('?').next())
         .filter(|part| !part.is_empty())
+        // Reject path traversal segments that could escape the temp directory.
+        .filter(|part| *part != ".." && *part != "." && !part.contains('\\'))
         .unwrap_or("component-package")
         .to_string()
 }
@@ -7413,7 +7803,7 @@ fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
-        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        rename_dir_cross_volume(&temp, target)?;
         Ok(())
     })();
     if result.is_err() {
@@ -7452,7 +7842,7 @@ fn install_whisper_cpp_tools_from_path(target: &Path) -> Result<(), String> {
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
-        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        rename_dir_cross_volume(&temp, target)?;
         Ok(())
     })();
     if result.is_err() {
@@ -7484,7 +7874,7 @@ fn install_tesseract_tools_from_path(target: &Path) -> Result<(), String> {
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
-        fs::rename(&temp, target).map_err(|error| error.to_string())?;
+        rename_dir_cross_volume(&temp, target)?;
         Ok(())
     })();
     if result.is_err() {
