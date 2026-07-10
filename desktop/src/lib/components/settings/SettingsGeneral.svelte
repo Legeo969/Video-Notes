@@ -183,7 +183,6 @@
           <option value="en">英文（en）</option>
           <option value="ja">日语（ja）</option>
           <option value="ko">韩语（ko）</option>
-          <option value="auto">auto（显式自动检测）</option>
         </select>
       </div>
     </div>
