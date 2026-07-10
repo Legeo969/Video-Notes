@@ -3,7 +3,7 @@
   import Icon from "./Icon.svelte";
   import type { PageName } from "../types";
 
-  let { page, navigate, engineOnline = true, activeJobCount = 0 }: { page: PageName; navigate: (page: string) => void; engineOnline?: boolean; activeJobCount?: number } = $props();
+  let { page, navigate, engineOnline, activeJobCount = 0 }: { page: PageName; navigate: (page: string) => void; engineOnline: boolean; activeJobCount?: number } = $props();
 
   const meta: Record<PageName, { title: string }> = {
     process: { title: "创建笔记" },
