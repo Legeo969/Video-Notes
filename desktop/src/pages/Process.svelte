@@ -396,6 +396,12 @@
                 {/each}
               </select>
             </label>
+          {:else if ocrBackend === "custom_http"}
+            <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
+              <div class="enhance-icon"><Icon name="scan" size={20} /></div>
+              <div class="enhance-copy"><strong>OCR Model</strong><span>{ocrModel || "留空"}</span></div>
+              <input type="text" bind:value={ocrModel} disabled={!ocrEnabled} placeholder="留空则不发送 model" />
+            </label>
           {/if}
 
           <button type="button" class="enhancement-card" class:enabled={visionEnabled} class:disabled={!activeProvider} onclick={() => activeProvider && (visionEnabled = !visionEnabled)} aria-pressed={visionEnabled} disabled={!activeProvider}>

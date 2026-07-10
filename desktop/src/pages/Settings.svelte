@@ -74,6 +74,7 @@
     whisper_model: string;
     whisper_model_dir: string;
     whisper_device: string;
+    language: string;
     ocr_enabled: boolean;
     ocr_backend: string;
     ocr_http_endpoint: string;
@@ -125,6 +126,7 @@
     whisper_model: "large-v3",
     whisper_model_dir: "",
     whisper_device: "auto",
+    language: "",
     ocr_enabled: false,
     ocr_backend: "tesseract",
     ocr_http_endpoint: "",
@@ -158,6 +160,7 @@
   let componentsLoading = $state(false);
   let runtimeComponents = $state<RuntimeComponent[]>([]);
   let componentAction = $state<string | null>(null);
+  let checkingUpdates = $state(false);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
   let ocrKeyDirty = $state(false);
@@ -255,6 +258,7 @@
           whisper_model: settings.whisper_model,
           whisper_model_dir: settings.whisper_model_dir,
           whisper_device: settings.whisper_device,
+          language: settings.language,
           ocr_enabled: settings.ocr_enabled,
           ocr_backend: settings.ocr_backend,
           ocr_http_endpoint: settings.ocr_http_endpoint,
@@ -559,6 +563,29 @@
     }
   }
 
+  async function checkAllUpdates() {
+    checkingUpdates = true;
+    try {
+      const results = await engineCall<Array<{ component: string; installed_version: string; latest_version: string; update_available: boolean }>>("components.check_updates");
+      // Merge update info into runtimeComponents
+      const updateMap = new Map(results.map(r => [r.component, r]));
+      runtimeComponents = runtimeComponents.map(c => {
+        const u = updateMap.get(c.component);
+        return u ? { ...c, latest_version: u.latest_version, update_available: u.update_available } : c;
+      });
+      const updatesAvailable = results.filter(r => r.update_available);
+      if (updatesAvailable.length > 0) {
+        showToast(`发现 ${updatesAvailable.length} 个可更新组件：${updatesAvailable.map(u => u.component).join(", ")}`, "info");
+      } else {
+        showToast("所有组件均为最新版本", "success");
+      }
+    } catch (e: any) {
+      showToast(`检查更新失败：${e?.message ?? e}`, "error");
+    } finally {
+      checkingUpdates = false;
+    }
+  }
+
   async function installComponent(component: RuntimeComponent, updating = false) {
     componentAction = `install:${component.component}`;
     try {
@@ -724,7 +751,10 @@
           <section class="settings-pane">
             <div class="pane-head actions-head">
               <div><span>PLUGINS</span><h2>插件</h2><p>按需安装转写和 OCR 运行时组件；主程序保持轻量，重依赖放在本机 runtime。</p></div>
-              <button class="btn btn-secondary" type="button" onclick={refreshComponents} disabled={componentsLoading}><Icon name="refresh" size={15} />{componentsLoading ? "刷新中" : "刷新"}</button>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-secondary" type="button" onclick={checkAllUpdates} disabled={checkingUpdates || componentsLoading}><Icon name="refresh" size={15} />{checkingUpdates ? "检查中..." : "检查更新"}</button>
+                <button class="btn btn-secondary" type="button" onclick={refreshComponents} disabled={componentsLoading}><Icon name="list" size={15} />{componentsLoading ? "刷新中" : "刷新"}</button>
+              </div>
             </div>
 
             <div class="setting-group">
