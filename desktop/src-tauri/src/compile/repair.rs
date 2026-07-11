@@ -49,11 +49,13 @@ pub fn repair_mllm_output(raw_text: &str) -> RepairResult {
 }
 
 /// Check if the JSON is structurally valid.
+#[allow(dead_code)]
 pub fn is_valid_json(text: &str) -> bool {
     serde_json::from_str::<Value>(text).is_ok()
 }
 
 /// Check if the repair result is usable (valid or repaired).
+#[allow(dead_code)]
 pub fn is_usable(result: &RepairResult) -> bool {
     matches!(result, RepairResult::Valid(_) | RepairResult::Repaired(_))
 }

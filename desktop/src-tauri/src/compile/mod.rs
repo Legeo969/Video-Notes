@@ -1,5 +1,13 @@
 pub mod sampler;
 pub mod repair;
+pub mod prompt;
+pub mod client;
+pub mod calibrate;
+pub mod bridge;
+pub mod storage;
+pub mod draft;
+pub mod engine;
+pub mod renderer;
 
 use std::collections::HashMap;
 
@@ -17,8 +25,10 @@ pub struct Frame {
     /// Physical timestamp in seconds, computed from frame_index × interval.
     pub timestamp_sec: f64,
     /// Frame width in pixels.
+    #[allow(dead_code)]
     pub width: u32,
     /// Frame height in pixels.
+    #[allow(dead_code)]
     pub height: u32,
 }
 
@@ -26,8 +36,10 @@ pub struct Frame {
 #[derive(Debug, Clone)]
 pub struct AudioBuffer {
     /// Raw WAV bytes.
+    #[allow(dead_code)]
     pub data: Vec<u8>,
     /// Sample rate (always 16000 after resampling).
+    #[allow(dead_code)]
     pub sample_rate: u32,
     /// Duration in seconds.
     pub duration_sec: f64,
@@ -56,12 +68,14 @@ pub struct SamplerOptions {
     /// Allow 2 fps if user confirmed high-precision mode.
     pub high_precision: bool,
     /// Minimum number of frames to keep even if all are static (default: 1).
+    #[allow(dead_code)]
     pub min_frames: u32,
     /// pHash Hamming distance threshold for dedup (default: 10).
     pub phash_threshold: u32,
     /// Variance threshold for static scene detection (default: 5.0).
     pub static_variance_threshold: f32,
     /// Audio energy threshold in dB for voice activity detection (default: -30.0).
+    #[allow(dead_code)]
     pub audio_energy_threshold_db: f32,
 }
 
@@ -101,6 +115,7 @@ pub struct SamplingMetrics {
     /// Frames discarded by static scene suppression.
     pub frames_static_suppressed: u32,
     /// Audio duration in seconds.
+    #[allow(dead_code)]
     pub audio_duration_sec: f64,
 }
 
@@ -135,4 +150,59 @@ pub struct RawEvent {
     /// Raw model confidence (0.0–1.0).
     #[serde(default)]
     pub confidence: f32,
+}
+
+/// Evidence type classification.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceType {
+    Fact,
+    Procedure,
+    Concept,
+    Failure,
+    Verification,
+    Draft,
+}
+
+/// A single piece of evidence extracted from the video.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Evidence {
+    pub id: String,
+    pub source_hash: String,
+    pub version: u32,
+    pub chunk_sequence: u32,
+    pub content: String,
+    /// Physical timestamp — computed by backend from frame_index lookup.
+    pub timestamp_start_sec: f32,
+    pub timestamp_end_sec: f32,
+    pub evidence_type: EvidenceType,
+    pub speaker: Option<String>,
+    /// Hybrid confidence (not raw model score).
+    pub confidence: f32,
+    pub visual_context: String,
+    pub prev_chunk_summary_hash: Option<String>,
+    pub is_redundant: bool,
+}
+
+/// Compilation mode.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompileMode {
+    CloudPrecision,
+    LocalDraft,
+}
+
+/// An immutable versioned capsule of compiled video knowledge.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VideoCapsule {
+    /// Composite ID: {source_hash}_{version}.
+    pub capsule_id: String,
+    pub source_hash: String,
+    pub version: u32,
+    pub total_duration: f32,
+    pub processed_at: String,
+    pub model_used: String,
+    pub evidences: Vec<Evidence>,
+    pub global_summary: String,
+    pub compilation_mode: CompileMode,
 }

@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+use crate::compile::storage::CapsuleStore;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -23,8 +25,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
-const OCR_TEST_IMAGE_BASE64: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const VISION_TEST_IMAGE_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD6SURBVFhH7ZPrDcMgDIQ9HgMxDruwCpu4dkmrBB8oJRbpj3zS5eFIdwdJiG/mKfCHBUhGZ+SEdUJhSE5YJxSG5IR1QmFITlgnFIbkhHVCYUhOWCcUhuSEdUJhSE5YJxSG5IR1QmFITvg5TXKhQOZIgVPZbt/oLMrxPPMFcuQQI8dDg2UFCqegq9fzPnBVgZJk9TWmpMDhuwuLCuRIvOXXMiHJnii1wC8/zeBRDw0hMT2qFspyjQuoEJ1xn+OWb8gHSdKAaFxA1QJGI3rvuH6UCwr0QWFILWA0Dwps1QJG86DAVi1gdA0U+hGiM77G2XBl8GgNT4GbCzC/AGeNYW4AwZ2AAAAAAElFTkSuQmCC";
 const PADDLEOCR_DEFAULT_MODEL: &str = "PaddleOCR-VL-1.6";
@@ -308,10 +308,8 @@ impl NativeEngine {
             "settings.providers.test" => self.provider_test(params),
             "settings.providers.models" => self.provider_models(params),
             "settings.providers.capabilities.clear" => self.providers_capabilities_clear(params),
-            "settings.ocr.test" => self.ocr_test(params),
             "settings.vision.test" => self.vision_test(params),
             "settings.templates.list" => self.templates_list(),
-            "settings.models.scan" | "settings.models.local" => self.local_models(),
             "settings.bindings.set" => self.bindings_set(params),
             "doctor.run" => self.doctor_run(),
             "diagnostics.bundle" => self.diagnostics_bundle(),
@@ -356,6 +354,10 @@ impl NativeEngine {
             "collection.cancel_all" => self.collection_cancel_all(params),
             "study.knowledge" => self.study_knowledge(params),
             "study.quiz" => self.study_quiz(params),
+            "compile.video" => self.compile_video(params),
+            "compile.list_versions" => self.compile_list_versions(params),
+            "compile.replay" => self.compile_replay(params),
+            "compile.render" => self.compile_render(params),
             _ => return None,
         };
         // Redact potential API keys/tokens from error messages before
@@ -415,30 +417,13 @@ impl NativeEngine {
         let template = string_value(&raw, "template")
             .or_else(|| string_value(&raw, "template_id"))
             .unwrap_or_else(|| "default".to_string());
-        let model_dir = string_value(&raw, "whisper_model_dir")
-            .or_else(|| string_value(&raw, "model_dir"))
-            .unwrap_or_default();
         let active_provider = string_value(&raw, "active_provider").unwrap_or_default();
         Ok(json!({
             "output_dir": string_value(&raw, "output_dir").unwrap_or_else(|| self.default_export_dir.to_string_lossy().to_string()),
-            "transcription_backend": "whisper_cpp",
-            "whisper_model": string_value(&raw, "whisper_model").unwrap_or_else(|| "large-v3".to_string()),
-            "whisper_model_dir": model_dir,
-            "model_dir": model_dir,
-            "whisper_device": string_value(&raw, "whisper_device").unwrap_or_else(|| "auto".to_string()),
-            "language": string_value(&raw, "language").unwrap_or_default(),
+            "compile_mode": string_value(&raw, "compile_mode").unwrap_or_else(|| "precision".to_string()),
             "frame_interval": raw.get("frame_interval").and_then(Value::as_i64).unwrap_or(30),
             "frame_mode": string_value(&raw, "frame_mode").unwrap_or_else(|| "fixed".to_string()),
             "max_frames": raw.get("max_frames").and_then(Value::as_i64).unwrap_or(30),
-            "ocr_enabled": raw.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false),
-            "ocr_backend": string_value(&raw, "ocr_backend").unwrap_or_else(|| "tesseract".to_string()),
-            "ocr_http_endpoint": string_value(&raw, "ocr_http_endpoint")
-                .or_else(|| string_value(&raw, "ocr_api_url"))
-                .unwrap_or_default(),
-            "ocr_http_api_key": string_value(&raw, "ocr_http_api_key")
-                .or_else(|| string_value(&raw, "ocr_api_key"))
-                .unwrap_or_default(),
-            "ocr_model": string_value(&raw, "ocr_model").unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string()),
             "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
             "template_id": template,
@@ -469,22 +454,10 @@ impl NativeEngine {
             .ok_or_else(|| "patches must be an object".to_string())?;
         let allowed = [
             "output_dir",
-            "transcription_backend",
-            "whisper_model",
-            "whisper_model_dir",
-            "model_dir",
-            "whisper_device",
-            "language",
+            "compile_mode",
             "frame_interval",
             "frame_mode",
             "max_frames",
-            "ocr_enabled",
-            "ocr_backend",
-            "ocr_http_endpoint",
-            "ocr_http_api_key",
-            "ocr_model",
-            "ocr_api_url",
-            "ocr_api_key",
             "vision_enabled",
             "template",
             "template_id",
@@ -510,19 +483,6 @@ impl NativeEngine {
             if let Some(value) = raw.get("template").cloned() {
                 raw.entry("template_id".to_string()).or_insert(value);
             }
-            if let Some(value) = raw.get("whisper_model_dir").cloned() {
-                raw.entry("model_dir".to_string()).or_insert(value);
-            }
-            raw.insert("transcription_backend".to_string(), json!("whisper_cpp"));
-            let backend = string_value(raw, "ocr_backend")
-                .filter(|value| {
-                    matches!(
-                        value.as_str(),
-                        "tesseract" | "paddleocr_http" | "custom_http"
-                    )
-                })
-                .unwrap_or_else(|| "tesseract".to_string());
-            raw.insert("ocr_backend".to_string(), json!(backend));
             Ok(())
         })?;
         Ok(json!(true))
@@ -819,112 +779,6 @@ impl NativeEngine {
             Ok(())
         })?;
         Ok(json!(true))
-    }
-
-    fn ocr_test(&self, params: Value) -> Result<Value, String> {
-        let settings = self.read_settings();
-        let backend = string_param(&params, "ocr_backend")
-            .or_else(|| string_value(&settings, "ocr_backend"))
-            .filter(|value| {
-                matches!(
-                    value.as_str(),
-                    "tesseract" | "paddleocr_http" | "custom_http"
-                )
-            })
-            .unwrap_or_else(|| "tesseract".to_string());
-
-        if backend == "tesseract" {
-            let success = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
-            return Ok(json!({
-                "success": success,
-                "message": if success {
-                    "Tesseract 可用"
-                } else {
-                    "未找到 tesseract.exe，请先安装 OCR 插件或把 Tesseract 加入 PATH"
-                },
-            }));
-        }
-
-        let endpoint = string_param(&params, "ocr_http_endpoint")
-            .or_else(|| string_value(&settings, "ocr_http_endpoint"))
-            .or_else(|| string_value(&settings, "ocr_api_url"))
-            .unwrap_or_default();
-        if endpoint.trim().is_empty() {
-            return Ok(json!({
-                "success": false,
-                "message": "OCR HTTP Endpoint 不能为空",
-            }));
-        }
-
-        let api_key = string_param(&params, "ocr_http_api_key")
-            .or_else(|| string_value(&settings, "ocr_http_api_key"))
-            .or_else(|| string_value(&settings, "ocr_api_key"))
-            .unwrap_or_default();
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|error| error.to_string())?;
-
-        if backend == "paddleocr_http" {
-            if bearer_token(&api_key).is_empty() {
-                return Ok(json!({
-                    "success": false,
-                    "message": "PaddleOCR API Key 不能为空",
-                }));
-            }
-            let endpoint = normalise_paddleocr_jobs_endpoint(endpoint.trim());
-            let model = string_param(&params, "ocr_model")
-                .or_else(|| string_value(&settings, "ocr_model"))
-                .unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string());
-            let test_pdf = simple_pdf_bytes("OCR TEST");
-            return match submit_paddleocr_job(
-                &client,
-                &endpoint,
-                &api_key,
-                &model,
-                test_pdf,
-                "ocr-test.pdf",
-            ) {
-                Ok(job_id) => Ok(json!({
-                    "success": true,
-                    "message": format!("PaddleOCR 服务可用，jobId: {job_id}"),
-                    "job_id": job_id,
-                })),
-                Err(error) => Ok(json!({
-                    "success": false,
-                    "message": error,
-                })),
-            };
-        }
-
-        let test_model = string_param(&params, "ocr_model")
-            .or_else(|| string_value(&settings, "ocr_model"))
-            .unwrap_or_default();
-        match ocr_http_json_with_image(
-            &client,
-            endpoint.trim(),
-            &api_key,
-            OCR_TEST_IMAGE_BASE64,
-            "ocr-test.png",
-            &test_model,
-        ) {
-            Ok(value) => {
-                let text_count = extract_text_from_ocr_json(&value).len();
-                Ok(json!({
-                    "success": true,
-                    "message": if text_count > 0 {
-                        format!("OCR 服务可用，返回 JSON，并解析到 {} 段文本", text_count)
-                    } else {
-                        "OCR 服务可用，返回 JSON；测试图未识别到文字属于正常情况".to_string()
-                    },
-                    "text_count": text_count,
-                }))
-            }
-            Err(error) => Ok(json!({
-                "success": false,
-                "message": error,
-            })),
-        }
     }
 
     fn vision_test(&self, params: Value) -> Result<Value, String> {
@@ -1260,25 +1114,6 @@ impl NativeEngine {
                 "path": "builtin://summary"
             }
         ]))
-    }
-
-    fn local_models(&self) -> Result<Value, String> {
-        let raw = self.read_settings();
-        let mut dirs = Vec::new();
-        if let Some(model_dir) =
-            string_value(&raw, "whisper_model_dir").or_else(|| string_value(&raw, "model_dir"))
-        {
-            if !model_dir.trim().is_empty() {
-                dirs.push(PathBuf::from(model_dir));
-            }
-        }
-        dirs.push(self.data_dir.join("models"));
-
-        let mut models = Vec::new();
-        for dir in dirs {
-            collect_whisper_models(&dir, &mut models);
-        }
-        Ok(json!(models))
     }
 
     fn doctor_run(&self) -> Result<Value, String> {
@@ -3018,6 +2853,134 @@ impl NativeEngine {
         let profile = active_provider_profile(&settings)
             .map_err(|e| format!("No active provider: {e}"))?;
         crate::study::quiz::generate_quiz(&profile, &content)
+    }
+
+    /// Start a multimodal compile pipeline on a video file.
+    fn compile_video(&self, params: Value) -> Result<Value, String> {
+        let input = crate::native_engine::required_string(&params, "input")?;
+        let title = crate::native_engine::string_param(&params, "title")
+            .or_else(|| {
+                std::path::Path::new(&input)
+                    .file_stem()
+                    .and_then(|v| v.to_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| "Untitled".to_string());
+
+        let settings = self.read_settings();
+        let runtime_dir = self.runtime_dir.clone();
+
+        // Resolve ffmpeg/ffprobe paths
+        let ffmpeg = crate::native_engine::resolve_tool_path(
+            "ffmpeg", &["ffmpeg-tools"], &runtime_dir,
+        ).ok_or_else(|| "ffmpeg not found; install ffmpeg-tools".to_string())?;
+        let ffprobe = crate::native_engine::resolve_tool_path(
+            "ffprobe", &["ffmpeg-tools"], &runtime_dir,
+        ).ok_or_else(|| "ffprobe not found".to_string())?;
+
+        // Provider config
+        let provider = crate::native_engine::active_provider_profile(&settings).ok();
+        let client_config = provider.as_ref().map(|p| {
+            // Determine provider kind from settings
+            let active_name = crate::native_engine::string_value(&settings, "active_provider")
+                .unwrap_or_default();
+            let provider_type = settings
+                .get("providers")
+                .and_then(Value::as_array)
+                .and_then(|providers| {
+                    providers.iter().find(|p| {
+                        p.get("name").and_then(Value::as_str) == Some(&active_name)
+                    })
+                })
+                .and_then(|p| p.get("type").and_then(Value::as_str))
+                .unwrap_or("openai_compat");
+
+            crate::compile::client::CompileClientConfig::new(
+                p.base_url.clone(),
+                p.api_key.clone(),
+                p.vision_model.clone(),
+                crate::compile::client::ProviderKind::from_type_str(provider_type),
+            )
+        });
+
+        // Storage dir
+        let storage_dir = self.data_dir.join(".capsules");
+
+        // Compute source hash
+        let input_path = std::path::Path::new(&input);
+        let source_hash = match std::fs::read(input_path) {
+            Ok(bytes) => {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                format!("{:x}", hasher.finalize())
+            }
+            Err(_) => {
+                // Use a hash of the path as fallback
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(input.as_bytes());
+                format!("{:x}", hasher.finalize())
+            }
+        };
+
+        let opts = crate::compile::engine::CompileOptions {
+            ffmpeg_path: ffmpeg,
+            ffprobe_path: ffprobe,
+            storage_dir,
+            sampler: crate::compile::SamplerOptions::default(),
+            client_config,
+            prefer_draft: crate::native_engine::string_param(&params, "mode")
+                .map(|m| m == "draft")
+                .unwrap_or(false),
+            on_progress: None,
+        };
+
+        let result = crate::compile::engine::compile_video(
+            input_path, &source_hash, &title, &opts,
+        )?;
+
+        Ok(serde_json::to_value(&result).unwrap_or_default())
+    }
+
+    /// List all compiled versions for a source hash.
+    fn compile_list_versions(&self, params: Value) -> Result<Value, String> {
+        let source_hash = crate::native_engine::required_string(&params, "source_hash")?;
+        let storage_dir = self.data_dir.join(".capsules");
+        let store = crate::compile::storage::FileCapsuleStore::new(storage_dir);
+        let versions = store.list_versions(&source_hash)
+            .map_err(|e| format!("list versions failed: {e}"))?;
+        Ok(serde_json::to_value(&versions).unwrap_or_default())
+    }
+
+    /// Replay a specific compiled version.
+    fn compile_replay(&self, params: Value) -> Result<Value, String> {
+        let source_hash = crate::native_engine::required_string(&params, "source_hash")?;
+        let version = params.get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "version is required".to_string())? as u32;
+        let storage_dir = self.data_dir.join(".capsules");
+        let store = crate::compile::storage::FileCapsuleStore::new(storage_dir);
+        let capsule = store.get(&source_hash, version)
+            .map_err(|e| format!("replay failed: {e}"))?;
+        Ok(serde_json::to_value(&capsule).unwrap_or_default())
+    }
+
+    /// Render a compiled capsule to Markdown / mindmap.
+    fn compile_render(&self, params: Value) -> Result<Value, String> {
+        let source_hash = crate::native_engine::required_string(&params, "source_hash")?;
+        let version = params.get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "version is required".to_string())? as u32;
+        let template = crate::native_engine::string_param(&params, "template")
+            .unwrap_or_else(|| "markdown".to_string());
+        let storage_dir = self.data_dir.join(".capsules");
+        let store = crate::compile::storage::FileCapsuleStore::new(storage_dir);
+        let capsule = store.get(&source_hash, version)
+            .map_err(|e| format!("render: capsule not found: {e}"))?;
+        let output = crate::compile::renderer::render(&capsule, &template)
+            .map_err(|e| format!("render failed: {e}"))?;
+        Ok(serde_json::json!({ "content": output, "capsule_id": capsule.capsule_id, "template": template }))
     }
 }
 
@@ -6847,6 +6810,7 @@ fn fetch_paddleocr_jsonl_text(
     Ok(output.join("\n"))
 }
 
+#[allow(dead_code)]
 fn simple_pdf_bytes(text: &str) -> Vec<u8> {
     let content = format!("BT /F1 24 Tf 20 40 Td ({}) Tj ET", escape_pdf_text(text));
     let objects = [
@@ -6879,6 +6843,7 @@ fn simple_pdf_bytes(text: &str) -> Vec<u8> {
     bytes
 }
 
+#[allow(dead_code)]
 fn escape_pdf_text(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('(', "\\(")
@@ -7392,42 +7357,6 @@ fn sanitize_component_name(component: &str) -> Result<String, String> {
         return Err(format!("invalid component name: '{component}'"));
     }
     Ok(component.to_string())
-}
-
-fn collect_whisper_models(dir: &Path, result: &mut Vec<Value>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_whisper_models(&path, result);
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if !name.ends_with(".bin") && !name.ends_with(".gguf") {
-            continue;
-        }
-        let id = name
-            .trim_start_matches("ggml-")
-            .trim_end_matches(".bin")
-            .trim_end_matches(".gguf")
-            .to_string();
-        if result
-            .iter()
-            .any(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str()))
-        {
-            continue;
-        }
-        result.push(json!({
-            "id": id,
-            "label": id,
-            "path": path.to_string_lossy(),
-            "backend": "whisper_cpp",
-        }));
-    }
 }
 
 fn missing_files(component_path: &Path, files: &[Value]) -> Vec<String> {

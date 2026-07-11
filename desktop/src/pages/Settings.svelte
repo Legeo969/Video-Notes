@@ -8,11 +8,7 @@
   import ProvidersPanel from "../lib/components/settings/ProvidersPanel.svelte";
   import ProviderFormDialog from "../lib/components/settings/ProviderFormDialog.svelte";
   import SettingsGeneral from "../lib/components/settings/SettingsGeneral.svelte";
-  import {
-    normalizeLocalWhisperModels,
-    normalizeWhisperModelId,
-    type LocalWhisperModel,
-  } from "../lib/whisperModels";
+  // Whisper model imports removed with the whisper/OCR migration
 
   interface ProviderForm {
     name: string;
@@ -70,17 +66,7 @@
   interface SettingsBag {
     output_dir: string;
     vault_path: string;
-    transcription_backend: string;
-    whisper_model: string;
-    whisper_model_dir: string;
-    whisper_device: string;
-    language: string;
-    ocr_enabled: boolean;
-    ocr_backend: string;
-    ocr_http_endpoint: string;
-    ocr_http_api_key: string;
-    ocr_api_key_configured: boolean;
-    ocr_model: string;
+    compile_mode: string;
     vision_enabled: boolean;
     frame_mode: string;
     frame_interval: number;
@@ -99,18 +85,8 @@
     vision_model: "",
   });
 
-  const officialPaddleOcrModelOptions = [
-    "PaddleOCR-VL-1.6",
-    "PaddleOCR-VL-1.5",
-    "PaddleOCR-VL",
-    "PP-StructureV3",
-    "PP-OCRv6",
-    "PP-OCRv5",
-    "PP-OCRv5-latin",
-  ];
-
   const tabs = [
-    { id: "general", label: "通用与转录", icon: "settings", hint: "目录、模型和 OCR" },
+    { id: "general", label: "通用设置", icon: "settings", hint: "目录与编译" },
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
     { id: "plugins", label: "插件", icon: "package", hint: "转写 / OCR 可选组件" },
@@ -122,17 +98,7 @@
   let settings = $state<SettingsBag>({
     output_dir: "./output",
     vault_path: "",
-    transcription_backend: "whisper_cpp",
-    whisper_model: "large-v3",
-    whisper_model_dir: "",
-    whisper_device: "auto",
-    language: "",
-    ocr_enabled: false,
-    ocr_backend: "tesseract",
-    ocr_http_endpoint: "",
-    ocr_http_api_key: "",
-    ocr_api_key_configured: false,
-    ocr_model: "PaddleOCR-VL-1.6",
+    compile_mode: "precision",
     vision_enabled: false,
     frame_mode: "fixed",
     frame_interval: 30,
@@ -143,14 +109,10 @@
   });
   let providers = $state<ProviderProfile[]>([]);
   let templates = $state<TemplateInfo[]>([]);
-  let localWhisperModels = $state<LocalWhisperModel[]>([]);
   let checkResults = $state<CheckResult[]>([]);
   let loading = $state(true);
   let saving = $state(false);
-  let scanning = $state(false);
   let testingProvider = $state<string | null>(null);
-  let testingOcr = $state(false);
-  let refreshingOcrModels = $state(false);
   let testingVision = $state(false);
   let clearingCapabilities = $state<string | null>(null);
   let doctorRunning = $state(false);
@@ -164,7 +126,6 @@
   let checkingUpdates = $state(false);
   let toast = $state<{ msg: string; type: "success" | "error" | "info" } | null>(null);
   let dirty = $state(false);
-  let ocrKeyDirty = $state(false);
 
   let showProviderModal = $state(false);
   let editingProviderName = $state<string | null>(null);
@@ -173,7 +134,6 @@
   let providerSearch = $state("");
   let providerModelOptions = $state<string[]>([]);
   let discoveringProviderModels = $state(false);
-  let paddleOcrModelOptions = $state<string[]>([...officialPaddleOcrModelOptions]);
 
   let selectedTemplate = $derived(templates.find((template) => template.id === settings.template));
   let passedChecks = $derived(checkResults.filter((item) => item.status === "pass").length);
@@ -208,30 +168,22 @@
   async function loadAll() {
     loading = true;
     dirty = false;
-    ocrKeyDirty = false;
     try {
-      const [s, provs, tmpls, localModels] = await Promise.all([
+      const [s, provs, tmpls] = await Promise.all([
         engineCall<SettingsBag>("settings.get"),
         engineCall<ProviderProfile[]>("settings.providers.list"),
         engineCall<TemplateInfo[]>("settings.templates.list"),
-        engineCall<Array<string | LocalWhisperModel>>("settings.models.local").catch(() => []),
       ]);
       settings = {
         ...s,
         vault_path: s.vault_path ?? "",
-        transcription_backend: "whisper_cpp",
+        compile_mode: s.compile_mode || "precision",
         frame_mode: s.frame_mode ?? "fixed",
         frame_interval: s.frame_interval ?? 30,
         max_frames: s.max_frames ?? 30,
-        ocr_backend: s.ocr_backend || "tesseract",
-        ocr_http_endpoint: s.ocr_http_endpoint ?? "",
-        ocr_http_api_key: s.ocr_http_api_key ?? "",
-        ocr_model: s.ocr_model || "PaddleOCR-VL-1.6",
-        whisper_model: normalizeWhisperModelId(s.whisper_model) || "large-v3",
       };
       providers = provs;
       templates = tmpls;
-      localWhisperModels = normalizeLocalWhisperModels(localModels);
       refreshStorageStatus();
       refreshComponents();
     } catch (e: any) {
@@ -239,49 +191,14 @@
     } finally { loading = false; }
   }
 
-  async function scanModels() {
-    scanning = true;
-    try {
-      const discovered = await engineCall<Array<string | LocalWhisperModel>>("settings.models.local");
-      localWhisperModels = normalizeLocalWhisperModels(discovered);
-      if (localWhisperModels.length === 0) {
-        showToast("没有找到可直接运行的本地 Whisper 模型，请检查模型目录。", "error");
-      } else {
-        showToast(`扫描到 ${localWhisperModels.length} 个可选 Whisper 模型`, "success");
-      }
-    } catch (e: any) { showToast(`模型扫描失败：${e?.message ?? e}`, "error"); }
-    finally { scanning = false; }
-  }
-
-  function chooseWhisperModel(modelId: string) {
-    const normalized = normalizeWhisperModelId(modelId);
-    const installed = localWhisperModels.some((m) => m.id === normalized);
-    if (!installed) {
-      showToast(`模型“${normalized}”未在本地模型目录中找到，不能设为默认模型。`, "error");
-      return;
-    }
-    settings.whisper_model = normalized;
-    markDirty();
-  }
-
   async function handleSave() {
-    settings.whisper_model = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
     saving = true;
     try {
       await engineCall("settings.update", {
         patches: {
           output_dir: settings.output_dir,
           vault_path: settings.vault_path,
-          transcription_backend: "whisper_cpp",
-          whisper_model: settings.whisper_model,
-          whisper_model_dir: settings.whisper_model_dir,
-          whisper_device: settings.whisper_device,
-          language: settings.language,
-          ocr_enabled: settings.ocr_enabled,
-          ocr_backend: settings.ocr_backend,
-          ocr_http_endpoint: settings.ocr_http_endpoint,
-          ...(ocrKeyDirty ? { ocr_http_api_key: settings.ocr_http_api_key } : {}),
-          ocr_model: settings.ocr_model,
+          compile_mode: settings.compile_mode,
           vision_enabled: settings.vision_enabled,
           frame_mode: settings.frame_mode,
           frame_interval: settings.frame_interval,
@@ -291,9 +208,7 @@
         },
       });
       dirty = false;
-      ocrKeyDirty = false;
-      const whisperAvailable = localWhisperModels.some((m) => m.id === normalizeWhisperModelId(settings.whisper_model));
-      showToast(whisperAvailable ? "设置已保存并将在后续任务中生效" : "设置已保存；当前 Whisper 模型未检测到，运行任务前请安装或重新扫描模型。", whisperAvailable ? "success" : "info");
+      showToast("设置已保存并将在后续任务中生效", "success");
     } catch (e: any) { showToast(`保存失败：${e?.message ?? e}`, "error"); }
     finally { saving = false; }
   }
@@ -432,33 +347,6 @@
       providers = await engineCall<ProviderProfile[]>("settings.providers.list");
     } catch (e: any) { showToast(`测试连接异常：${e?.message ?? e}`, "error"); }
     finally { testingProvider = null; }
-  }
-
-  async function testOcrConnection() {
-    testingOcr = true;
-    try {
-      const result: any = await engineCall("settings.ocr.test", {
-        ocr_backend: settings.ocr_backend,
-        ocr_http_endpoint: settings.ocr_http_endpoint,
-        ocr_http_api_key: settings.ocr_http_api_key,
-        ocr_model: settings.ocr_model,
-      });
-      showToast(result?.success ? `OCR 连接成功：${result.message ?? "服务可用"}` : `OCR 连接失败：${result?.message ?? "未知错误"}`, result?.success ? "success" : "error");
-    } catch (e: any) {
-      showToast(`OCR 测试异常：${e?.message ?? e}`, "error");
-    } finally {
-      testingOcr = false;
-    }
-  }
-
-  async function refreshOcrModels() {
-    refreshingOcrModels = true;
-    try {
-      paddleOcrModelOptions = [...officialPaddleOcrModelOptions];
-      showToast("官方 PaddleOCR API 未提供模型发现接口；已刷新内置官方模型列表。", "info");
-    } finally {
-      refreshingOcrModels = false;
-    }
   }
 
   async function testVisionConnection() {
@@ -709,18 +597,8 @@
         {#if activeTab === "general"}
           <SettingsGeneral
             bind:settings
-            bind:localWhisperModels
-            bind:scanning
-            bind:testingOcr
-            bind:refreshingOcrModels
-            bind:paddleOcrModelOptions
-            bind:ocrKeyDirty
             onMarkDirty={markDirty}
-            onChooseWhisperModel={chooseWhisperModel}
-            onScanModels={scanModels}
             onOpenExternalUrl={openExternalUrl}
-            onTestOcrConnection={testOcrConnection}
-            onRefreshOcrModels={refreshOcrModels}
           />
 
         {:else if activeTab === "providers"}

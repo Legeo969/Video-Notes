@@ -27,6 +27,9 @@
   let studyMode = $state(false);
   let graphData = $state<KnowledgeGraph | null>(null);
   let graphLoading = $state(false);
+  let compileVersions = $state<Array<{ version: number; created_at: string; model_used: string }>>([]);
+  let selectedCompileVersion = $state<number | null>(null);
+  let versionsLoading = $state(false);
 
   let filteredNotes = $derived.by(() => {
     if (!searchQuery.trim()) return notes;
@@ -110,13 +113,39 @@
 
   async function selectNote(id: number) {
     if (selectedNoteId === id) return;
-    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; graphData = null; error = null; loadingDetail = true;
+    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; graphData = null; error = null; loadingDetail = true; compileVersions = []; selectedCompileVersion = null;
     try {
       selectedNote = await engineCall<NoteDetail>("notes.get", { note_id: id });
       editContent = selectedNote.content;
+      // Load compile versions for this note
+      loadVersions();
     } catch (e) {
       error = String(e); selectedNoteId = null;
     } finally { loadingDetail = false; }
+  }
+
+  async function loadVersions() {
+    if (!selectedNote) return;
+    versionsLoading = true;
+    try {
+      const path = selectedNote.path;
+      // Derive source_hash from note path (SHA-256 of the path)
+      const encoder = new TextEncoder();
+      const data = encoder.encode(path);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const sourceHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+      const versions = await engineCall<Array<{ version: number; created_at: string; model_used: string }>>("compile.list_versions", { source_hash: sourceHash });
+      compileVersions = versions || [];
+      if (compileVersions.length > 0) {
+        selectedCompileVersion = compileVersions[compileVersions.length - 1].version;
+      }
+    } catch {
+      // No compiled versions — ignore silently
+      compileVersions = [];
+    } finally {
+      versionsLoading = false;
+    }
   }
 
   async function loadGraph() {
@@ -325,6 +354,17 @@
                 <span><Icon name="clock" size={13} />约 {readingMinutes} 分钟阅读</span>
               </div>
               <div class="document-path"><Icon name="folder" size={13} /><code>{selectedNote.path}</code></div>
+              {#if compileVersions.length > 0}
+                <div class="compile-versions">
+                  <Icon name="layers" size={13} />
+                  <span>编译版本</span>
+                  <select bind:value={selectedCompileVersion} onchange={() => {}}>
+                    {#each compileVersions as v (v.version)}
+                      <option value={v.version}>v{v.version} · {v.model_used} · {new Date(v.created_at).toLocaleDateString("zh-CN")}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
             </div>
 
             {#if sourceView}
@@ -413,6 +453,8 @@
   .document-meta span, .document-path { display: flex; align-items: center; gap: 5px; font-size: 12px; }
   .document-path { margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); color: var(--text-tertiary); }
   .document-path code { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .compile-versions { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); color: var(--text-tertiary); font-size: 12px; }
+  .compile-versions select { min-height: 28px; padding: 0 24px 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-primary); background: var(--bg-input); font-size: 11px; cursor: pointer; }
   .source-editor { width: 100%; min-height: 600px; padding: 30px 40px; border: 0; border-radius: 0; background: var(--bg-card); font-family: var(--font-mono); font-size: 13px; line-height: 1.75; resize: none; }
   .source-editor:focus { box-shadow: inset 0 0 0 2px var(--accent-glow); }
 

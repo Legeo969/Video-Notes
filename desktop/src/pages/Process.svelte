@@ -6,26 +6,14 @@
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import type { ProviderProfile } from "../lib/types";
-  import {
-    buildWhisperModelCatalog,
-    normalizeLocalWhisperModels,
-    normalizeWhisperModelId,
-    type LocalWhisperModel,
-  } from "../lib/whisperModels";
 
   let sourceMode = $state<"file" | "link">("file");
   let fileSource = $state("");
   let linkSource = $state("");
   let title = $state("");
-  let whisperModel = $state("large-v3");
-  let transcriptionBackend = $state<"whisper_cpp">("whisper_cpp");
-  let ocrEnabled = $state(false);
-  let ocrBackend = $state<"tesseract" | "paddleocr_http" | "custom_http">("tesseract");
-  let ocrModel = $state("PaddleOCR-VL-1.6");
   let visionEnabled = $state(false);
+  let compileMode = $state<"precision" | "draft">("precision");
   let activeProvider = $state("");
-  let whisperDevice = $state<"auto" | "cuda" | "cpu">("auto");
-  let whisperLanguage = $state("");
   let submitting = $state(false);
   let errorMessage = $state("");
   let startedJobId = $state<number | null>(null);
@@ -33,28 +21,12 @@
   let frameMode = $state<"fixed" | "adaptive">("fixed");
   let frameInterval = $state<number>(30);
   let maxFrames = $state<number>(30);
-  let localWhisperModels = $state<LocalWhisperModel[]>([]);
-  let modelsLoading = $state(true);
-  let modelScanError = $state("");
   let providers = $state<ProviderProfile[]>([]);
-  const paddleOcrModelOptions = [
-    "PaddleOCR-VL-1.6",
-    "PaddleOCR-VL-1.5",
-    "PaddleOCR-VL",
-    "PP-StructureV3",
-    "PP-OCRv6",
-    "PP-OCRv5",
-    "PP-OCRv5-latin",
-  ];
 
   let source = $derived(sourceMode === "file" ? fileSource : linkSource);
   let publicUrlValid = $derived(sourceMode !== "link" || isSupportedPublicUrl(linkSource));
   let publicUrlMessage = $derived(sourceMode === "link" ? linkValidationMessage(linkSource) : "");
-  let whisperCatalog = $derived(buildWhisperModelCatalog(localWhisperModels, whisperModel, false));
-  let selectableWhisperModels = $derived(whisperCatalog.filter((model) => model.installed));
-  let selectedWhisperModel = $derived(selectableWhisperModels.find((model) => model.id === normalizeWhisperModelId(whisperModel)));
-  let modelReady = $derived(Boolean(selectedWhisperModel));
-  let canSubmit = $derived(Boolean(source.trim()) && publicUrlValid && modelReady && !submitting);
+  let canSubmit = $derived(Boolean(source.trim()) && publicUrlValid && !submitting);
 
   let currentJob = $derived(
     startedJobId === null ? undefined : $jobs.find((job) => job.id === startedJobId)
@@ -72,69 +44,23 @@
   });
 
   onMount(async () => {
-    modelsLoading = true;
     try {
-      const [rawSettings, discovered] = await Promise.all([
-        engineCall<Record<string, any>>("settings.get"),
-        engineCall<Array<string | LocalWhisperModel>>("settings.models.local"),
-      ]);
+      const rawSettings = await engineCall<Record<string, any>>("settings.get");
       const settings = rawSettings as any;
       providers = (settings.providers || []) as ProviderProfile[];
-      const normalizedModels = normalizeLocalWhisperModels(discovered);
-      localWhisperModels = normalizedModels;
-      const preferred = normalizeWhisperModelId(settings.whisper_model) || "large-v3";
-      transcriptionBackend = "whisper_cpp";
-      whisperModel = normalizedModels.some((model) => model.id === preferred)
-        ? preferred
-        : normalizedModels[0]?.id || preferred;
-      ocrEnabled = Boolean(settings.ocr_enabled);
-      ocrBackend = (["tesseract", "paddleocr_http", "custom_http"].includes(String(settings.ocr_backend)) ? String(settings.ocr_backend) : "tesseract") as "tesseract" | "paddleocr_http" | "custom_http";
-      ocrModel = String(settings.ocr_model || "PaddleOCR-VL-1.6");
       visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
-      whisperDevice = (["auto", "cuda", "cpu"].includes(String(settings.whisper_device)) ? String(settings.whisper_device) : "auto") as "auto" | "cuda" | "cpu";
-      whisperLanguage = String(settings.language || "");
+      compileMode = (["precision", "draft"].includes(String(settings.compile_mode)) ? String(settings.compile_mode) : "precision") as "precision" | "draft";
       frameMode = settings.frame_mode === "adaptive" ? "adaptive" : "fixed";
       frameInterval = typeof settings.frame_interval === "number" ? settings.frame_interval : 30;
       maxFrames = typeof settings.max_frames === "number" ? settings.max_frames : 30;
       if (visionEnabled && !activeProvider) {
         visionEnabled = false;
-        modelScanError = "默认开启了视觉理解，但尚未配置活动 AI 供应商。本次任务已先关闭视觉理解。";
-      }
-      if (normalizedModels.length === 0) {
-        modelScanError = "没有检测到可运行的本地 Whisper 模型。请先在设置中配置模型目录并扫描。";
-      } else if (whisperModel !== preferred) {
-        modelScanError = `默认模型“${preferred}”未安装，已为本次任务切换到“${whisperModel}”。`;
       }
     } catch (error) {
-      modelScanError = toErrorMessage(error);
-    } finally {
-      modelsLoading = false;
+      errorMessage = toErrorMessage(error);
     }
   });
-
-  async function scanLocalModels() {
-    modelsLoading = true;
-    modelScanError = "";
-    try {
-      const discovered = await engineCall<Array<string | LocalWhisperModel>>("settings.models.local");
-      const normalized = normalizeLocalWhisperModels(discovered);
-      localWhisperModels = normalized;
-      const current = normalizeWhisperModelId(whisperModel);
-      whisperModel = normalized.some((model) => model.id === current)
-        ? current
-        : normalized[0]?.id || current;
-      if (normalized.length === 0) {
-        modelScanError = "没有检测到可运行的本地 Whisper 模型。";
-      }
-    } catch (error) {
-      modelScanError = toErrorMessage(error);
-    } finally {
-      modelsLoading = false;
-    }
-  }
-
-
 
   function isSupportedPublicUrl(value: string): boolean {
     const raw = value.trim();
@@ -188,22 +114,12 @@
     submitting = true;
     errorMessage = "";
     try {
-      const result = await engineCall<{ job_id: number }>("process.start", {
+      const result = await engineCall<{ capsule_id: string }>("compile.video", {
         input,
         title: title.trim() || undefined,
-        transcription_backend: transcriptionBackend,
-        whisper_model: normalizeWhisperModelId(whisperModel),
-        ocr_enabled: ocrEnabled,
-        ocr_backend: ocrBackend,
-        ocr_model: ocrModel,
-        vision_enabled: visionEnabled,
-        whisper_device: whisperDevice,
-        language: whisperLanguage || undefined,
-        frame_mode: frameMode,
-        frame_interval: frameInterval,
-        max_frames: maxFrames,
+        mode: compileMode,
       });
-      startedJobId = result.job_id;
+      startedJobId = Number(result.capsule_id);
       await refreshJobs();
     } catch (error) {
       errorMessage = toErrorMessage(error);
@@ -250,7 +166,7 @@
   <PageHeader
     eyebrow="AI 笔记工作台"
     title="创建视频笔记"
-    description="导入本地媒体或公开视频链接，AI 将自动完成转录、画面分析与结构化笔记生成。"
+    description="导入本地媒体或公开视频链接，AI 将自动分析画面与音频，生成结构化笔记。"
     icon="sparkles"
   />
 
@@ -259,7 +175,7 @@
       <div class="workflow-steps" aria-label="任务创建步骤">
         <div class="workflow-step active"><span>1</span><div><strong>选择媒体</strong><small>文件或链接</small></div></div>
         <div class="step-line"></div>
-        <div class="workflow-step active"><span>2</span><div><strong>配置处理</strong><small>模型与增强</small></div></div>
+        <div class="workflow-step active"><span>2</span><div><strong>编译模式</strong><small>精确 / 草稿</small></div></div>
         <div class="step-line"></div>
         <div class="workflow-step"><span>3</span><div><strong>后台生成</strong><small>实时同步进度</small></div></div>
       </div>
@@ -312,110 +228,18 @@
       <div class="builder-section">
         <div class="section-heading-pro">
           <div class="section-number">02</div>
-          <div><h2>配置处理方式</h2><p>选择转录模型，并按需要启用画面文字和视觉理解。</p></div>
+          <div><h2>配置编译方式</h2><p>选择编译模式，并按需要启用视觉理解。</p></div>
         </div>
 
-        <div class="field model-control-field">
-          <div class="model-control-head">
-            <div><div class="field-label">Whisper 转录模型 <small>仅展示当前机器实际可用的本地模型</small></div></div>
-            <button class="btn btn-secondary btn-sm" type="button" onclick={scanLocalModels} disabled={modelsLoading}><Icon name="refresh" size={13} />{modelsLoading ? "扫描中" : "重新扫描"}</button>
-          </div>
-
-          {#if modelsLoading}
-            <div class="model-loading"><span class="loading-ring compact"></span><div><strong>正在读取本地模型</strong><small>检查模型目录中的 ggml 模型文件…</small></div></div>
-          {:else if selectableWhisperModels.length === 0}
-            <div class="model-blocked">
-              <span><Icon name="alert" size={18} /></span>
-              <div><strong>没有可用的 Whisper 模型</strong><p>请前往“设置 → 通用与转录”，填写模型目录并点击“扫描本地模型”。</p></div>
-            </div>
-          {:else}
-            <div class="model-picker-control">
-              <div class="model-select-wrap">
-                <label for="task-whisper-model">本次任务使用</label>
-                <select id="task-whisper-model" bind:value={whisperModel}>
-                  {#each selectableWhisperModels as model}<option value={model.id}>{model.label} · {model.id}</option>{/each}
-                </select>
-              </div>
-              {#if selectedWhisperModel}
-                <div class="selected-model-detail">
-                  <span class="selected-model-icon"><Icon name="audio" size={19} /></span>
-                  <div><strong>{selectedWhisperModel.label}</strong><small>{selectedWhisperModel.description} · {selectedWhisperModel.speed}</small><code>{selectedWhisperModel.path || selectedWhisperModel.id}</code></div>
-                  <span class="ready-badge"><Icon name="check" size={12} />本地可用</span>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          {#if modelScanError}<div class="model-scan-notice" class:warning={selectableWhisperModels.length > 0}><Icon name={selectableWhisperModels.length > 0 ? "info" : "alert"} size={14} /><span>{modelScanError}</span></div>{/if}
-
-          <div class="whisper-runtime-grid">
-            <div class="field">
-              <label class="field-label" for="task-transcription-backend">转写后端</label>
-              <select id="task-transcription-backend" bind:value={transcriptionBackend}>
-                <option value="whisper_cpp">whisper.cpp native CLI</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="task-whisper-device">运行设备</label>
-              <select id="task-whisper-device" bind:value={whisperDevice}>
-                <option value="auto">自动：优先 CUDA，可降级 CPU</option>
-                <option value="cuda">仅 CUDA / GPU：不可用则任务失败</option>
-                <option value="cpu">CPU</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="task-whisper-language">转录语言</label>
-              <select id="task-whisper-language" bind:value={whisperLanguage}>
-                <option value="">自动检测（中文视频可能误判为英文）</option>
-                <option value="zh">中文（zh）</option>
-                <option value="en">英文（en）</option>
-                <option value="ja">日语（ja）</option>
-                <option value="ko">韩语（ko）</option>
-              </select>
-            </div>
-          </div>
-          </div>
-
         <div class="enhancement-grid" aria-label="内容增强开关">
-          <button type="button" class="enhancement-card" class:enabled={ocrEnabled} onclick={() => (ocrEnabled = !ocrEnabled)} aria-pressed={ocrEnabled}>
-            <div class="enhance-icon"><Icon name="ocr" size={20} /></div>
-            <div class="enhance-copy"><strong>OCR 文字识别</strong><span>提取幻灯片、字幕和画面中的文字信息</span></div>
+          <button type="button" class="enhancement-card" class:enabled={compileMode === "precision"} onclick={() => (compileMode = compileMode === "precision" ? "draft" : "precision")} aria-pressed={compileMode === "precision"}>
+            <div class="enhance-icon"><Icon name={compileMode === "precision" ? "cloud" : "offline"} size={20} /></div>
+            <div class="enhance-copy"><strong>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"}</strong><span>{compileMode === "precision" ? "调用多模态 AI 分析视频帧和音频，输出结构化笔记" : "离线可用，仅生成关键词和概要，置信度较低"}</span></div>
             <span class="switch" aria-hidden="true">
-              <input type="checkbox" checked={ocrEnabled} tabindex="-1" />
+              <input type="checkbox" checked={compileMode === "precision"} tabindex="-1" />
               <span class="switch-track"></span>
             </span>
           </button>
-
-          <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
-            <div class="enhance-icon"><Icon name="scan" size={20} /></div>
-            <div class="enhance-copy"><strong>OCR 后端</strong><span>{ocrBackend === "tesseract" ? "native executable" : "HTTP API"}</span></div>
-            <select bind:value={ocrBackend} disabled={!ocrEnabled}>
-              <option value="tesseract">Tesseract native</option>
-              <option value="paddleocr_http">PaddleOCR HTTP</option>
-              <option value="custom_http">Custom HTTP OCR</option>
-            </select>
-          </label>
-
-          {#if ocrBackend === "paddleocr_http"}
-            <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
-              <div class="enhance-icon"><Icon name="scan" size={20} /></div>
-              <div class="enhance-copy"><strong>PaddleOCR 模型</strong><span>{ocrModel}</span></div>
-              <select bind:value={ocrModel} disabled={!ocrEnabled}>
-                {#if ocrModel && !paddleOcrModelOptions.includes(ocrModel)}
-                  <option value={ocrModel}>{ocrModel}</option>
-                {/if}
-                {#each paddleOcrModelOptions as model}
-                  <option value={model}>{model}</option>
-                {/each}
-              </select>
-            </label>
-          {:else if ocrBackend === "custom_http"}
-            <label class="enhancement-card ocr-backend-card" aria-disabled={!ocrEnabled}>
-              <div class="enhance-icon"><Icon name="scan" size={20} /></div>
-              <div class="enhance-copy"><strong>OCR Model</strong><span>{ocrModel || "留空"}</span></div>
-              <input type="text" bind:value={ocrModel} disabled={!ocrEnabled} placeholder="留空则不发送 model" />
-            </label>
-          {/if}
 
           <button type="button" class="enhancement-card" class:enabled={visionEnabled} class:disabled={!activeProvider} onclick={() => activeProvider && (visionEnabled = !visionEnabled)} aria-pressed={visionEnabled} disabled={!activeProvider}>
             <div class="enhance-icon"><Icon name="eye" size={20} /></div>
@@ -442,7 +266,7 @@
 
         <div class="task-preflight">
           <Icon name="info" size={15} />
-          <span>真实任务链路：本地媒体/公开视频 → Whisper 转录 → 可选 OCR/视觉理解 → 当前活动 AI 供应商生成笔记。</span>
+          <span>编译链路：本地媒体/公开视频 → 智能采样 (1fps, pHash 去重) → 多模态 AI 分析 → 结构化笔记。</span>
         </div>
 
         <button type="button" class="advanced-toggle" onclick={() => advancedOpen = !advancedOpen}>
@@ -482,7 +306,7 @@
       <div class="submit-bar">
         <div class="submit-summary">
           <span class="summary-icon"><Icon name="sparkles" size={16} /></span>
-          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : !modelReady ? "请先选择可用转录模型" : "已准备好创建任务"}</strong><small>{selectedWhisperModel?.label || whisperModel} · {whisperDevice === "cuda" ? "CUDA" : whisperDevice === "cpu" ? "CPU" : "自动设备"} · {ocrEnabled ? "OCR 开启" : "OCR 关闭"} · {visionEnabled ? "视觉理解开启" : "视觉理解关闭"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
+          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : "已准备好创建任务"}</strong><small>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"} · {visionEnabled ? "视觉理解开启" : "视觉理解关闭"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
         </div>
         <div class="submit-actions">
           {#if startedJobId !== null}<button class="btn btn-secondary" type="button" onclick={resetForm}>新建另一个</button>{/if}
@@ -548,9 +372,6 @@
   .enhancement-card:hover { border-color: var(--border-strong); background: var(--bg-subtle); }
   .enhancement-card.enabled { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)); background: var(--accent-faint); }
   .enhancement-card.disabled { opacity: .62; cursor: not-allowed; }
-  .ocr-backend-card { cursor: default; flex-wrap: wrap; }
-  .ocr-backend-card[aria-disabled="true"] { opacity: .62; }
-  .ocr-backend-card select { width: 100%; flex: 1 1 0; min-width: 0; }
   .task-preflight { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 11px; color: var(--text-secondary); background: var(--bg-subtle); font-size: 13px; line-height: 1.55; }
   .enhance-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 11px; color: var(--text-secondary); background: var(--bg-muted); }
   .enabled .enhance-icon { color: var(--accent-color); background: var(--accent-soft); }
@@ -600,9 +421,6 @@
 
   @media (max-width: 1050px) {
     .enhancement-grid { grid-template-columns: 1fr; }
-    .ocr-backend-card select { width: 100%; }
-    .whisper-runtime-grid { grid-template-columns: 1fr; }
-    .model-picker-control { grid-template-columns: 1fr; }
   }
 
 
@@ -639,8 +457,6 @@
 
   @media (max-width: 960px) {
     .enhancement-grid { grid-template-columns: 1fr; }
-    .model-picker-control { grid-template-columns: 1fr; }
-    .whisper-runtime-grid { grid-template-columns: 1fr; }
     .submit-bar { flex-direction: column; align-items: stretch; gap: 12px; }
     .submit-summary { min-width: 0; }
     .submit-summary small { white-space: normal; }
@@ -675,36 +491,13 @@
   .link-source-card .field { gap: 6px; }
   .field-help { color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
 
-  .model-control-field { gap: 10px; }
-  .model-control-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .model-loading,
-  .model-blocked { display: flex; align-items: center; gap: 11px; min-height: 70px; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-subtle); }
-  .model-loading > div,
-  .model-blocked > div { display: flex; flex: 1; flex-direction: column; }
-  .model-loading strong,
-  .model-blocked strong { font-size: 13px; }
-  .model-loading small,
-  .model-blocked p { margin-top: 3px; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
-  .model-blocked > span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; color: var(--danger-color); background: var(--danger-soft); }
-  .model-picker-control { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); gap: 10px; }
-  .model-select-wrap { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-card); }
-  .model-select-wrap label { color: var(--text-tertiary); font-size: 11px; font-weight: 680; }
-  .model-select-wrap select { min-height: 40px; width: 100%; padding: 0 36px 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-primary); background: var(--bg-input); font-size: 12px; font-weight: 640; }
-  .selected-model-detail { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--success-color) 28%, var(--border-color)); border-radius: 11px; background: color-mix(in srgb, var(--success-soft) 56%, var(--bg-card)); }
-  .selected-model-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; color: var(--success-color); background: var(--success-soft); }
-  .selected-model-detail > div { min-width: 0; display: flex; flex-direction: column; }
-  .selected-model-detail strong { font-size: 13px; }
-  .selected-model-detail small { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
-  .selected-model-detail code { margin-top: 4px; overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-  .ready-badge { display: inline-flex; align-items: center; gap: 3px; padding: 4px 7px; border-radius: 99px; color: var(--success-color); background: var(--bg-card); font-size: 9px; font-weight: 740; white-space: nowrap; }
   .model-scan-notice { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: 8px; color: var(--danger-color); background: var(--danger-soft); font-size: 11px; line-height: 1.45; }
-  .model-scan-notice.warning { color: var(--warning-color); background: var(--warning-soft); }
-  @media (max-width: 900px) { .model-picker-control { grid-template-columns: 1fr; } }
-.url-input { width: 100%; min-width: 0; }
+  
+  .url-input { width: 100%; min-width: 0; }
   .link-source-card { align-items: start; }
-  .whisper-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
-  @media (max-width: 980px) { .enhancement-grid { grid-template-columns: 1fr; } .ocr-backend-card select { width: 100%; } }
-  @media (max-width: 760px) { .whisper-runtime-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 1050px) {
+    .enhancement-grid { grid-template-columns: 1fr; }
+  }
 
   /* Submit success state */
   .submit-success {

@@ -42,7 +42,9 @@
 
   const stageText: Record<string, string> = {
     pending: "准备任务", resolving: "解析媒体", downloading: "下载媒体", transcribing: "语音转录",
-    extracting_frames: "提取画面", vision_analyzing: "视觉理解", generating_notes: "生成笔记", indexing: "写入产物", completed: "处理完成",
+    extracting_frames: "提取画面", vision_analyzing: "视觉理解", generating_notes: "生成笔记", indexing: "写入产物",
+    sampling: "智能采样", compiling: "多模态编译", normalizing: "归一化校准", storing: "存储胶囊",
+    completed: "处理完成",
     failed: "处理失败", interrupted: "异常中断", paused: "已暂停", cancelled: "已取消",
   };
 
