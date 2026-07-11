@@ -5,5 +5,6 @@
 
 #![deny(unsafe_code)]
 
+pub mod compile;
 pub mod native_engine;
 pub mod study;
