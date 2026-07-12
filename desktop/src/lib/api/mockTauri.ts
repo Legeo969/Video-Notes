@@ -133,20 +133,9 @@ const mockTemplates = [
 let mockSettings: any = {
   output_dir: "D:\\VideoNotes\\exports",
   vault_path: "",
-  transcription_backend: "whisper_cpp",
-  whisper_model: "large-v3",
-  whisper_model_dir: "",
-  model_dir: "",
-  language: "",
   frame_interval: 30,
   frame_mode: "fixed",
   max_frames: 30,
-  ocr_enabled: false,
-  ocr_backend: "tesseract",
-  ocr_http_endpoint: "",
-  ocr_http_api_key: "",
-  ocr_model: "PaddleOCR-VL-1.6",
-  vision_enabled: false,
   template: "default",
   template_id: "default",
   active_provider: "默认",
@@ -165,20 +154,6 @@ const mockResponses: Record<string, (params: any) => any> = {
   "system.ping": () => "pong",
   "process.list": () => mockJobs,
   "process.get": (params: { job_id: number }) => mockJobs.find(j => j.id === params.job_id) || null,
-  "process.start": (params: any) => {
-    const id = Date.now();
-    mockJobs.unshift({
-      id,
-      job_id: `mock-${id}`,
-      title: params.title || null,
-      status: "running",
-      progress: 0,
-      stage: "pending",
-      input: params.input,
-      created_at: new Date().toISOString(),
-    } as any);
-    return { job_id: id };
-  },
   "process.pause": (params: { job_id: number }) => {
     const job = mockJobs.find(j => j.id === params.job_id);
     if (job) job.status = "paused";

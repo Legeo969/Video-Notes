@@ -5,23 +5,16 @@
   import { jobs, refreshJobs, requestNavigate } from "../lib/stores/jobs";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
-  import type { ProviderProfile } from "../lib/types";
 
   let sourceMode = $state<"file" | "link">("file");
   let fileSource = $state("");
   let linkSource = $state("");
   let title = $state("");
-  let visionEnabled = $state(false);
   let compileMode = $state<"precision" | "draft">("precision");
   let activeProvider = $state("");
   let submitting = $state(false);
   let errorMessage = $state("");
   let startedJobId = $state<number | null>(null);
-  let advancedOpen = $state(false);
-  let frameMode = $state<"fixed" | "adaptive">("fixed");
-  let frameInterval = $state<number>(30);
-  let maxFrames = $state<number>(30);
-  let providers = $state<ProviderProfile[]>([]);
 
   let source = $derived(sourceMode === "file" ? fileSource : linkSource);
   let publicUrlValid = $derived(sourceMode !== "link" || isSupportedPublicUrl(linkSource));
@@ -32,31 +25,12 @@
     startedJobId === null ? undefined : $jobs.find((job) => job.id === startedJobId)
   );
 
-  let visionCapability = $derived.by(() => {
-    if (!visionEnabled || !activeProvider) return null;
-    const profile = providers.find((p) => p.active);
-    if (!profile) return null;
-    const model = profile.vision_model || profile.model;
-    if (!model) return null;
-    const cap = profile.capabilities?.[model];
-    if (!cap) return null;
-    return cap;
-  });
-
   onMount(async () => {
     try {
       const rawSettings = await engineCall<Record<string, any>>("settings.get");
       const settings = rawSettings as any;
-      providers = (settings.providers || []) as ProviderProfile[];
-      visionEnabled = Boolean(settings.vision_enabled);
       activeProvider = String(settings.active_provider || "");
       compileMode = (["precision", "draft"].includes(String(settings.compile_mode)) ? String(settings.compile_mode) : "precision") as "precision" | "draft";
-      frameMode = settings.frame_mode === "adaptive" ? "adaptive" : "fixed";
-      frameInterval = typeof settings.frame_interval === "number" ? settings.frame_interval : 30;
-      maxFrames = typeof settings.max_frames === "number" ? settings.max_frames : 30;
-      if (visionEnabled && !activeProvider) {
-        visionEnabled = false;
-      }
     } catch (error) {
       errorMessage = toErrorMessage(error);
     }
@@ -114,12 +88,12 @@
     submitting = true;
     errorMessage = "";
     try {
-      const result = await engineCall<{ capsule_id: string }>("compile.video", {
+      const result = await engineCall<{ job_id: number }>("compile.video", {
         input,
         title: title.trim() || undefined,
         mode: compileMode,
       });
-      startedJobId = Number(result.capsule_id);
+      startedJobId = Number(result.job_id);
       await refreshJobs();
     } catch (error) {
       errorMessage = toErrorMessage(error);
@@ -240,28 +214,6 @@
               <span class="switch-track"></span>
             </span>
           </button>
-
-          <button type="button" class="enhancement-card" class:enabled={visionEnabled} class:disabled={!activeProvider} onclick={() => activeProvider && (visionEnabled = !visionEnabled)} aria-pressed={visionEnabled} disabled={!activeProvider}>
-            <div class="enhance-icon"><Icon name="eye" size={20} /></div>
-            <div class="enhance-copy"><strong>视觉理解</strong><span>{activeProvider ? `调用活动供应商：${activeProvider}` : "请先在设置中配置活动 AI 供应商"}</span></div>
-            <span class="switch" aria-hidden="true">
-              <input type="checkbox" checked={visionEnabled} tabindex="-1" />
-              <span class="switch-track"></span>
-            </span>
-          </button>
-          {#if visionEnabled && visionCapability}
-            {#if visionCapability.vision === "fail"}
-              <div class="alert alert-error" style="margin-top: 8px; grid-column: 1 / -1;">
-                <Icon name="alert" size={15} />
-                <span>视觉模型曾测试失败：{visionCapability.error || visionCapability.message || "未知错误"}。请先在设置页测试视觉模型兼容性。</span>
-              </div>
-            {:else if visionCapability.vision === "pass"}
-              <div class="alert alert-success" style="margin-top: 8px; grid-column: 1 / -1;">
-                <Icon name="check" size={15} />
-                <span>视觉模型可用，最后测试于 {visionCapability.last_tested_at ? new Date(visionCapability.last_tested_at).toLocaleString() : "未知时间"}。</span>
-              </div>
-            {/if}
-          {/if}
         </div>
 
         <div class="task-preflight">
@@ -269,35 +221,7 @@
           <span>编译链路：本地媒体/公开视频 → 智能采样 (1fps, pHash 去重) → 多模态 AI 分析 → 结构化笔记。</span>
         </div>
 
-        <button type="button" class="advanced-toggle" onclick={() => advancedOpen = !advancedOpen}>
-          <span><Icon name="settings" size={15} />高级选项</span>
-          <Icon name="chevron-down" size={15} className={advancedOpen ? "rotate-icon" : ""} />
-        </button>
-        {#if advancedOpen}
-          <div class="advanced-panel">
-            <div><Icon name="shield" size={17} /><span><strong>实时阶段记录</strong><small>本机任务状态会同步处理阶段、进度和输出路径</small></span><span class="always-on">始终开启</span></div>
-            <div><Icon name="database" size={17} /><span><strong>临时工作区</strong><small>中间产物写入 AppData，完成后可在设置中清理</small></span><span class="always-on">始终开启</span></div>
-            <div class="advanced-frame-controls">
-              <label class="field">
-                <span class="field-label">抽帧模式</span>
-                <select bind:value={frameMode}>
-                  <option value="fixed">固定间隔抽取</option>
-                  <option value="adaptive">自适应合并场景检测</option>
-                </select>
-              </label>
-              <label class="field">
-                <span class="field-label">最大帧数</span>
-                <input type="number" bind:value={maxFrames} min={1} max={100} />
-              </label>
-              <label class="field">
-                <span class="field-label">抽帧间隔（秒）</span>
-                <input type="number" bind:value={frameInterval} min={10} max={600} disabled={frameMode === "adaptive"} />
-                {#if frameMode === "adaptive"}<small style="color:var(--text-tertiary);font-size:10px;margin-top:2px;">自适应模式自动计算间隔</small>{/if}
-              </label>
-            </div>
-          </div>
-        {/if}
-      </div>
+        </div>
 
       {#if errorMessage}
         <div class="alert alert-error"><Icon name="alert" size={17} /><span>{errorMessage}</span></div>
@@ -306,7 +230,7 @@
       <div class="submit-bar">
         <div class="submit-summary">
           <span class="summary-icon"><Icon name="sparkles" size={16} /></span>
-          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : "已准备好创建任务"}</strong><small>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"} · {visionEnabled ? "视觉理解开启" : "视觉理解关闭"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
+          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : "已准备好创建任务"}</strong><small>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
         </div>
         <div class="submit-actions">
           {#if startedJobId !== null}<button class="btn btn-secondary" type="button" onclick={resetForm}>新建另一个</button>{/if}
@@ -371,28 +295,12 @@
   .enhancement-card { display: flex; align-items: center; gap: 11px; min-height: 76px; padding: 13px; border: 1px solid var(--border-color); border-radius: 13px; color: var(--text-primary); background: var(--bg-card); cursor: pointer; text-align: left; transition: border-color .15s, background .15s; appearance: none; font: inherit; }
   .enhancement-card:hover { border-color: var(--border-strong); background: var(--bg-subtle); }
   .enhancement-card.enabled { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)); background: var(--accent-faint); }
-  .enhancement-card.disabled { opacity: .62; cursor: not-allowed; }
   .task-preflight { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 11px; color: var(--text-secondary); background: var(--bg-subtle); font-size: 13px; line-height: 1.55; }
   .enhance-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 11px; color: var(--text-secondary); background: var(--bg-muted); }
   .enabled .enhance-icon { color: var(--accent-color); background: var(--accent-soft); }
   .enhance-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; }
   .enhance-copy strong { font-size: 14px; }
   .enhance-copy span { margin-top: 3px; color: var(--text-secondary); font-size: 13px; line-height: 1.45; }
-
-  .advanced-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 2px; border: 0; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 14px; font-weight: 650; }
-  .advanced-toggle > span { display: flex; align-items: center; gap: 7px; }
-  :global(.rotate-icon) { transform: rotate(180deg); }
-  .advanced-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; border-radius: 12px; background: var(--bg-subtle); border: 1px solid var(--border-color); }
-  .advanced-panel > div { display: flex; align-items: flex-start; gap: 8px; color: var(--text-secondary); }
-  .advanced-panel > div > span { display: flex; flex: 1; flex-direction: column; }
-  .advanced-panel strong { color: var(--text-primary); font-size: 14px; }
-  .advanced-panel small { margin-top: 2px; font-size: 12px; line-height: 1.45; }
-  .always-on { flex: 0 0 auto !important; color: var(--success-color); font-size: 12px; font-weight: 700; }
-  .advanced-frame-controls { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding-top: 6px; border-top: 1px solid var(--border-color); }
-  .advanced-frame-controls .field { display: flex; flex-direction: column; gap: 4px; }
-  .advanced-frame-controls .field-label { font-size: 11px; font-weight: 680; color: var(--text-tertiary); }
-  .advanced-frame-controls select,
-  .advanced-frame-controls input[type="number"] { width: 100%; min-height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text-primary); background: var(--bg-input); font-size: 13px; }
 
   .submit-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 26px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
   .submit-summary { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -443,9 +351,6 @@
   .enhancement-card { min-height: 80px; padding: 14px; border-radius: 12px; }
   .enhance-copy strong { font-size: 13px; }
   .enhance-copy span { font-size: 11px; color: var(--text-tertiary); }
-  .advanced-toggle { font-size: 12px; color: var(--text-tertiary); }
-  .advanced-panel strong { font-size: 12px; }
-  .advanced-panel small, .always-on { font-size: 10px; }
   .submit-bar { padding: 16px 30px; }
   .submit-summary strong { font-size: 13px; }
   .submit-summary small { font-size: 11px; color: var(--text-tertiary); }
@@ -462,7 +367,6 @@
     .submit-summary small { white-space: normal; }
     .submit-actions { justify-content: flex-end; }
     .workflow-step small { display: none; }
-    .advanced-panel { grid-template-columns: 1fr; }
     .picker-copy span { white-space: normal; }
   }
 

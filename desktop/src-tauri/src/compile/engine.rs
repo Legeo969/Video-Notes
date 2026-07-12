@@ -29,6 +29,8 @@ pub struct CompileOptions {
     pub client_config: Option<CompileClientConfig>,
     pub prefer_draft: bool,
     pub on_progress: Option<ProgressFn>,
+    /// Path to a GGUF model file for local draft (optional).
+    pub gguf_model_path: Option<std::path::PathBuf>,
 }
 
 impl CompileOptions {
@@ -46,6 +48,7 @@ impl CompileOptions {
             client_config: None,
             prefer_draft: false,
             on_progress: None,
+            gguf_model_path: None,
         }
     }
 }
@@ -159,6 +162,8 @@ pub fn compile_video(
         let frame_pngs: Vec<Vec<u8>> = chunk_frames.iter().map(|f| f.data.clone()).collect();
         let transcript_text = ""; // Audio-to-text handled by MLLM directly
 
+        let gguf_path = opts.gguf_model_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
         let raw_output = match mode {
             CompileMode::CloudPrecision => {
                 if let Some(config) = &opts.client_config {
@@ -172,11 +177,11 @@ pub fn compile_video(
                         Some(&ctx.prev_chunk_summary),
                     )?
                 } else {
-                    draft::generate_local_draft(title, sample.duration_sec, chunk_frames.len(), &frame_pngs, transcript_text)
+                    draft::generate_local_draft(title, sample.duration_sec, &frame_pngs, gguf_path.as_deref())?
                 }
             }
             CompileMode::LocalDraft => {
-                draft::generate_local_draft(title, sample.duration_sec, chunk_frames.len(), &frame_pngs, transcript_text)
+                draft::generate_local_draft(title, sample.duration_sec, &frame_pngs, gguf_path.as_deref())?
             }
         };
 

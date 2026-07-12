@@ -340,7 +340,12 @@ fn extract_text_content(payload: &Value) -> Result<String, String> {
                 .pointer("/choices/0/finish_reason")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            format!("OpenAI response empty (finish_reason: {finish})")
+            let preview = serde_json::to_string(payload)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect::<String>();
+            format!("OpenAI response empty (finish_reason: {finish}). Response: {preview}")
         })
 }
 

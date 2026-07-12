@@ -6,7 +6,6 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        process::Command,
         sync::Arc,
         time::Duration,
     };
@@ -73,26 +72,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
                 .lock()
                 .unwrap()
                 .insert(id, Arc::new(JobControl::new()));
-        }
-    }
-
-    fn shell_command(script: &str) -> Command {
-        if cfg!(target_os = "windows") {
-            let mut command = hidden_command("cmd");
-            command.args(["/C", script]);
-            command
-        } else {
-            let mut command = hidden_command("sh");
-            command.args(["-c", script]);
-            command
-        }
-    }
-
-    fn sleep_command() -> Command {
-        if cfg!(target_os = "windows") {
-            shell_command("ping -n 6 127.0.0.1 > nul")
-        } else {
-            shell_command("sleep 5")
         }
     }
 
@@ -183,63 +162,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
     }
 
     #[test]
-    fn job_saved_provider_ignores_endpoint_override() {
-        let settings = provider_settings();
-        let profile = provider_profile_for_job(
-            &settings,
-            &json!({
-                "provider_name": "saved",
-                "base_url": "https://attacker.example/v1",
-                "model": "job-model",
-            }),
-        )
-        .unwrap();
-        assert_eq!(profile.base_url, "https://saved.example/v1");
-        assert_eq!(profile.api_key, "sk-saved-secret");
-        assert_eq!(profile.model, "job-model");
-    }
-
-    #[test]
-    fn retry_snapshot_attacker_base_url_does_not_override_saved_endpoint() {
-        let settings = provider_settings();
-        let snapshot = json!({
-            "task_params": {
-                "input": "old.mp4",
-                "provider_name": "saved",
-                "base_url": "https://attacker.example/v1",
-                "model": "snapshot-model"
-            }
-        });
-        let params = Value::Object(sanitized_retry_task_params(
-            Some(&snapshot),
-            "fallback.mp4",
-            None,
-        ));
-        let profile = provider_profile_for_job(&settings, &params).unwrap();
-        assert_eq!(profile.base_url, "https://saved.example/v1");
-        assert_eq!(profile.api_key, "sk-saved-secret");
-        assert_eq!(profile.model, "snapshot-model");
-    }
-
-    #[test]
-    fn saved_provider_ignores_type_override() {
-        let settings = provider_settings();
-        let profile = provider_profile_for_request(
-            &settings,
-            &json!({
-                "name": "saved",
-                "type": "llama_cpp",
-                "provider": "llama_cpp",
-                "model": "override-model"
-            }),
-        )
-        .unwrap();
-        assert_eq!(profile.base_url, "https://saved.example/v1");
-        assert_eq!(profile.api_key, "sk-saved-secret");
-        assert_eq!(profile.model, "override-model");
-    }
-
-    #[test]
     fn settings_update_round_trips_defaults() {
         let (engine, root) = temp_engine();
         let updated = engine
@@ -247,12 +169,7 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
                 "settings.update",
                 json!({
                     "patches": {
-                        "whisper_model": "base",
-                        "transcription_backend": "whisper_cpp",
-                        "ocr_backend": "paddleocr_http",
-                        "ocr_http_endpoint": "http://127.0.0.1:8868/ocr",
-                        "ocr_http_api_key": "local-token",
-                        "ocr_model": "PP-OCRv6",
+                        "compile_mode": "draft",
                         "template": "summary"
                     }
                 }),
@@ -265,12 +182,7 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
             .call("settings.get", json!({}))
             .expect("method handled")
             .expect("get succeeds");
-        assert_eq!(settings["whisper_model"], "base");
-        assert_eq!(settings["transcription_backend"], "whisper_cpp");
-        assert_eq!(settings["ocr_backend"], "paddleocr_http");
-        assert_eq!(settings["ocr_http_endpoint"], "http://127.0.0.1:8868/ocr");
-        assert_eq!(settings["ocr_http_api_key"], "local-token");
-        assert_eq!(settings["ocr_model"], "PP-OCRv6");
+        assert_eq!(settings["compile_mode"], "draft");
         assert_eq!(settings["template"], "summary");
 
         let _ = fs::remove_dir_all(root);
@@ -473,106 +385,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
     }
 
     #[test]
-    fn controlled_command_cancel_before_spawn() {
-        let control = Arc::new(JobControl::new());
-        control.cancel_requested.store(true, Ordering::SeqCst);
-
-        let result =
-            run_controlled_command_piped(shell_command("echo should-not-run"), &control, "test");
-
-        assert!(result.is_err());
-        assert!(is_cancellation_error(&result.unwrap_err()));
-        assert!(control.current_child.lock().unwrap().is_none());
-    }
-
-    #[test]
-    fn controlled_command_captures_stdout_and_stderr() {
-        let control = Arc::new(JobControl::new());
-
-        let stdout =
-            run_controlled_command_piped(shell_command("echo stdout-ok"), &control, "stdout")
-                .expect("stdout command succeeds");
-        assert!(stdout.status.success());
-        assert!(String::from_utf8_lossy(&stdout.stdout).contains("stdout-ok"));
-
-        let stderr =
-            run_controlled_command_piped(shell_command("echo stderr-ok 1>&2"), &control, "stderr")
-                .expect("stderr command succeeds");
-        assert!(stderr.status.success());
-        assert!(String::from_utf8_lossy(&stderr.stderr).contains("stderr-ok"));
-    }
-
-    #[test]
-    fn controlled_command_supports_stdout_null_stderr_piped() {
-        let control = Arc::new(JobControl::new());
-
-        let output = run_controlled_command(
-            shell_command("echo hidden-stdout && echo visible-stderr 1>&2"),
-            &control,
-            "mixed",
-            ControlledOutputMode::Null,
-            ControlledOutputMode::Piped,
-        )
-        .expect("mixed command succeeds");
-
-        assert!(output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("visible-stderr"));
-    }
-
-    #[test]
-    fn controlled_command_cancelled_child_clears_current_child() {
-        let control = Arc::new(JobControl::new());
-        let run_control = control.clone();
-        let handle = std::thread::spawn(move || {
-            run_controlled_command_piped(sleep_command(), &run_control, "sleep")
-        });
-
-        for _ in 0..50 {
-            if control.current_child.lock().unwrap().is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(control.current_child.lock().unwrap().is_some());
-        control.cancel_requested.store(true, Ordering::SeqCst);
-
-        let result = handle.join().expect("controlled command thread joins");
-        assert!(result.is_err());
-        assert!(is_cancellation_error(&result.unwrap_err()));
-        assert!(control.current_child.lock().unwrap().is_none());
-    }
-
-    #[test]
-    fn failed_update_after_cancel_becomes_cancelled() {
-        let (engine, root) = temp_engine();
-        insert_job(&engine, test_job(1, "cancelling"), true);
-
-        update_job(
-            &engine.jobs,
-            &engine.jobs_state_path,
-            &engine.app_handle,
-            &engine.data_dir,
-            1,
-            "failed",
-            "failed",
-            100,
-            "long stage failed",
-            Some("tool error".to_string()),
-            None,
-            None,
-        );
-
-        let job = engine.jobs.lock().unwrap().first().unwrap().clone();
-        assert_eq!(job.status, "cancelled");
-        assert_eq!(job.stage, "cancelled");
-        assert!(job.error_message.is_none());
-        assert!(job.completed_at.is_some());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn invalid_actions_do_not_mutate_control_flags() {
         let (engine, root) = temp_engine();
         insert_job(&engine, test_job(1, "completed"), true);
@@ -591,25 +403,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
             .expect("method handled");
         assert!(resume.is_err());
         assert!(control.pause_requested.load(Ordering::SeqCst));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn frame_updates_ignore_cancelled_jobs() {
-        let (engine, root) = temp_engine();
-        insert_job(&engine, test_job(1, "cancelled"), false);
-
-        update_job_frames(
-            &engine.jobs,
-            &engine.jobs_state_path,
-            &engine.app_handle,
-            1,
-            9,
-        );
-
-        let job = engine.jobs.lock().unwrap().first().unwrap().clone();
-        assert_eq!(job.frames_count, 0);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -751,9 +544,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
 
         assert!(names.contains(&"download-tools"));
         assert!(names.contains(&"ffmpeg-tools"));
-        assert!(names.contains(&"whisper-cpp-tools"));
-        assert!(names.contains(&"whisper-cpp-cuda-tools"));
-        assert!(names.contains(&"tesseract-ocr-tools"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -787,154 +577,10 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
     }
 
     #[test]
-    fn ocr_http_json_parser_collects_common_text_fields() {
-        let value = json!({
-            "data": {
-                "rec_texts": ["第一行", "第二行"],
-                "items": [{ "text": "第三行" }]
-            }
-        });
-
-        let text = extract_text_from_ocr_json(&value);
-        assert_eq!(text.len(), 3);
-        assert!(text.iter().any(|item| item == "第一行"));
-        assert!(text.iter().any(|item| item == "第二行"));
-        assert!(text.iter().any(|item| item == "第三行"));
-    }
-
-    #[test]
-    fn ocr_test_reports_missing_http_endpoint() {
-        let (engine, root) = temp_engine();
-
-        let result = engine
-            .call(
-                "settings.ocr.test",
-                json!({ "ocr_backend": "paddleocr_http" }),
-            )
-            .expect("method handled")
-            .expect("test succeeds");
-
-        assert_eq!(result["success"], false);
-        assert!(result["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Endpoint"));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn paddleocr_endpoint_is_normalised_to_jobs_url() {
-        assert_eq!(
-            normalise_paddleocr_jobs_endpoint("https://paddleocr.aistudio-app.com"),
-            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-        );
-        assert_eq!(
-            normalise_paddleocr_jobs_endpoint(
-                "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs/abc"
-            ),
-            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-        );
-    }
-
-    #[test]
     fn bearer_token_strips_existing_scheme() {
         assert_eq!(bearer_token("bearer abc123"), "abc123");
         assert_eq!(bearer_token("Bearer abc123"), "abc123");
         assert_eq!(bearer_token("abc123"), "abc123");
-    }
-
-    #[test]
-    fn process_start_creates_native_markdown_artifact() {
-        let (engine, root) = temp_engine();
-        fs::create_dir_all(root.join("input")).unwrap();
-        let input = root.join("input").join("lesson.mp4");
-        fs::write(&input, "fake video bytes").unwrap();
-
-        let started = engine
-            .call(
-                "process.start",
-                json!({ "input": input.to_string_lossy(), "title": "Lesson One" }),
-            )
-            .expect("method handled")
-            .expect("start succeeds");
-        assert_eq!(started["job_id"], 1);
-
-        let mut completed = None;
-        for _ in 0..50 {
-            let jobs = engine
-                .call("process.list", json!({ "limit": 10 }))
-                .expect("method handled")
-                .expect("list succeeds");
-            let first = jobs.as_array().unwrap().first().cloned();
-            if first
-                .as_ref()
-                .and_then(|job| job.get("status"))
-                .and_then(Value::as_str)
-                == Some("completed")
-            {
-                completed = first;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-
-        let job = completed.expect("job completed");
-        let output_path = PathBuf::from(job["output_path"].as_str().unwrap());
-        let transcript_path = PathBuf::from(job["transcript_path"].as_str().unwrap());
-        assert!(output_path.is_file());
-        assert_eq!(output_path.parent(), Some(root.join("exports").as_path()));
-        assert!(transcript_path.is_file());
-        assert_eq!(job["progress"], 100);
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn process_start_accepts_output_dir_override() {
-        let (engine, root) = temp_engine();
-        fs::create_dir_all(root.join("input")).unwrap();
-        let input = root.join("input").join("lesson.mp4");
-        fs::write(&input, "fake video bytes").unwrap();
-        let output_dir = root.join("exports").join("collections").join("Course-1");
-
-        engine
-            .call(
-                "process.start",
-                json!({
-                    "input": input.to_string_lossy(),
-                    "title": "Lesson One",
-                    "output_dir": output_dir.to_string_lossy(),
-                }),
-            )
-            .expect("method handled")
-            .expect("start succeeds");
-
-        let mut completed = None;
-        for _ in 0..50 {
-            let jobs = engine
-                .call("process.list", json!({ "limit": 10 }))
-                .expect("method handled")
-                .expect("list succeeds");
-            let first = jobs.as_array().unwrap().first().cloned();
-            if first
-                .as_ref()
-                .and_then(|job| job.get("status"))
-                .and_then(Value::as_str)
-                == Some("completed")
-            {
-                completed = first;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-
-        let job = completed.expect("job completed");
-        let output_path = PathBuf::from(job["output_path"].as_str().unwrap());
-        assert!(output_path.is_file());
-        assert_eq!(output_path.parent(), Some(output_dir.as_path()));
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1094,44 +740,6 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
     }
 
     #[test]
-    fn collection_item_progress_updates_from_native_job() {
-        let (engine, root) = temp_engine();
-        let created = engine
-            .call(
-                "collection.create",
-                json!({ "name": "Course", "items": ["a.mp4"] }),
-            )
-            .expect("method handled")
-            .expect("create succeeds");
-        let collection_id = created["id"].as_u64().unwrap();
-        let mut job = test_job(9, "completed");
-        job.progress = 100;
-        job.output_path = Some(
-            root.join("exports")
-                .join("a.md")
-                .to_string_lossy()
-                .to_string(),
-        );
-
-        engine
-            .update_collection_item_from_job(collection_id, 1, &job)
-            .expect("item update succeeds");
-
-        let detail = engine
-            .call("collection.get", json!({ "id": collection_id }))
-            .expect("method handled")
-            .expect("get succeeds");
-        let item = &detail["items"][0];
-        assert_eq!(item["run_id"], 9);
-        assert_eq!(item["job_id"], job.job_id);
-        assert_eq!(item["status"], "completed");
-        assert_eq!(item["progress"], 100);
-        assert_eq!(item["output_path"], job.output_path.unwrap());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn collection_batch_process_clamps_max_concurrency() {
         let (engine, root) = temp_engine();
         let created = engine
@@ -1155,210 +763,4 @@ artifact_cleanup_policy: default_artifact_cleanup_policy(),
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn parse_whisper_segments_from_valid_json() {
-        let json = r#"{
-            "segments": [
-                {"start": 0.0, "end": 5.2, "text": "  hello world"},
-                {"start": 5.2, "end": 12.0, "text": "  this is a test"}
-            ]
-        }"#;
-        let segments = parse_whisper_segments(json);
-        assert_eq!(segments.len(), 2);
-        assert!((segments[0].start_sec - 0.0).abs() < 0.01);
-        assert!((segments[0].end_sec - 5.2).abs() < 0.01);
-        assert_eq!(segments[0].text, "hello world");
-        assert_eq!(segments[1].text, "this is a test");
-        assert!(segments[0].ocr_text.is_none());
-        assert!(segments[0].vision_summary.is_none());
-        assert!(segments[0].frame_paths.is_empty());
-    }
-
-    #[test]
-    fn parse_whisper_segments_from_transcription_format() {
-        let json = r#"{
-            "transcription": [
-                {"offsets": {"from": 260, "to": 4060}, "text": "  first segment"},
-                {"offsets": {"from": 4860, "to": 11080}, "text": "  second segment here"}
-            ]
-        }"#;
-        let segments = parse_whisper_segments(json);
-        assert_eq!(segments.len(), 2);
-        assert!((segments[0].start_sec - 0.26).abs() < 0.01);
-        assert!((segments[0].end_sec - 4.06).abs() < 0.01);
-        assert_eq!(segments[0].text, "first segment");
-        assert_eq!(segments[1].text, "second segment here");
-        assert!((segments[1].start_sec - 4.86).abs() < 0.01);
-    }
-
-    #[test]
-    fn parse_whisper_segments_handles_empty_and_missing() {
-        assert!(parse_whisper_segments("").is_empty());
-        assert!(parse_whisper_segments("{}").is_empty());
-        assert!(parse_whisper_segments(r#"{"segments":[]}"#).is_empty());
-        assert!(parse_whisper_segments(r#"{"transcription":[]}"#).is_empty());
-        assert!(parse_whisper_segments(r#"{"not_segments":[]}"#).is_empty());
-    }
-
-    #[test]
-    fn parse_whisper_segments_filters_empty_text() {
-        let json = r#"{
-            "segments": [
-                {"start": 0.0, "end": 1.0, "text": "  "},
-                {"start": 1.0, "end": 2.0, "text": "valid"}
-            ]
-        }"#;
-        let segments = parse_whisper_segments(json);
-        assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].text, "valid");
-    }
-
-    #[test]
-    fn frame_index_from_path_parses_correctly() {
-        let cases = [
-            ("frame-001.png", Some(1)),
-            ("frame-999.png", Some(999)),
-            ("frame-0.png", Some(0)),
-            ("not-a-frame.png", None),
-            ("frame-abc.png", None),
-        ];
-        for (name, expected) in &cases {
-            let path = std::path::Path::new(name);
-            assert_eq!(frame_index_from_path(path), *expected, "failed for {name}");
-        }
-    }
-
-    #[test]
-    fn merge_frames_into_timeline_assigns_to_segments() {
-        let mut segments = vec![
-            TimelineSegment {
-                start_sec: 0.0,
-                end_sec: 60.0,
-                text: "intro".to_string(),
-                ocr_text: None,
-                vision_summary: None,
-                frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 60.0,
-                end_sec: 120.0,
-                text: "main content".to_string(),
-                ocr_text: None,
-                vision_summary: None,
-                frame_paths: Vec::new(),
-            },
-        ];
-        let frame_dir = std::env::temp_dir().join("timeline-test-frames");
-        let _ = fs::create_dir_all(&frame_dir);
-        let frame1 = frame_dir.join("frame-001.png");
-        let frame2 = frame_dir.join("frame-002.png");
-        fs::write(&frame1, b"dummy").ok();
-        fs::write(&frame2, b"dummy").ok();
-
-        let mut frame_ocrs = std::collections::HashMap::new();
-        frame_ocrs.insert("frame-001.png".to_string(), "slide 1".to_string());
-        frame_ocrs.insert("frame-002.png".to_string(), "slide 2".to_string());
-
-        let frame_paths = vec![frame1, frame2];
-        merge_frames_into_timeline(&mut segments, &frame_ocrs, &frame_paths, &[30.0, 90.0]);
-
-        assert_eq!(segments[0].frame_paths.len(), 1);
-        assert_eq!(segments[0].ocr_text.as_deref(), Some("slide 1"));
-        assert_eq!(segments[1].frame_paths.len(), 1);
-        assert_eq!(segments[1].ocr_text.as_deref(), Some("slide 2"));
-        let _ = fs::remove_dir_all(&frame_dir);
-    }
-
-    #[test]
-    fn collapse_repeated_segments_merges_consecutive_duplicates() {
-        let segments = vec![
-            TimelineSegment {
-                start_sec: 0.0, end_sec: 5.0, text: "hello".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 5.0, end_sec: 10.0, text: "hello".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 10.0, end_sec: 15.0, text: "hello".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 15.0, end_sec: 20.0, text: "world".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-        ];
-        let result = collapse_repeated_segments(segments);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "hello");
-        assert!((result[0].start_sec - 0.0).abs() < 0.01);
-        assert!((result[0].end_sec - 15.0).abs() < 0.01);
-        assert_eq!(result[1].text, "world");
-        assert!((result[1].start_sec - 15.0).abs() < 0.01);
-        assert!((result[1].end_sec - 20.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn collapse_repeated_segments_keeps_non_consecutive_duplicates() {
-        let segments = vec![
-            TimelineSegment {
-                start_sec: 0.0, end_sec: 5.0, text: "A".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 5.0, end_sec: 10.0, text: "B".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-            TimelineSegment {
-                start_sec: 10.0, end_sec: 15.0, text: "A".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-        ];
-        let result = collapse_repeated_segments(segments);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].text, "A");
-        assert_eq!(result[1].text, "B");
-        assert_eq!(result[2].text, "A");
-    }
-
-    #[test]
-    fn collapse_repeated_segments_merges_frame_paths() {
-        let segments = vec![
-            TimelineSegment {
-                start_sec: 0.0, end_sec: 5.0, text: "dup".to_string(),
-                ocr_text: None, vision_summary: None,
-                frame_paths: vec![PathBuf::from("frame-001.png")],
-            },
-            TimelineSegment {
-                start_sec: 5.0, end_sec: 10.0, text: "dup".to_string(),
-                ocr_text: None, vision_summary: None,
-                frame_paths: vec![PathBuf::from("frame-002.png")],
-            },
-        ];
-        let result = collapse_repeated_segments(segments);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "dup");
-        assert!((result[0].end_sec - 10.0).abs() < 0.01);
-        assert_eq!(result[0].frame_paths.len(), 2);
-    }
-
-    #[test]
-    fn collapse_repeated_segments_handles_empty() {
-        let result = collapse_repeated_segments(Vec::new());
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn collapse_repeated_segments_handles_single() {
-        let segments = vec![
-            TimelineSegment {
-                start_sec: 0.0, end_sec: 5.0, text: "only".to_string(),
-                ocr_text: None, vision_summary: None, frame_paths: Vec::new(),
-            },
-        ];
-        let result = collapse_repeated_segments(segments);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "only");
-    }
 }

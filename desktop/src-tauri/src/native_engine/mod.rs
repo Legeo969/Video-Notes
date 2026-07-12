@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -27,9 +26,6 @@ const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 const VISION_TEST_IMAGE_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAD6SURBVFhH7ZPrDcMgDIQ9HgMxDruwCpu4dkmrBB8oJRbpj3zS5eFIdwdJiG/mKfCHBUhGZ+SEdUJhSE5YJxSG5IR1QmFITlgnFIbkhHVCYUhOWCcUhuSEdUJhSE5YJxSG5IR1QmFITvg5TXKhQOZIgVPZbt/oLMrxPPMFcuQQI8dDg2UFCqegq9fzPnBVgZJk9TWmpMDhuwuLCuRIvOXXMiHJnii1wC8/zeBRDw0hMT2qFspyjQuoEJ1xn+OWb8gHSdKAaFxA1QJGI3rvuH6UCwr0QWFILWA0Dwps1QJG86DAVi1gdA0U+hGiM77G2XBl8GgNT4GbCzC/AGeNYW4AwZ2AAAAAAElFTkSuQmCC";
-const PADDLEOCR_DEFAULT_MODEL: &str = "PaddleOCR-VL-1.6";
-const PADDLEOCR_JOBS_PATH: &str = "/api/v2/ocr/jobs";
-const VISION_PARALLELISM: usize = 3;
 const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
     (
         "download-tools",
@@ -39,18 +35,6 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
         "ffmpeg-tools",
         include_str!("../../../../runtime/manifests/ffmpeg-tools.json"),
     ),
-    (
-        "whisper-cpp-tools",
-        include_str!("../../../../runtime/manifests/whisper-cpp-tools.json"),
-    ),
-    (
-        "whisper-cpp-cuda-tools",
-        include_str!("../../../../runtime/manifests/whisper-cpp-cuda-tools.json"),
-    ),
-    (
-        "tesseract-ocr-tools",
-        include_str!("../../../../runtime/manifests/tesseract-ocr-tools.json"),
-    ),
 ];
 
 /// Lock ordering (must never be acquired in reverse):
@@ -59,8 +43,7 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
 ///   3. jobs
 ///   4. settings_lock
 ///   ---
-///   5. control.lock   (per-job)
-///   6. current_child  (per-job)
+///   5. current_child  (per-job)
 ///
 /// Note: process_resume acquires #3 (jobs) then #2 (job_controls) in
 /// sequence, but never holds both simultaneously — the first lock is
@@ -75,6 +58,7 @@ pub struct NativeEngine {
     default_export_dir: PathBuf,
     jobs_state_path: PathBuf,
     jobs: Arc<Mutex<Vec<NativeJob>>>,
+    #[allow(dead_code)]
     next_job_id: Arc<Mutex<u64>>,
     job_controls: Arc<Mutex<HashMap<u64, Arc<JobControl>>>>,
     settings_lock: Arc<Mutex<()>>,
@@ -115,17 +99,16 @@ struct JobControl {
     cancel_requested: AtomicBool,
     pause_requested: AtomicBool,
     current_child: Mutex<Option<u32>>,
-    lock: Mutex<()>,
     condvar: Condvar,
 }
 
 impl JobControl {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             cancel_requested: AtomicBool::new(false),
             pause_requested: AtomicBool::new(false),
             current_child: Mutex::new(None),
-            lock: Mutex::new(()),
             condvar: Condvar::new(),
         }
     }
@@ -147,52 +130,10 @@ pub(crate) struct NativeProviderProfile {
     pub(crate) vision_model: String,
 }
 
-#[derive(Clone, Debug)]
-struct OcrRuntimeConfig {
-    enabled: bool,
-    backend: String,
-    endpoint: String,
-    api_key: String,
-    model: String,
-}
-
 struct CollectionBatchItem {
     id: u64,
     input: String,
     title: String,
-}
-
-#[derive(Clone, Debug)]
-struct TimelineSegment {
-    start_sec: f64,
-    end_sec: f64,
-    text: String,
-    ocr_text: Option<String>,
-    vision_summary: Option<String>,
-    frame_paths: Vec<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
-struct FrameSampleResult {
-    frames: Vec<PathBuf>,
-    timestamps_sec: Vec<f64>,
-    duration_sec: f64,
-    interval_sec: f64,
-    kept_count: u32,
-    candidate_count: u32,
-}
-
-#[derive(Clone, Debug)]
-struct FrameSamplingMetrics {
-    duration_sec: f64,
-    interval_sec: f64,
-    kept_count: u32,
-    candidate_count: u32,
-}
-
-struct OcrExtraction {
-    text: String,
-    frame_sampling: Option<FrameSamplingMetrics>,
 }
 
 #[derive(Clone, Serialize)]
@@ -201,17 +142,6 @@ struct ComponentDownloadProgress {
     downloaded_bytes: u64,
     total_bytes: u64,
     stage: String,
-}
-
-impl From<&FrameSampleResult> for FrameSamplingMetrics {
-    fn from(result: &FrameSampleResult) -> Self {
-        Self {
-            duration_sec: result.duration_sec,
-            interval_sec: result.interval_sec,
-            kept_count: result.kept_count,
-            candidate_count: result.candidate_count,
-        }
-    }
 }
 
 impl NativeEngine {
@@ -322,7 +252,6 @@ impl NativeEngine {
             "storage.cleanup_orphans" => self.storage_cleanup_orphans(params),
             "storage.cleanup_completed" => self.storage_cleanup_completed(),
             "process.list" => self.process_list(params),
-            "process.start" => self.process_start(params),
             "process.delete" => self.process_delete(params),
             "process.open_output" => self.process_output_action(params, false),
             "process.reveal_output" => self.process_output_action(params, true),
@@ -393,21 +322,9 @@ impl NativeEngine {
     }
 
     fn system_capabilities(&self) -> Result<Value, String> {
-        let settings = self.read_settings();
         Ok(json!({
             "has_ffmpeg": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_ytdlp": tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir),
-            "has_whisper": false,
-            "has_whisper_cpp": tool_exists("whisper-cli", &["whisper-cpp-cuda-tools", "whisper-cpp-tools"], &self.runtime_dir)
-                || tool_exists("main", &["whisper-cpp-cuda-tools", "whisper-cpp-tools"], &self.runtime_dir),
-            "has_ocr": tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir)
-                || !string_value(&settings, "ocr_http_endpoint")
-                    .or_else(|| string_value(&settings, "ocr_api_url"))
-                    .unwrap_or_default()
-                    .trim()
-                    .is_empty(),
-            "has_cuda": tool_exists("whisper-cli", &["whisper-cpp-cuda-tools"], &self.runtime_dir),
-            "has_vision": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
             "has_gui": true,
         }))
     }
@@ -421,28 +338,19 @@ impl NativeEngine {
         Ok(json!({
             "output_dir": string_value(&raw, "output_dir").unwrap_or_else(|| self.default_export_dir.to_string_lossy().to_string()),
             "compile_mode": string_value(&raw, "compile_mode").unwrap_or_else(|| "precision".to_string()),
-            "frame_interval": raw.get("frame_interval").and_then(Value::as_i64).unwrap_or(30),
-            "frame_mode": string_value(&raw, "frame_mode").unwrap_or_else(|| "fixed".to_string()),
-            "max_frames": raw.get("max_frames").and_then(Value::as_i64).unwrap_or(30),
-            "vision_enabled": raw.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false),
             "template": template,
             "template_id": template,
-            "detail_level": string_value(&raw, "detail_level").unwrap_or_else(|| "standard".to_string()),
             "vault_path": string_value(&raw, "vault_path").unwrap_or_default(),
-            "export_mode": string_value(&raw, "export_mode").unwrap_or_else(|| "markdown".to_string()),
             "active_provider": active_provider,
             "providers": provider_profiles(&raw, &active_provider),
             "bindings": raw.get("bindings").cloned().unwrap_or_else(|| json!({})),
             "provider": raw.get("provider").cloned().unwrap_or(Value::Null),
             "ai_model": raw.get("ai_model").cloned().unwrap_or(Value::Null),
             "base_url": raw.get("base_url").cloned().unwrap_or(Value::Null),
-            "vision_provider": raw.get("vision_provider").cloned().unwrap_or(Value::Null),
-            "vision_model": raw.get("vision_model").cloned().unwrap_or(Value::Null),
-            "vision_base_url": raw.get("vision_base_url").cloned().unwrap_or(Value::Null),
-            "subtitle_format": string_value(&raw, "subtitle_format").unwrap_or_else(|| "none".to_string()),
             "bilibili_cookie_file": string_value(&raw, "bilibili_cookie_file")
                 .or_else(|| string_value(&raw, "bilibili_cookies"))
                 .unwrap_or_default(),
+            "draft_model_path": string_value(&raw, "draft_model_path").unwrap_or_default(),
         }))
     }
 
@@ -455,24 +363,15 @@ impl NativeEngine {
         let allowed = [
             "output_dir",
             "compile_mode",
-            "frame_interval",
-            "frame_mode",
-            "max_frames",
-            "vision_enabled",
             "template",
             "template_id",
-            "detail_level",
             "vault_path",
-            "export_mode",
             "provider",
             "ai_model",
             "base_url",
-            "vision_provider",
-            "vision_model",
-            "vision_base_url",
-            "subtitle_format",
             "bilibili_cookie_file",
             "bilibili_cookies",
+            "draft_model_path",
         ];
         self.update_settings(|raw| {
             for key in allowed {
@@ -796,14 +695,26 @@ impl NativeEngine {
                 .to_string()
             });
 
+        // Determine provider kind to dispatch to the correct API format
+        let active_name = string_value(&raw, "active_provider").unwrap_or_default();
+        let provider_type = raw
+            .get("providers")
+            .and_then(Value::as_array)
+            .and_then(|providers| {
+                providers.iter().find(|p| {
+                    p.get("name").and_then(Value::as_str) == Some(&active_name)
+                })
+            })
+            .and_then(|p| p.get("type").and_then(Value::as_str))
+            .unwrap_or("openai_compat");
+        let provider_kind = crate::compile::client::ProviderKind::from_type_str(provider_type);
+
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
         {
             Ok(client) => client,
             Err(error) => {
-                let message = "HTTP client init failed";
-                let error = error.to_string();
                 let (capability_cache_saved, capability_cache_error) = self
                     .maybe_update_provider_capability(
                         cache_provider.as_deref(),
@@ -816,55 +727,98 @@ impl NativeEngine {
                 return Ok(json!({
                     "success": false,
                     "model": model,
-                    "message": message,
-                    "error": error,
+                    "message": "HTTP client init failed",
+                    "error": error.to_string(),
                     "capability_cache_saved": capability_cache_saved,
                     "capability_cache_error": capability_cache_error,
                 }));
             }
         };
-        let url = format!(
-            "{}/chat/completions",
-            profile.base_url.trim_end_matches('/')
-        );
-        let response = match with_optional_bearer(client.post(url), &profile.api_key)
-            .json(&json!({
-                "model": model,
-                "messages": [
-                    {
+
+        let b64 = VISION_TEST_IMAGE_BASE64;
+
+        // Dispatch to the correct provider format
+        let (request_url, request_body): (String, Value) = match provider_kind {
+            crate::compile::client::ProviderKind::GoogleGemini => {
+                let url = format!(
+                    "{}/models/{}:generateContent",
+                    profile.base_url.trim_end_matches('/'),
+                    model
+                );
+                let body = json!({
+                    "system_instruction": {
+                        "parts": [{"text": "You are a vision assistant. Describe what you see."}]
+                    },
+                    "contents": [{
+                        "role": "user",
+                        "parts": [
+                            {"text": "Describe what you see in this image in one short sentence."},
+                            {"inline_data": {"mime_type": "image/png", "data": b64}}
+                        ]
+                    }],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 100}
+                });
+                (url, body)
+            }
+            crate::compile::client::ProviderKind::Anthropic => {
+                let url = format!(
+                    "{}/messages",
+                    profile.base_url.trim_end_matches('/')
+                );
+                let body = json!({
+                    "model": model,
+                    "system": "You are a vision assistant. Describe what you see.",
+                    "messages": [{
                         "role": "user",
                         "content": [
-                            { "type": "text", "text": "Describe what you see in this image in one short sentence." },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": format!("data:image/png;base64,{}", VISION_TEST_IMAGE_BASE64)
-                                }
-                            }
+                            {"type": "text", "text": "Describe what you see in this image in one short sentence."},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}}
                         ]
-                    }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 100
-            }))
-            .send()
-        {
-            Ok(response) => response,
-            Err(error) => {
-                let message = "HTTP request failed";
-                let error = error.to_string();
-                let (capability_cache_saved, capability_cache_error) = self.maybe_update_provider_capability(
-                    cache_provider.as_deref(),
-                    &model,
-                    "vision",
-                    "fail",
-                    message,
-                    None,
+                    }],
+                    "temperature": 0.1,
+                    "max_tokens": 100
+                });
+                (url, body)
+            }
+            _ => {
+                // OpenAI Compatible (default)
+                let url = format!(
+                    "{}/chat/completions",
+                    profile.base_url.trim_end_matches('/')
                 );
+                let body = json!({
+                    "model": model,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe what you see in this image in one short sentence."},
+                            {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{b64}")}}
+                        ]
+                    }],
+                    "temperature": 0.1,
+                    "max_tokens": 100
+                });
+                (url, body)
+            }
+        };
+
+        // Send the request
+        let response = match Self::send_provider_request(&client, &request_url, &request_body, &profile.api_key, provider_kind) {
+            Ok(resp) => resp,
+            Err(error) => {
+                let (capability_cache_saved, capability_cache_error) = self
+                    .maybe_update_provider_capability(
+                        cache_provider.as_deref(),
+                        &model,
+                        "vision",
+                        "fail",
+                        "HTTP request failed",
+                        None,
+                    );
                 return Ok(json!({
                     "success": false,
                     "model": model,
-                    "message": message,
+                    "message": "HTTP request failed",
                     "error": error,
                     "capability_cache_saved": capability_cache_saved,
                     "capability_cache_error": capability_cache_error,
@@ -877,14 +831,13 @@ impl NativeEngine {
             let body = response.text().unwrap_or_default();
             let message = format!("Vision model returned HTTP {status}");
             let error = body.chars().take(500).collect::<String>();
-            let cache_message = format!("HTTP {}", status.as_u16());
             let (capability_cache_saved, capability_cache_error) = self
                 .maybe_update_provider_capability(
                     cache_provider.as_deref(),
                     &model,
                     "vision",
                     "fail",
-                    &cache_message,
+                    &format!("HTTP {}", status.as_u16()),
                     None,
                 );
             return Ok(json!({
@@ -901,11 +854,6 @@ impl NativeEngine {
         let payload: Value = match serde_json::from_str(&payload_text) {
             Ok(v) => v,
             Err(e) => {
-                let message = "Response is not valid JSON";
-                let error = format!(
-                    "{e}: {}",
-                    payload_text.chars().take(300).collect::<String>()
-                );
                 let (capability_cache_saved, capability_cache_error) = self
                     .maybe_update_provider_capability(
                         cache_provider.as_deref(),
@@ -918,33 +866,20 @@ impl NativeEngine {
                 return Ok(json!({
                     "success": false,
                     "model": model,
-                    "message": message,
-                    "error": error,
+                    "message": "Response is not valid JSON",
+                    "error": format!("{e}: {}", payload_text.chars().take(300).collect::<String>()),
                     "capability_cache_saved": capability_cache_saved,
                     "capability_cache_error": capability_cache_error,
                 }));
             }
         };
 
-        let result = payload
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| {
-                // Prefer "content", fallback to "reasoning" for models that
-                // return reasoning-only responses (e.g. sensenova, deepseek-r1)
-                message.get("content")
-                    .or_else(|| message.get("reasoning"))
-            })
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|content| !content.is_empty())
-            .map(ToOwned::to_owned);
+        // Extract text based on provider kind
+        let text = Self::extract_vision_text(&payload, provider_kind);
 
-        match result {
-            Some(text) => {
-                let result = text.chars().take(200).collect::<String>();
+        match text {
+            Some(content) => {
+                let result = content.chars().take(200).collect::<String>();
                 let (capability_cache_saved, capability_cache_error) = self
                     .maybe_update_provider_capability(
                         cache_provider.as_deref(),
@@ -988,6 +923,57 @@ impl NativeEngine {
                 }))
             }
         }
+    }
+
+    /// Send a provider request with the appropriate auth header.
+    fn send_provider_request(
+        client: &reqwest::blocking::Client,
+        url: &str,
+        body: &Value,
+        api_key: &str,
+        kind: crate::compile::client::ProviderKind,
+    ) -> Result<reqwest::blocking::Response, String> {
+        use crate::compile::client::ProviderKind;
+        let req = client.post(url);
+        let req = match kind {
+            ProviderKind::GoogleGemini => req.header("x-goog-api-key", api_key),
+            ProviderKind::Anthropic => req
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01"),
+            _ => crate::native_engine::with_optional_bearer(req, api_key),
+        };
+        req.json(body).send().map_err(|e| e.to_string())
+    }
+
+    /// Extract response text from a provider response based on provider kind.
+    fn extract_vision_text(
+        payload: &Value,
+        kind: crate::compile::client::ProviderKind,
+    ) -> Option<String> {
+        use crate::compile::client::ProviderKind;
+        match kind {
+            ProviderKind::GoogleGemini => payload
+                .pointer("/candidates/0/content/parts/0/text")
+                .and_then(Value::as_str),
+            ProviderKind::Anthropic => payload
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            _ => {
+                // OpenAI Compatible: choices[0].message.content or .reasoning
+                payload
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| {
+                        m.get("content").or_else(|| m.get("reasoning"))
+                    })
+                    .and_then(Value::as_str)
+            }
+        }
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
     }
 
     fn update_provider_capability(
@@ -1117,34 +1103,12 @@ impl NativeEngine {
     }
 
     fn doctor_run(&self) -> Result<Value, String> {
-        let settings = self.read_settings();
         let ffmpeg = tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir);
         let ytdlp = tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir);
-        let whisper_cpp = tool_exists(
-            "whisper-cli",
-            &["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
-            &self.runtime_dir,
-        ) || tool_exists(
-            "main",
-            &["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
-            &self.runtime_dir,
-        );
-        let tesseract = tool_exists("tesseract", &["tesseract-ocr-tools"], &self.runtime_dir);
-        let http_ocr = !string_value(&settings, "ocr_http_endpoint")
-            .or_else(|| string_value(&settings, "ocr_api_url"))
-            .unwrap_or_default()
-            .trim()
-            .is_empty();
         Ok(json!([
             check_item("Rust native engine", true, "in-process"),
             check_item("FFmpeg", ffmpeg, "system PATH or ffmpeg-tools"),
             check_item("yt-dlp", ytdlp, "download-tools"),
-            check_item("whisper.cpp", whisper_cpp, "whisper-cpp-tools"),
-            check_item(
-                "OCR provider",
-                tesseract || http_ocr,
-                "tesseract-ocr-tools or OCR HTTP endpoint"
-            )
         ]))
     }
 
@@ -1306,9 +1270,6 @@ impl NativeEngine {
             let path_result = match component.as_str() {
                 "download-tools" => install_download_tools(&target),
                 "ffmpeg-tools" => install_ffmpeg_tools_from_path(&target),
-                "whisper-cpp-tools" => install_whisper_cpp_tools_from_path(&target),
-                "whisper-cpp-cuda-tools" => install_whisper_cpp_tools_from_path(&target),
-                "tesseract-ocr-tools" => install_tesseract_tools_from_path(&target),
                 _ => Err(format!(
                     "Missing local package: {}. Put the component package there, then install again.",
                     source.display()
@@ -1473,221 +1434,6 @@ impl NativeEngine {
         Ok(json!(values))
     }
 
-    fn process_start(&self, params: Value) -> Result<Value, String> {
-        self.process_start_internal(params, None)
-    }
-
-    fn process_start_internal(
-        &self,
-        params: Value,
-        lineage: Option<(u32, String)>,
-    ) -> Result<Value, String> {
-        let input = required_string(&params, "input")?;
-        let title = string_param(&params, "title").or_else(|| {
-            Path::new(&input)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(ToOwned::to_owned)
-        });
-        let settings = self.read_settings();
-        let output_dir = string_param(&params, "output_dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| effective_note_output_dir(&settings, &self.default_export_dir));
-        let model_dirs = whisper_model_dirs(&settings, &self.data_dir);
-        let whisper_model = string_param(&params, "whisper_model")
-            .or_else(|| string_value(&settings, "whisper_model"))
-            .unwrap_or_else(|| "large-v3".to_string());
-        let whisper_device = string_param(&params, "whisper_device")
-            .or_else(|| string_value(&settings, "whisper_device"))
-            .unwrap_or_else(|| "auto".to_string());
-        let whisper_language = string_param(&params, "language")
-            .or_else(|| string_value(&settings, "language"))
-            .unwrap_or_default();
-        let provider = provider_profile_for_job(&settings, &params).ok();
-        let ocr_enabled = params
-            .get("ocr_enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| {
-                settings
-                    .get("ocr_enabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            });
-        let ocr_backend = string_param(&params, "ocr_backend")
-            .or_else(|| string_value(&settings, "ocr_backend"))
-            .filter(|value| {
-                matches!(
-                    value.as_str(),
-                    "tesseract" | "paddleocr_http" | "custom_http"
-                )
-            })
-            .unwrap_or_else(|| "tesseract".to_string());
-        let ocr_config = OcrRuntimeConfig {
-            enabled: ocr_enabled,
-            backend: ocr_backend.clone(),
-            endpoint: string_param(&params, "ocr_http_endpoint")
-                .or_else(|| string_value(&settings, "ocr_http_endpoint"))
-                .or_else(|| string_value(&settings, "ocr_api_url"))
-                .unwrap_or_default(),
-            api_key: string_param(&params, "ocr_http_api_key")
-                .or_else(|| string_value(&settings, "ocr_http_api_key"))
-                .or_else(|| string_value(&settings, "ocr_api_key"))
-                .unwrap_or_default(),
-            model: string_param(&params, "ocr_model")
-                .or_else(|| string_value(&settings, "ocr_model"))
-                .unwrap_or_else(|| PADDLEOCR_DEFAULT_MODEL.to_string()),
-        };
-        let vision_enabled = params
-            .get("vision_enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| {
-                settings
-                    .get("vision_enabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            });
-        let frame_interval = params
-            .get("frame_interval")
-            .and_then(Value::as_f64)
-            .or_else(|| settings.get("frame_interval").and_then(Value::as_f64))
-            .unwrap_or(30.0);
-        let max_frames = params
-            .get("max_frames")
-            .and_then(Value::as_u64)
-            .map(|v| v as u32)
-            .or_else(|| {
-                settings
-                    .get("max_frames")
-                    .and_then(Value::as_u64)
-                    .map(|v| v as u32)
-            })
-            .unwrap_or(30);
-        // Safety clamps (defence in depth beyond UI constraints)
-        let max_frames = max_frames.min(10_000);
-        let frame_interval = frame_interval.max(0.1);
-        let frame_mode = string_param(&params, "frame_mode")
-            .or_else(|| string_value(&settings, "frame_mode"))
-            .unwrap_or_else(|| "fixed".to_string());
-        let provider_name = string_param(&params, "provider_name")
-            .or_else(|| string_param(&params, "active_provider"))
-            .or_else(|| string_value(&settings, "active_provider"))
-            .unwrap_or_default();
-        let settings_snapshot = Some(build_job_settings_snapshot(
-            &input,
-            title.as_deref(),
-            &output_dir,
-            &whisper_model,
-            &whisper_device,
-            &whisper_language,
-            &provider_name,
-            provider.as_ref(),
-            &ocr_config,
-            vision_enabled,
-            frame_interval,
-            max_frames,
-            &frame_mode,
-            &params,
-        ));
-        let (attempt, parent_run_id) = lineage
-            .map(|(attempt, parent)| (attempt.max(1), Some(parent)))
-            .unwrap_or((1, None));
-        let artifact_cleanup_policy = string_param(&params, "artifact_cleanup_policy")
-            .map(|value| normalize_artifact_cleanup_policy(&value))
-            .unwrap_or_else(default_artifact_cleanup_policy);
-        let id = {
-            let mut next = self
-                .next_job_id
-                .lock()
-                .map_err(|_| "job id lock poisoned".to_string())?;
-            let id = *next;
-            *next += 1;
-            id
-        };
-        let job = NativeJob {
-            id,
-            job_id: Uuid::new_v4().to_string(),
-            title: title.clone(),
-            status: "pending".to_string(),
-            progress: 0,
-            progress_message: "任务已创建".to_string(),
-            stage: "pending".to_string(),
-            input: input.clone(),
-            created_at: Utc::now().to_rfc3339(),
-            completed_at: None,
-            error_message: None,
-            output_path: None,
-            transcript_path: None,
-            frames_count: 0,
-            can_resume: false,
-            settings_snapshot,
-            workspace_dir: None,
-            attempt,
-            parent_run_id,
-            artifact_cleanup_policy,
-            note_id: None,
-        };
-        let control = Arc::new(JobControl::new());
-        {
-            let mut controls = self
-                .job_controls
-                .lock()
-                .map_err(|_| "job controls lock poisoned".to_string())?;
-            controls.insert(id, control.clone());
-        }
-        {
-            let mut jobs = self
-                .jobs
-                .lock()
-                .map_err(|_| "jobs lock poisoned".to_string())?;
-            jobs.push(job);
-            if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
-                jobs.retain(|job| job.id != id);
-                if let Ok(mut controls) = self.job_controls.lock() {
-                    controls.remove(&id);
-                }
-                return Err(error);
-            }
-        }
-
-        let jobs = self.jobs.clone();
-        let jobs_state_path = self.jobs_state_path.clone();
-        let job_controls = self.job_controls.clone();
-        let app_handle = self.app_handle.clone();
-        let runtime_dir = self.runtime_dir.clone();
-        let data_dir = self.data_dir.clone();
-        std::thread::spawn(move || {
-            let panic_jobs = jobs.clone();
-            let panic_path = jobs_state_path.clone();
-            let panic_handle = app_handle.clone();
-            let panic_data_dir = data_dir.clone();
-            let panic_id = id;
-            if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_native_job(
-                    jobs, jobs_state_path, app_handle, data_dir, id,
-                    input, title, output_dir, runtime_dir,
-                    model_dirs, whisper_model, whisper_device, whisper_language,
-                    provider, ocr_config, vision_enabled,
-                    frame_interval, max_frames, frame_mode,
-                    control, job_controls,
-                );
-            })) {
-                let msg = panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| panic.downcast_ref::<&str>().map(|&s| s.to_string()))
-                    .unwrap_or_else(|| "unknown panic".to_string());
-                update_job(
-                    &panic_jobs, &panic_path, &panic_handle, &panic_data_dir, panic_id,
-                    "failed", "failed", 100,
-                    &format!("job panicked: {msg}"),
-                    Some(msg), None, None,
-                );
-            }
-        });
-
-        Ok(json!({ "job_id": id }))
-    }
-
     fn process_pause(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
         let control = self.job_control(id)?;
@@ -1753,131 +1499,13 @@ impl NativeEngine {
         }
 
         // After restart: job is paused but no JobControl exists
-        // Reconstruct parameters from settings_snapshot and spawn a new worker
-        //
-        // Lock order note: this path acquires #3 (jobs) below, drops it,
-        // then later acquires #2 (job_controls). The locks are sequential
-        // (not nested), so no deadlock despite appearing to reverse the
-        // documented order.
-        let (input, title, output_dir, whisper_model, whisper_device, whisper_language,
-             vision_enabled, frame_interval, max_frames, frame_mode,
-             ocr_enabled, ocr_backend, ocr_endpoint, ocr_model) = {
-            let jobs = self.jobs.lock()
-                .map_err(|_| "jobs lock poisoned".to_string())?;
-            let job = jobs.iter().find(|j| j.id == id)
-                .ok_or_else(|| format!("Job {id} not found"))?;
-            if job.status != "paused" || !job.can_resume {
-                return Err(format!(
-                    "Job {id} cannot be resumed (status: {}, can_resume: {})",
-                    job.status, job.can_resume
-                ));
-            }
-            let snapshot = job.settings_snapshot.as_ref()
-                .ok_or_else(|| format!("Job {id} has no settings snapshot; cannot resume"))?;
-            let task = snapshot.get("task_params")
-                .ok_or_else(|| "Missing task_params in snapshot".to_string())?;
-            job.workspace_dir.as_ref()
-                .filter(|d| Path::new(d).exists())
-                .ok_or_else(|| format!("Job {id} workspace not found; cannot resume"))?;
-
-            // Clone all values while the lock is held
-            let input = required_string(task, "input")?;
-            let title = task.get("title").and_then(Value::as_str).map(String::from);
-            let output_dir_str = required_string(task, "output_dir")?;
-            let whisper_model = string_param(task, "whisper_model").unwrap_or_else(|| "large-v3".to_string());
-            let whisper_device = string_param(task, "whisper_device").unwrap_or_else(|| "auto".to_string());
-            let whisper_language = string_param(task, "whisper_language").unwrap_or_default();
-            let vision_enabled = task.get("vision_enabled").and_then(Value::as_bool).unwrap_or(false);
-            let frame_interval = task.get("frame_interval").and_then(Value::as_f64).unwrap_or(30.0);
-            let max_frames = task.get("max_frames").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(30);
-            let frame_mode = string_param(task, "frame_mode").unwrap_or_else(|| "fixed".to_string());
-            let ocr_enabled = task.get("ocr_enabled").and_then(Value::as_bool).unwrap_or(false);
-            let ocr_backend = string_param(task, "ocr_backend").unwrap_or_else(|| "tesseract".to_string());
-            let ocr_endpoint = string_param(task, "ocr_http_endpoint").unwrap_or_default();
-            let ocr_model = string_param(task, "ocr_model").unwrap_or_else(|| "PaddleOCR-VL-1.6".to_string());
-            drop(jobs);
-
-            (input, title, PathBuf::from(output_dir_str),
-             whisper_model, whisper_device, whisper_language,
-             vision_enabled, frame_interval, max_frames, frame_mode,
-             ocr_enabled, ocr_backend, ocr_endpoint, ocr_model)
-        };
-
-        // Reconstruct provider profile from snapshot
-        let provider = None; // Provider API key not persisted in snapshot
-
-        // Reconstruct OCR config
-        let ocr_config = OcrRuntimeConfig {
-            enabled: ocr_enabled,
-            backend: ocr_backend,
-            endpoint: ocr_endpoint,
-            api_key: String::new(),
-            model: ocr_model,
-        };
-
-        // Transition job to running
-        self.transition_job_action(
-            id,
-            &["paused"],
-            "running",
-            None,
-            "继续执行任务（重启后恢复）",
-            false,
-        )?;
-
-        // Create new JobControl
-        let control = Arc::new(JobControl::new());
-        {
-            let mut controls = self.job_controls.lock()
-                .map_err(|_| "job controls lock poisoned".to_string())?;
-            controls.insert(id, control.clone());
-        }
-
-        // Spawn resume worker thread
-        let jobs = self.jobs.clone();
-        let jobs_state_path = self.jobs_state_path.clone();
-        let job_controls = self.job_controls.clone();
-        let app_handle = self.app_handle.clone();
-        let runtime_dir = self.runtime_dir.clone();
-        let model_dirs = whisper_model_dirs(&self.read_settings(), &self.data_dir);
-        let data_dir = self.data_dir.clone();
-
-        std::thread::spawn(move || {
-            let panic_jobs = jobs.clone();
-            let panic_path = jobs_state_path.clone();
-            let panic_handle = app_handle.clone();
-            let panic_data_dir = data_dir.clone();
-            let panic_id = id;
-            if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_native_job(
-                    jobs, jobs_state_path, app_handle, data_dir, id,
-                    input, title, output_dir, runtime_dir,
-                    model_dirs, whisper_model, whisper_device, whisper_language,
-                    provider, ocr_config, vision_enabled,
-                    frame_interval, max_frames, frame_mode,
-                    control, job_controls,
-                );
-            })) {
-                let msg = panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| panic.downcast_ref::<&str>().map(|&s| s.to_string()))
-                    .unwrap_or_else(|| "unknown panic".to_string());
-                update_job(
-                    &panic_jobs, &panic_path, &panic_handle, &panic_data_dir, panic_id,
-                    "failed", "failed", 100,
-                    &format!("job panicked: {msg}"),
-                    Some(msg), None, None,
-                );
-            }
-        });
-
-        Ok(json!(true))
+        // Compile pipeline tasks run synchronously — cannot resume after restart.
+        Err("Job is not active; compile pipeline tasks run synchronously and cannot be resumed after restart".to_string())
     }
 
     fn process_retry(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
-        let (input, title, snapshot, attempt, parent_run_id, cleanup_policy) = {
+        let input = {
             let jobs = self
                 .jobs
                 .lock()
@@ -1889,24 +1517,10 @@ impl NativeEngine {
             if !is_terminal_status(&job.status) {
                 return Err(format!("Job {id} cannot be retried from {}", job.status));
             }
-            (
-                job.input.clone(),
-                job.title.clone(),
-                job.settings_snapshot.clone(),
-                job.attempt.saturating_add(1),
-                job.parent_run_id
-                    .clone()
-                    .unwrap_or_else(|| job.job_id.clone()),
-                job.artifact_cleanup_policy.clone(),
-            )
+            job.input.clone()
         };
-        let mut retry_params =
-            sanitized_retry_task_params(snapshot.as_ref(), &input, title.as_ref());
-        retry_params.insert(
-            "artifact_cleanup_policy".to_string(),
-            json!(normalize_artifact_cleanup_policy(&cleanup_policy)),
-        );
-        self.process_start_internal(Value::Object(retry_params), Some((attempt, parent_run_id)))
+        // Route to compile pipeline
+        self.compile_video(json!({ "input": input }))
     }
 
     fn job_control(&self, id: u64) -> Result<Arc<JobControl>, String> {
@@ -2537,16 +2151,17 @@ impl NativeEngine {
         id: u64,
         items: Vec<CollectionBatchItem>,
         max_concurrency: usize,
-        output_dir: PathBuf,
+        _output_dir: PathBuf,
     ) {
-        // Snapshot settings once so the entire batch uses consistent defaults
-        let settings = self.read_settings();
-        let batch_frame_mode = string_value(&settings, "frame_mode").unwrap_or_else(|| "fixed".to_string());
-        let batch_frame_interval = settings.get("frame_interval").and_then(Value::as_f64).unwrap_or(30.0);
-        let batch_max_frames = settings.get("max_frames").and_then(Value::as_u64).map(|v| v.min(10000)).unwrap_or(30);
+        // Note: output_dir is unused — compile pipeline stores capsules in .capsules/
+        // and renders notes on demand via compile.render.
         let mut pending = items.into_iter();
-        let mut active: Vec<(u64, u64)> = Vec::new();
+        struct ActiveItem {
+            handle: Option<std::thread::JoinHandle<()>>,
+        }
+        let mut active: Vec<ActiveItem> = Vec::new();
         let mut pending_done = false;
+
         loop {
             // Check if collection was deleted mid-batch; stop processing if so
             {
@@ -2555,68 +2170,61 @@ impl NativeEngine {
                     break;
                 }
             }
+
+            // Spawn new items up to max_concurrency
             while active.len() < max_concurrency && !pending_done {
                 match pending.next() {
                     Some(item) => {
                         let item_id = item.id;
-                        match self.process_start(json!({
-                            "input": item.input,
-                            "title": item.title,
-                            "output_dir": output_dir.to_string_lossy(),
-                            "frame_mode": batch_frame_mode,
-                            "frame_interval": batch_frame_interval,
-                            "max_frames": batch_max_frames,
-                        })) {
-                            Ok(result) => {
-                                if let Some(run_id) = result.get("job_id").and_then(Value::as_u64) {
-                                    let _ = self.update_collection_item_start(id, item_id, run_id);
-                                    active.push((item_id, run_id));
-                                } else {
-                                    let _ = self.update_collection_item_failed(
-                                        id,
-                                        item_id,
-                                        "process.start did not return job_id",
-                                    );
+                        let _ = self.update_collection_item_start(id, item_id, 0);
+                        let runner = self.clone();
+                        let input = item.input;
+                        let title = item.title;
+                        let handle = std::thread::spawn(move || {
+                            let result = runner.compile_video(json!({
+                                "input": input,
+                                "title": title,
+                            }));
+                            match result {
+                                Ok(value) => {
+                                    let capsule_id = value
+                                        .get("capsule_id")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("");
+                                    let _ = runner.update_collection_item(id, item_id, |item| {
+                                        item["status"] = json!("completed");
+                                        item["progress"] = json!(100);
+                                        item["capsule_id"] = json!(capsule_id);
+                                        if let Some(obj) = item.as_object_mut() {
+                                            obj.remove("error_message");
+                                        }
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = runner.update_collection_item_failed(id, item_id, &error);
                                 }
                             }
-                            Err(error) => {
-                                let _ = self.update_collection_item_failed(id, item_id, &error);
-                                continue;
-                            }
-                        }
+});
+                        active.push(ActiveItem {
+                            handle: Some(handle),
+                        });
                     }
                     None => pending_done = true,
                 }
             }
 
+            // Clean up finished threads
+            active.retain(|item| {
+                if let Some(ref handle) = item.handle {
+                    if handle.is_finished() {
+                        return false; // remove from active
+                    }
+                }
+                true
+            });
+
             if active.is_empty() && pending_done {
                 break;
-            }
-
-            if !active.is_empty() {
-                let snapshots = if let Ok(jobs) = self.jobs.lock() {
-                    active
-                        .iter()
-                        .filter_map(|(item_id, run_id)| {
-                            jobs.iter()
-                                .find(|job| job.id == *run_id)
-                                .cloned()
-                                .map(|job| (*item_id, job))
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                for (item_id, job) in &snapshots {
-                    let _ = self.update_collection_item_from_job(id, *item_id, job);
-                }
-                active.retain(|(_, run_id)| {
-                    snapshots
-                        .iter()
-                        .find(|(_, job)| job.id == *run_id)
-                        .map(|(_, job)| !is_terminal_status(&job.status))
-                        .unwrap_or(false)
-                });
             }
 
             std::thread::sleep(Duration::from_millis(500));
@@ -2651,28 +2259,6 @@ impl NativeEngine {
             item["status"] = json!("failed");
             item["progress"] = json!(100);
             item["error_message"] = json!(error);
-        })
-    }
-
-    fn update_collection_item_from_job(
-        &self,
-        collection_id: u64,
-        item_id: u64,
-        job: &NativeJob,
-    ) -> Result<(), String> {
-        self.update_collection_item(collection_id, item_id, |item| {
-            item["run_id"] = json!(job.id);
-            item["job_id"] = json!(job.job_id.clone());
-            item["status"] = json!(job.status.clone());
-            item["progress"] = json!(job.progress);
-            if let Some(output_path) = &job.output_path {
-                item["output_path"] = json!(output_path);
-            }
-            if let Some(error_message) = &job.error_message {
-                item["error_message"] = json!(error_message);
-            } else if let Some(object) = item.as_object_mut() {
-                object.remove("error_message");
-            }
         })
     }
 
@@ -2881,7 +2467,6 @@ impl NativeEngine {
         // Provider config
         let provider = crate::native_engine::active_provider_profile(&settings).ok();
         let client_config = provider.as_ref().map(|p| {
-            // Determine provider kind from settings
             let active_name = crate::native_engine::string_value(&settings, "active_provider")
                 .unwrap_or_default();
             let provider_type = settings
@@ -2903,7 +2488,6 @@ impl NativeEngine {
             )
         });
 
-        // Storage dir
         let storage_dir = self.data_dir.join(".capsules");
 
         // Compute source hash
@@ -2916,7 +2500,6 @@ impl NativeEngine {
                 format!("{:x}", hasher.finalize())
             }
             Err(_) => {
-                // Use a hash of the path as fallback
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(input.as_bytes());
@@ -2924,23 +2507,188 @@ impl NativeEngine {
             }
         };
 
-        let opts = crate::compile::engine::CompileOptions {
-            ffmpeg_path: ffmpeg,
-            ffprobe_path: ffprobe,
-            storage_dir,
-            sampler: crate::compile::SamplerOptions::default(),
-            client_config,
-            prefer_draft: crate::native_engine::string_param(&params, "mode")
-                .map(|m| m == "draft")
-                .unwrap_or(false),
-            on_progress: None,
+        let prefer_draft = crate::native_engine::string_param(&params, "mode")
+            .map(|m| m == "draft")
+            .unwrap_or(false);
+        let gguf_model_path = crate::native_engine::string_value(&settings, "draft_model_path")
+            .map(std::path::PathBuf::from);
+
+        // Create a NativeJob so the task appears in the task center
+        let id = {
+            let mut next = self
+                .next_job_id
+                .lock()
+                .map_err(|_| "job id lock poisoned".to_string())?;
+            let id = *next;
+            *next += 1;
+            id
         };
+        let job = NativeJob {
+            id,
+            job_id: uuid::Uuid::new_v4().to_string(),
+            title: Some(title.clone()),
+            status: "pending".to_string(),
+            progress: 0,
+            progress_message: "准备编译".to_string(),
+            stage: "pending".to_string(),
+            input: input.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: None,
+            error_message: None,
+            output_path: None,
+            transcript_path: None,
+            frames_count: 0,
+            can_resume: false,
+            settings_snapshot: None,
+            workspace_dir: None,
+            attempt: 1,
+            parent_run_id: None,
+            artifact_cleanup_policy: "keep_all".to_string(),
+            note_id: None,
+        };
+        {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "jobs lock poisoned".to_string())?;
+            jobs.push(job);
+            if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
+                jobs.retain(|j| j.id != id);
+                return Err(error);
+            }
+        }
 
-        let result = crate::compile::engine::compile_video(
-            input_path, &source_hash, &title, &opts,
-        )?;
+        // Spawn background compile thread
+        let jobs = self.jobs.clone();
+        let jobs_state_path = self.jobs_state_path.clone();
+        let thread_input = input.clone();
+        let thread_title = title.clone();
+        let thread_source_hash = source_hash.clone();
+        let app_handle = self.app_handle.clone();
+        let export_dir = self.default_export_dir.clone();
 
-        Ok(serde_json::to_value(&result).unwrap_or_default())
+        std::thread::spawn(move || {
+            let set_job = |status: &str, stage: &str, progress: u8, message: &str| {
+                if let Ok(mut guard) = jobs.lock() {
+                    if let Some(job) = guard.iter_mut().find(|j| j.id == id) {
+                        job.status = status.to_string();
+                        job.stage = stage.to_string();
+                        job.progress = progress;
+                        job.progress_message = message.to_string();
+                        if status == "completed" || status == "failed"
+                            || status == "cancelled" || status == "interrupted"
+                        {
+                            job.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                        }
+                    }
+                    let _ = save_jobs(&jobs_state_path, &guard);
+                }
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit("job:progress", json!({
+                        "event_id": chrono::Utc::now().timestamp_millis(),
+                        "job_id": id,
+                        "stable_job_id": null,
+                        "status": status,
+                        "stage": stage,
+                        "progress": progress,
+                        "message": message,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
+                }
+            };
+
+            set_job("running", "resolving", 5, "检查输入文件");
+
+            let progress_cb = {
+                let jobs = jobs.clone();
+                let jobs_state_path = jobs_state_path.clone();
+                let app_handle = app_handle.clone();
+                move |stage: &str, pct: u8, msg: &str| {
+                    if let Ok(mut guard) = jobs.lock() {
+                        if let Some(job) = guard.iter_mut().find(|j| j.id == id) {
+                            job.stage = stage.to_string();
+                            job.progress = pct;
+                            job.progress_message = msg.to_string();
+                        }
+                        let _ = save_jobs(&jobs_state_path, &guard);
+                    }
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit("job:progress", json!({
+                            "event_id": chrono::Utc::now().timestamp_millis(),
+                            "job_id": id,
+                            "stable_job_id": null,
+                            "status": "running",
+                            "stage": stage,
+                            "progress": pct,
+                            "message": msg,
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        }));
+                    }
+                }
+            };
+
+            let storage_dir_for_render = storage_dir.clone();
+            let opts = crate::compile::engine::CompileOptions {
+                ffmpeg_path: ffmpeg,
+                ffprobe_path: ffprobe,
+                storage_dir,
+                sampler: crate::compile::SamplerOptions::default(),
+                client_config,
+                prefer_draft,
+                on_progress: Some(Box::new(progress_cb)),
+                gguf_model_path,
+            };
+
+            let result = crate::compile::engine::compile_video(
+                std::path::Path::new(&thread_input),
+                &thread_source_hash,
+                &thread_title,
+                &opts,
+            );
+
+            match result {
+                Ok(compile_result) => {
+                    // Render capsule to markdown and write to export directory
+                    let store = crate::compile::storage::FileCapsuleStore::new(storage_dir_for_render);
+                    if let Ok(capsule) = store.get(&compile_result.source_hash, compile_result.version) {
+                        match crate::compile::renderer::render(&capsule, "markdown") {
+                            Ok(markdown) => {
+                                let _ = std::fs::create_dir_all(&export_dir);
+                                let safe_name: String = thread_title.chars()
+                                    .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
+                                    .collect();
+                                let file_name = format!("{}-v{}.md", safe_name.trim(), compile_result.version);
+                                let output_path = export_dir.join(&file_name);
+                                if std::fs::write(&output_path, &markdown).is_ok() {
+                                    if let Ok(mut guard) = jobs.lock() {
+                                        if let Some(job) = guard.iter_mut().find(|j| j.id == id) {
+                                            job.output_path = Some(output_path.to_string_lossy().to_string());
+                                            job.note_id = Some(crate::native_engine::note_id(&output_path));
+                                        }
+                                        let _ = save_jobs(&jobs_state_path, &guard);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("render markdown failed: {e}");
+                            }
+                        }
+                    }
+                    set_job("completed", "complete", 100, "编译完成");
+                }
+                Err(error) => {
+                    set_job("failed", "failed", 100, &error);
+                    if let Ok(mut guard) = jobs.lock() {
+                        if let Some(job) = guard.iter_mut().find(|j| j.id == id) {
+                            job.error_message = Some(error);
+                        }
+                        let _ = save_jobs(&jobs_state_path, &guard);
+                    }
+                }
+            }
+        });
+
+        Ok(json!({ "job_id": id }))
     }
 
     /// List all compiled versions for a source hash.
@@ -3147,60 +2895,6 @@ fn cleanup_deleted_job_workspace(job: &NativeJob, data_dir: &Path) {
     }
 }
 
-fn sanitized_retry_task_params(
-    snapshot: Option<&Value>,
-    fallback_input: &str,
-    fallback_title: Option<&String>,
-) -> Map<String, Value> {
-    const ALLOWED: &[&str] = &[
-        "input",
-        "title",
-        "output_dir",
-        "whisper_model",
-        "whisper_device",
-        "provider_name",
-        "active_provider",
-        "base_url",
-        "model",
-        "vision_model",
-        "ocr_enabled",
-        "ocr_backend",
-        "ocr_http_endpoint",
-        "ocr_model",
-        "vision_enabled",
-        "frame_interval",
-        "max_frames",
-        "frame_mode",
-        "template",
-        "artifact_cleanup_policy",
-    ];
-    let mut params = Map::new();
-    if let Some(task_params) = snapshot
-        .and_then(|value| value.get("task_params"))
-        .and_then(Value::as_object)
-    {
-        for key in ALLOWED {
-            if let Some(value) = task_params.get(*key) {
-                params.insert((*key).to_string(), value.clone());
-            }
-        }
-    }
-    if !params.contains_key("input") {
-        params.insert("input".to_string(), json!(fallback_input));
-    }
-    if !params.contains_key("title") {
-        params.insert("title".to_string(), json!(fallback_title));
-    }
-    if let Some(policy) = params
-        .get("artifact_cleanup_policy")
-        .and_then(Value::as_str)
-        .map(normalize_artifact_cleanup_policy)
-    {
-        params.insert("artifact_cleanup_policy".to_string(), json!(policy));
-    }
-    params
-}
-
 fn sanitize_capability_cache_text(value: &str) -> String {
     let mut text = value.chars().take(300).collect::<String>();
     for marker in [
@@ -3221,25 +2915,6 @@ fn sanitize_capability_cache_text(value: &str) -> String {
         }
     }
     text
-}
-
-fn sanitize_snapshot_endpoint(endpoint: &str) -> String {
-    let trimmed = endpoint.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if let Ok(mut url) = reqwest::Url::parse(trimmed) {
-        url.set_query(None);
-        url.set_fragment(None);
-        return url.to_string().trim_end_matches('/').to_string();
-    }
-    let without_query = trimmed.split('?').next().unwrap_or(trimmed);
-    without_query
-        .split('#')
-        .next()
-        .unwrap_or(without_query)
-        .trim_end_matches('/')
-        .to_string()
 }
 
 fn job_id_param(params: &Value) -> Result<u64, String> {
@@ -3273,871 +2948,6 @@ fn job_elapsed_sec(created_at: &str, completed_at: Option<&str>) -> Option<u64> 
     Some((end - start).num_seconds().max(0) as u64)
 }
 
-struct StageRecord {
-    name: String,
-    duration_ms: u64,
-}
-
-struct JobProfileMetrics {
-    job_id: u64,
-    start_time: String,
-    job_start: std::time::Instant,
-    output_dir: PathBuf,
-    file_stem: String,
-    stages: Vec<StageRecord>,
-    frame_sampling: Option<FrameSamplingMetrics>,
-}
-
-impl Drop for JobProfileMetrics {
-    fn drop(&mut self) {
-        if self.file_stem.is_empty() {
-            return;
-        }
-        let total_ms = self.job_start.elapsed().as_millis() as u64;
-        let metrics_path = self
-            .output_dir
-            .join(format!("{}-{}-metrics.json", self.file_stem, self.job_id));
-        if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
-            "job_id": self.job_id,
-            "start_time": self.start_time,
-            "total_ms": total_ms,
-            "frame_sampling": self.frame_sampling.as_ref().map(|sampling| serde_json::json!({
-                "duration_sec": sampling.duration_sec,
-                "interval_sec": sampling.interval_sec,
-                "candidate_count": sampling.candidate_count,
-                "kept_count": sampling.kept_count,
-            })),
-            "stages": self.stages.iter().map(|s| serde_json::json!({
-                "name": s.name,
-                "duration_ms": s.duration_ms,
-            })).collect::<Vec<_>>(),
-        })) {
-            let _ = fs::write(&metrics_path, &json).map_err(|e| {
-                eprintln!("[metrics] failed to write {}: {e}", metrics_path.display());
-                e
-            });
-        }
-    }
-}
-
-struct StageTimer {
-    name: String,
-    start: std::time::Instant,
-}
-
-struct JobControlCleanup {
-    id: u64,
-    controls: Arc<Mutex<HashMap<u64, Arc<JobControl>>>>,
-}
-
-impl Drop for JobControlCleanup {
-    fn drop(&mut self) {
-        if let Ok(mut controls) = self.controls.lock() {
-            controls.remove(&self.id);
-        }
-    }
-}
-
-impl StageTimer {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            start: std::time::Instant::now(),
-        }
-    }
-    fn finish(self) -> StageRecord {
-        StageRecord {
-            name: self.name,
-            duration_ms: self.start.elapsed().as_millis() as u64,
-        }
-    }
-}
-
-fn run_native_job(
-    jobs: Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: PathBuf,
-    app_handle: Option<AppHandle>,
-    data_dir: PathBuf,
-    id: u64,
-    input: String,
-    title: Option<String>,
-    output_dir: PathBuf,
-    runtime_dir: PathBuf,
-    model_dirs: Vec<PathBuf>,
-    whisper_model: String,
-    whisper_device: String,
-    whisper_language: String,
-    provider: Option<NativeProviderProfile>,
-    ocr_config: OcrRuntimeConfig,
-    vision_enabled: bool,
-    frame_interval: f64,
-    max_frames: u32,
-    frame_mode: String,
-    control: Arc<JobControl>,
-    job_controls: Arc<Mutex<HashMap<u64, Arc<JobControl>>>>,
-) {
-    let _control_cleanup = JobControlCleanup {
-        id,
-        controls: job_controls,
-    };
-    let run_stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let workspace_dir = runtime_dir
-        .parent()
-        .unwrap_or(&runtime_dir)
-        .join("jobs")
-        .join(format!("job-{id}-{run_stamp}"));
-    let mut profile = JobProfileMetrics {
-        job_id: id,
-        start_time: chrono::Utc::now().to_rfc3339(),
-        job_start: std::time::Instant::now(),
-        output_dir: workspace_dir.clone(),
-        file_stem: String::new(),
-        stages: Vec::new(),
-        frame_sampling: None,
-    };
-    macro_rules! checkpoint {
-        ($stage:expr, $progress:expr, $message:expr) => {
-            if !checkpoint_job_control(
-                &jobs,
-                &jobs_state_path,
-                &app_handle,
-                &data_dir,
-                id,
-                &control,
-                $stage,
-                $progress,
-                $message,
-            ) {
-                return;
-            }
-        };
-    }
-
-    checkpoint!("resolving", 0, "检查输入文件");
-
-    update_job(
-        &jobs,
-        &jobs_state_path,
-        &app_handle,
-        &data_dir,
-        id,
-        "running",
-        "resolving",
-        8,
-        "检查输入文件",
-        None,
-        None,
-        None,
-    );
-    checkpoint!("resolving", 8, "检查输入文件");
-
-    if let Err(error) =
-        fs::create_dir_all(&output_dir).and_then(|_| fs::create_dir_all(&workspace_dir))
-    {
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "failed",
-            "failed",
-            100,
-            "创建输出目录失败",
-            Some(error.to_string()),
-            None,
-            None,
-        );
-        return;
-    }
-    update_job_workspace(
-        &jobs,
-        &jobs_state_path,
-        id,
-        workspace_dir.to_string_lossy().to_string(),
-    );
-
-    let t_dl = StageTimer::new("downloading");
-    checkpoint!("downloading", 12, "准备媒体输入");
-    let input_path = if input.starts_with("http://") || input.starts_with("https://") {
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "running",
-            "downloading",
-            18,
-            "使用 native yt-dlp 下载",
-            None,
-            None,
-            None,
-        );
-        match download_with_ytdlp(&input, &workspace_dir, id, &runtime_dir, &control) {
-            Ok(path) => path,
-            Err(error) => {
-                if is_cancellation_error(&error) {
-                    checkpoint!("cancelled", 18, "任务已取消");
-                    return;
-                }
-                update_job(
-                    &jobs,
-                    &jobs_state_path,
-                    &app_handle,
-                    &data_dir,
-                    id,
-                    "failed",
-                    "failed",
-                    100,
-                    "native 下载失败",
-                    Some(error),
-                    None,
-                    None,
-                );
-                return;
-            }
-        }
-    } else {
-        let path = PathBuf::from(&input);
-        if !path.is_file() {
-            update_job(
-                &jobs,
-                &jobs_state_path,
-                &app_handle,
-                &data_dir,
-                id,
-                "failed",
-                "failed",
-                100,
-                "输入文件不存在",
-                Some(format!("Input file not found: {}", path.display())),
-                None,
-                None,
-            );
-            return;
-        }
-        path
-    };
-    checkpoint!("downloading", 25, "媒体输入已准备");
-    profile.stages.push(t_dl.finish());
-
-    let base_title = if input.starts_with("http://") || input.starts_with("https://") {
-        // For online videos, prefer the real title from the downloaded
-        // filename (yt-dlp uses the actual video title). Fall back to the
-        // URL-derived title or user-provided title if unavailable.
-        input_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.trim().is_empty())
-            .map(ToOwned::to_owned)
-            .or_else(|| title.clone().filter(|value| !value.trim().is_empty()))
-            .unwrap_or_else(|| format!("native-job-{id}"))
-    } else {
-        title
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                input_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .map(ToOwned::to_owned)
-            })
-            .unwrap_or_else(|| format!("native-job-{id}"))
-    };
-    let base_file_stem = sanitize_filename(&base_title);
-    let file_stem = format!("{base_file_stem}-{run_stamp}");
-    profile.file_stem = file_stem.clone();
-    let transcript_path = workspace_dir.join(format!("{file_stem}-{id}-transcript.txt"));
-    let note_path = output_dir.join(format!("{file_stem}-{id}.md"));
-
-    let t_whisper = StageTimer::new("transcribing");
-    checkpoint!("transcribing", 30, "准备语音转录");
-
-    update_job(
-        &jobs,
-        &jobs_state_path,
-        &app_handle,
-        &data_dir,
-        id,
-        "running",
-        "transcribing",
-        35,
-        "使用 native whisper.cpp 转录",
-        None,
-        None,
-        None,
-    );
-
-    let (mut transcript, whisper_json) = match transcribe_with_whisper_cpp(
-        &input_path,
-        &workspace_dir,
-        &file_stem,
-        id,
-        &runtime_dir,
-        &model_dirs,
-        &whisper_model,
-        &whisper_device,
-        &whisper_language,
-        &control,
-    ) {
-        Ok((text, json)) => (text, json),
-        Err(error) if is_cancellation_error(&error) => {
-            checkpoint!("cancelled", 35, "任务已取消");
-            return;
-        }
-        Err(error) => (
-            format!(
-                "Native transcript unavailable\n\nSource: {}\n\nReason: {}",
-                input_path.display(),
-                error
-            ),
-            None,
-        ),
-    };
-    checkpoint!("transcribing", 45, "语音转录阶段完成");
-    profile.stages.push(t_whisper.finish());
-    if ocr_config.enabled {
-        let t_ocr = StageTimer::new("extracting_frames");
-        checkpoint!("extracting_frames", 50, "准备抽帧和 OCR");
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "running",
-            "extracting_frames",
-            55,
-            &format!("使用 {} OCR", ocr_config.backend),
-            None,
-            None,
-            None,
-        );
-        let ocr_result = match ocr_config.backend.as_str() {
-            "paddleocr_http" | "custom_http" => extract_ocr_with_http(
-                &input_path,
-                &workspace_dir,
-                &file_stem,
-                id,
-                &runtime_dir,
-                &ocr_config,
-                frame_interval,
-                max_frames,
-                &frame_mode,
-                &control,
-            ),
-            _ => extract_ocr_with_tesseract(
-                &input_path,
-                &workspace_dir,
-                &file_stem,
-                id,
-                &runtime_dir,
-                frame_interval,
-                max_frames,
-                &frame_mode,
-                &control,
-            ),
-        };
-        let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
-        update_job_frames(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            id,
-            count_frame_files(&frame_dir),
-        );
-        match ocr_result {
-            Ok(ocr) if !ocr.text.trim().is_empty() => {
-                if profile.frame_sampling.is_none() {
-                    profile.frame_sampling = ocr.frame_sampling;
-                }
-                transcript.push_str("\n\n## OCR\n\n");
-                transcript.push_str(&ocr.text);
-            }
-            Ok(ocr) => {
-                if profile.frame_sampling.is_none() {
-                    profile.frame_sampling = ocr.frame_sampling;
-                }
-                transcript.push_str("\n\n## OCR\n\nNo readable text detected in sampled frames.");
-            }
-            Err(error) => {
-                if is_cancellation_error(&error) {
-                    checkpoint!("cancelled", 55, "任务已取消");
-                    return;
-                }
-                transcript.push_str("\n\n## OCR\n\nOCR unavailable: ");
-                transcript.push_str(&error);
-            }
-        }
-        checkpoint!("extracting_frames", 60, "抽帧和 OCR 阶段完成");
-        profile.stages.push(t_ocr.finish());
-    }
-    // Build timeline segments early (before vision, reused later for context)
-    let mut segments: Vec<TimelineSegment> = (|| {
-        let json_str = whisper_json.as_ref()?;
-        let mut segs = parse_whisper_segments(json_str);
-        segs = collapse_repeated_segments(segs);
-        if segs.is_empty() {
-            return None;
-        }
-        let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
-        if frame_dir.exists() {
-            let frame_paths = collect_frame_files(&frame_dir).ok().unwrap_or_default();
-            let timestamps_sec: Vec<f64> = frame_paths
-                .iter()
-                .filter_map(|fp| frame_index_from_path(fp).map(|idx| idx as f64 * frame_interval))
-                .collect();
-            let frame_ocrs = ocr_text_by_frame(&transcript);
-            merge_frames_into_timeline(&mut segs, &frame_ocrs, &frame_paths, &timestamps_sec);
-        }
-        Some(segs)
-    })()
-    .unwrap_or_default();
-    let t_vision = StageTimer::new("vision_analyzing");
-    if vision_enabled {
-        checkpoint!("vision_analyzing", 60, "准备视觉理解");
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "running",
-            "vision_analyzing",
-            62,
-            "调用视觉模型分析各片段关键帧",
-            None,
-            None,
-            None,
-        );
-        let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
-        let (fetch_frames, timestamps_sec) = if count_frame_files(&frame_dir) > 0 {
-            let paths = collect_frame_files(&frame_dir).unwrap_or_default();
-            let timestamps: Vec<f64> = paths
-                .iter()
-                .filter_map(|fp| frame_index_from_path(fp).map(|idx| idx as f64 * frame_interval))
-                .collect();
-            (paths, timestamps)
-        } else {
-            match extract_sample_frames(
-                &input_path,
-                &workspace_dir,
-                &file_stem,
-                id,
-                &runtime_dir,
-                frame_interval,
-                max_frames,
-                &frame_mode,
-                &control,
-            ) {
-                Ok(result) => {
-                    if profile.frame_sampling.is_none() {
-                        profile.frame_sampling = Some(FrameSamplingMetrics::from(&result));
-                    }
-                    (result.frames, result.timestamps_sec)
-                }
-                Err(error) => {
-                    if is_cancellation_error(&error) {
-                        checkpoint!("cancelled", 62, "任务已取消");
-                        return;
-                    }
-                    transcript.push_str("\n\n## Vision\n\nFrame extraction unavailable: ");
-                    transcript.push_str(&error);
-                    (Vec::new(), Vec::new())
-                }
-            }
-        };
-        if !fetch_frames.is_empty() {
-            update_job_frames(
-                &jobs,
-                &jobs_state_path,
-                &app_handle,
-                id,
-                fetch_frames.len().try_into().unwrap_or(u32::MAX),
-            );
-            // Rebuild segments now that we have frames
-            segments = (|| {
-                let json_str = whisper_json.as_ref()?;
-                let mut segs = parse_whisper_segments(json_str);
-                segs = collapse_repeated_segments(segs);
-                if segs.is_empty() {
-                    return None;
-                }
-                let frame_ocrs = ocr_text_by_frame(&transcript);
-                merge_frames_into_timeline(&mut segs, &frame_ocrs, &fetch_frames, &timestamps_sec);
-                Some(segs)
-            })()
-            .unwrap_or_default();
-            match provider.as_ref() {
-                Some(profile) => {
-                    let vision_jobs: Vec<(usize, f64, f64, String, Vec<PathBuf>)> = segments
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, segment)| !segment.frame_paths.is_empty())
-                        .map(|(i, segment)| {
-                            (
-                                i,
-                                segment.start_sec,
-                                segment.end_sec,
-                                segment.text.clone(),
-                                segment.frame_paths.clone(),
-                            )
-                        })
-                        .collect();
-                    let mut vision_results: Vec<(usize, f64, f64, Result<String, String>)> =
-                        Vec::new();
-                    for batch in vision_jobs.chunks(VISION_PARALLELISM) {
-                        checkpoint!("vision_analyzing", 64, "视觉理解阶段执行中");
-                        let mut handles = Vec::new();
-                        for (segment_index, start_sec, end_sec, text, frame_paths) in
-                            batch.iter().cloned()
-                        {
-                            if control.cancel_requested.load(Ordering::SeqCst) {
-                                checkpoint!("cancelled", 64, "任务已取消");
-                                return;
-                            }
-                            let profile = profile.clone();
-                            handles.push(std::thread::spawn(move || {
-                                let paths: Vec<&PathBuf> = frame_paths.iter().collect();
-                                let result = analyze_segment_vision(
-                                    &profile, start_sec, end_sec, &text, &paths,
-                                );
-                                (segment_index, start_sec, end_sec, result)
-                            }));
-                        }
-                        for handle in handles {
-                            if control.cancel_requested.load(Ordering::SeqCst) {
-                                checkpoint!("cancelled", 64, "任务已取消");
-                                return;
-                            }
-                            match handle.join() {
-                                Ok(result) => vision_results.push(result),
-                                Err(_) => vision_results.push((
-                                    usize::MAX,
-                                    0.0,
-                                    0.0,
-                                    Err("vision worker panicked".to_string()),
-                                )),
-                            }
-                        }
-                    }
-                    vision_results.sort_by_key(|(segment_index, _, _, _)| *segment_index);
-                    let mut vision_texts: Vec<String> = Vec::new();
-                    for (i, start_sec, end_sec, result) in vision_results {
-                        match result {
-                            Ok(text) => {
-                                let trimmed = text.trim().to_string();
-                                if !trimmed.is_empty() && i < segments.len() {
-                                    segments[i].vision_summary = Some(trimmed.clone());
-                                    vision_texts.push(format!(
-                                        "### [{:.0}s–{:.0}s]\n{}",
-                                        start_sec, end_sec, trimmed
-                                    ));
-                                }
-                            }
-                            Err(error) => {
-                                vision_texts.push(format!(
-                                    "### [{:.0}s–{:.0}s]\nVision unavailable: {}",
-                                    start_sec, end_sec, error
-                                ));
-                            }
-                        }
-                    }
-                    if !vision_texts.is_empty() {
-                        transcript.push_str("\n\n## Vision\n\n");
-                        transcript.push_str(&vision_texts.join("\n\n"));
-                    } else {
-                        transcript.push_str(
-                            "\n\n## Vision\n\nNo visual details were returned by the vision model.",
-                        );
-                    }
-                }
-                None => {
-                    transcript.push_str(
-                        "\n\n## Vision\n\nVision unavailable: configure an active AI provider.",
-                    );
-                }
-            }
-        }
-        checkpoint!("vision_analyzing", 68, "视觉理解阶段完成");
-    }
-    profile.stages.push(t_vision.finish());
-    checkpoint!("indexing", 69, "准备写入 transcript");
-    if let Err(error) = fs::write(&transcript_path, &transcript) {
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "failed",
-            "failed",
-            100,
-            "写入 transcript 失败",
-            Some(error.to_string()),
-            None,
-            None,
-        );
-        return;
-    }
-
-    let t_gen = StageTimer::new("generating_notes");
-    checkpoint!("generating_notes", 70, "准备生成 Markdown 笔记");
-    update_job(
-        &jobs,
-        &jobs_state_path,
-        &app_handle,
-        &data_dir,
-        id,
-        "running",
-        "generating_notes",
-        70,
-        "生成 Markdown 笔记",
-        None,
-        None,
-        Some(transcript_path.to_string_lossy().to_string()),
-    );
-
-    let transcript_text = transcript;
-    let transcript_preview = transcript_text.chars().take(6000).collect::<String>();
-    let image_context = if ocr_config.enabled || vision_enabled {
-        let frame_dir = workspace_dir.join(format!("{file_stem}-{id}-frames"));
-        if let Some(asset_dir) =
-            copy_frame_assets(&frame_dir, &output_dir, &format!("{file_stem}-{id}"))
-        {
-            // Frames have been copied to the output directory; remove the
-            // workspace copy to reclaim disk space (can be 30+ MB per job).
-            let _ = fs::remove_dir_all(&frame_dir);
-            markdown_image_context(
-                &note_path,
-                &asset_dir,
-                &transcript_text,
-                max_frames as usize,
-            )
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-    checkpoint!("generating_notes", 72, "准备调用文本模型");
-    let timeline_context = if segments.is_empty() {
-        None
-    } else {
-        let mut lines = Vec::new();
-        for seg in &segments {
-            lines.push(format!(
-                "- [{:.0}s–{:.0}s] {}",
-                seg.start_sec, seg.end_sec, seg.text
-            ));
-            if let Some(ocr) = &seg.ocr_text {
-                if !ocr.trim().is_empty() {
-                    lines.push(format!(
-                        "  OCR: {}",
-                        ocr.trim().chars().take(200).collect::<String>()
-                    ));
-                }
-            }
-            if let Some(vision) = &seg.vision_summary {
-                if !vision.trim().is_empty() {
-                    lines.push(format!(
-                        "  Vision: {}",
-                        vision.trim().chars().take(200).collect::<String>()
-                    ));
-                }
-            }
-            for fp in &seg.frame_paths {
-                if let Some(name) = fp.file_name().and_then(|v| v.to_str()) {
-                    lines.push(format!("  Frame: {}", name));
-                }
-            }
-        }
-        Some(lines.join("\n"))
-    };
-    let generated_note = provider
-        .as_ref()
-        .and_then(|profile| {
-            synthesize_note_with_provider(
-                profile,
-                &base_title,
-                &input_path,
-                &transcript_text,
-                &image_context,
-                timeline_context.as_deref().unwrap_or(""),
-            )
-            .ok()
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "# {base_title}\n\n- Source: `{}`\n- Engine: Rust native\n- Created: {}\n\n## Summary\n\nNative note generation is handled by the Rust engine. Configure an active OpenAI-compatible provider to synthesize structured notes; this fallback note includes the native transcript output.\n\n## Transcript\n\n{}\n\nFull transcript: `{}`.\n",
-                input_path.display(),
-                Utc::now().to_rfc3339(),
-                transcript_preview,
-                transcript_path.display()
-            )
-        });
-    checkpoint!("generating_notes", 88, "文本模型调用完成");
-    checkpoint!("generating_notes", 90, "Markdown 笔记生成完成");
-    let note = if generated_note.trim_start().starts_with('#') {
-        generated_note
-    } else {
-        format!(
-            "# {base_title}\n\n- Source: `{}`\n- Engine: Rust native\n- Created: {}\n\n{}",
-            input_path.display(),
-            Utc::now().to_rfc3339(),
-            generated_note
-        )
-    };
-    profile.stages.push(t_gen.finish());
-    checkpoint!("indexing", 95, "准备写入笔记");
-    let note = decode_markdown_image_paths(&note);
-    if let Err(error) = fs::write(&note_path, note) {
-        update_job(
-            &jobs,
-            &jobs_state_path,
-            &app_handle,
-            &data_dir,
-            id,
-            "failed",
-            "failed",
-            100,
-            "写入笔记失败",
-            Some(error.to_string()),
-            None,
-            Some(transcript_path.to_string_lossy().to_string()),
-        );
-        return;
-    }
-    checkpoint!("completed", 99, "准备完成任务");
-
-    // Set note_id for cross-navigation
-    update_job_note_id(&jobs, &jobs_state_path, id, note_id(&note_path));
-
-    update_job(
-        &jobs,
-        &jobs_state_path,
-        &app_handle,
-        &data_dir,
-        id,
-        "completed",
-        "completed",
-        100,
-        "native markdown 产物已生成",
-        None,
-        Some(note_path.to_string_lossy().to_string()),
-        Some(transcript_path.to_string_lossy().to_string()),
-    );
-}
-
-fn update_job(
-    jobs: &Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: &Path,
-    app_handle: &Option<AppHandle>,
-    data_dir: &Path,
-    id: u64,
-    status: &str,
-    stage: &str,
-    progress: u8,
-    message: &str,
-    error_message: Option<String>,
-    output_path: Option<String>,
-    transcript_path: Option<String>,
-) {
-    let mut event = None;
-    let mut workspace_to_cleanup: Option<PathBuf> = None;
-    if let Ok(mut locked) = jobs.lock() {
-        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
-            let mut next_status = status.to_string();
-            let mut next_stage = stage.to_string();
-            let mut next_message = message.to_string();
-            let mut next_error = error_message;
-            if status == "failed" && matches!(job.status.as_str(), "cancelling" | "cancelled") {
-                next_status = "cancelled".to_string();
-                next_stage = "cancelled".to_string();
-                next_message = "任务已取消".to_string();
-                next_error = None;
-            }
-            if status == "running"
-                && matches!(
-                    job.status.as_str(),
-                    "pausing" | "paused" | "cancelling" | "cancelled"
-                )
-            {
-                return;
-            }
-            job.status = next_status.clone();
-            job.stage = next_stage.clone();
-            job.progress = progress;
-            job.progress_message = next_message.clone();
-            job.can_resume = next_status == "paused";
-            if is_terminal_status(&next_status) {
-                job.completed_at = Some(Utc::now().to_rfc3339());
-                if normalize_artifact_cleanup_policy(&job.artifact_cleanup_policy)
-                    == "delete_workspace"
-                {
-                    workspace_to_cleanup = job.workspace_dir.clone().map(PathBuf::from);
-                }
-            }
-            if let Some(error) = next_error {
-                job.error_message = Some(error);
-            }
-            if let Some(path) = output_path {
-                job.output_path = Some(path);
-            }
-            if let Some(path) = transcript_path {
-                job.transcript_path = Some(path);
-            }
-            event = Some(job_progress_event(
-                job,
-                id,
-                &next_status,
-                &next_stage,
-                progress,
-                &next_message,
-            ));
-            let _ = save_jobs(jobs_state_path, &locked);
-        }
-    }
-    if let Some(workspace_dir) = workspace_to_cleanup {
-        let workspace_path = PathBuf::from(&workspace_dir);
-        if !workspace_path.as_os_str().is_empty() && workspace_path.parent().is_some() {
-            if let Some(name) = workspace_path.file_name().and_then(|v| v.to_str()) {
-                if name.starts_with("job-") {
-                    if let Ok(canonical) = workspace_path.canonicalize() {
-                        let allowed_roots = [data_dir.join("jobs"), data_dir.join(".jobs")];
-                        for root in allowed_roots {
-                            if let Ok(root) = root.canonicalize() {
-                                if canonical.parent() == Some(root.as_path()) {
-                                    let _ = fs::remove_dir_all(&canonical);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if let (Some(handle), Some(payload)) = (app_handle, event) {
-        let _ = handle.emit("job:progress", payload);
-    }
-}
-
-fn update_job_workspace(
-    jobs: &Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: &Path,
-    id: u64,
-    workspace_dir: String,
-) {
-    if let Ok(mut locked) = jobs.lock() {
-        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
-            job.workspace_dir = Some(workspace_dir);
-            let _ = save_jobs(jobs_state_path, &locked);
-        }
-    }
-}
-
 fn job_progress_event(
     job: &NativeJob,
     id: u64,
@@ -4156,135 +2966,6 @@ fn job_progress_event(
         "message": message,
         "timestamp": Utc::now().to_rfc3339(),
     })
-}
-
-fn checkpoint_job_control(
-    jobs: &Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: &Path,
-    app_handle: &Option<AppHandle>,
-    data_dir: &Path,
-    id: u64,
-    control: &Arc<JobControl>,
-    stage: &str,
-    progress: u8,
-    message: &str,
-) -> bool {
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        update_job(
-            jobs,
-            jobs_state_path,
-            app_handle,
-            data_dir,
-            id,
-            "cancelled",
-            "cancelled",
-            progress,
-            "任务已取消",
-            None,
-            None,
-            None,
-        );
-        return false;
-    }
-
-    if control.pause_requested.load(Ordering::SeqCst) {
-        update_job(
-            jobs,
-            jobs_state_path,
-            app_handle,
-            data_dir,
-            id,
-            "paused",
-            stage,
-            progress,
-            "已在阶段边界暂停",
-            None,
-            None,
-            None,
-        );
-        let mut guard = match control.lock.lock() {
-            Ok(guard) => guard,
-            Err(_) => return false,
-        };
-        while control.pause_requested.load(Ordering::SeqCst)
-            && !control.cancel_requested.load(Ordering::SeqCst)
-        {
-            guard = match control.condvar.wait(guard) {
-                Ok(guard) => guard,
-                Err(_) => return false,
-            };
-        }
-        drop(guard);
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            update_job(
-                jobs,
-                jobs_state_path,
-                app_handle,
-                data_dir,
-                id,
-                "cancelled",
-                "cancelled",
-                progress,
-                "任务已取消",
-                None,
-                None,
-                None,
-            );
-            return false;
-        }
-        update_job(
-            jobs,
-            jobs_state_path,
-            app_handle,
-            data_dir,
-            id,
-            "running",
-            stage,
-            progress,
-            message,
-            None,
-            None,
-            None,
-        );
-    }
-    true
-}
-
-fn update_job_frames(
-    jobs: &Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: &Path,
-    app_handle: &Option<AppHandle>,
-    id: u64,
-    frames_count: u32,
-) {
-    let mut event = None;
-    if let Ok(mut locked) = jobs.lock() {
-        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
-            if matches!(job.status.as_str(), "cancelling" | "cancelled") {
-                return;
-            }
-            job.frames_count = frames_count;
-            event = Some(job.to_value());
-            let _ = save_jobs(jobs_state_path, &locked);
-        }
-    }
-    if let (Some(handle), Some(payload)) = (app_handle, event) {
-        let _ = handle.emit("job:progress", payload);
-    }
-}
-
-fn update_job_note_id(
-    jobs: &Arc<Mutex<Vec<NativeJob>>>,
-    jobs_state_path: &Path,
-    id: u64,
-    note_id: u32,
-) {
-    if let Ok(mut locked) = jobs.lock() {
-        if let Some(job) = locked.iter_mut().find(|job| job.id == id) {
-            job.note_id = Some(note_id);
-            let _ = save_jobs(jobs_state_path, &locked);
-        }
-    }
 }
 
 fn local_app_data_dir(app_handle: &AppHandle) -> PathBuf {
@@ -4564,101 +3245,6 @@ fn capability_cache_provider_name(settings: &Map<String, Value>, params: &Value)
     }
 }
 
-fn provider_profile_for_job(
-    settings: &Map<String, Value>,
-    params: &Value,
-) -> Result<NativeProviderProfile, String> {
-    let provider_name = string_param(params, "provider_name")
-        .or_else(|| string_param(params, "active_provider"))
-        .or_else(|| string_value(settings, "active_provider"));
-    if let Some(name) = provider_name {
-        if let Some(profile) = find_provider(settings, &name) {
-            return provider_from_saved_value(profile, params);
-        }
-    }
-    provider_profile_for_request(settings, params)
-}
-
-fn build_job_settings_snapshot(
-    input: &str,
-    title: Option<&str>,
-    output_dir: &Path,
-    whisper_model: &str,
-    whisper_device: &str,
-    whisper_language: &str,
-    provider_name: &str,
-    provider: Option<&NativeProviderProfile>,
-    ocr_config: &OcrRuntimeConfig,
-    vision_enabled: bool,
-    frame_interval: f64,
-    max_frames: u32,
-    frame_mode: &str,
-    raw_params: &Value,
-) -> Value {
-    let mut task_params = Map::new();
-    task_params.insert("input".to_string(), json!(input));
-    task_params.insert("title".to_string(), json!(title));
-    task_params.insert(
-        "output_dir".to_string(),
-        json!(output_dir.to_string_lossy().to_string()),
-    );
-    task_params.insert("whisper_model".to_string(), json!(whisper_model));
-    task_params.insert("whisper_device".to_string(), json!(whisper_device));
-    task_params.insert("whisper_language".to_string(), json!(whisper_language));
-    task_params.insert("provider_name".to_string(), json!(provider_name));
-    if let Some(provider) = provider {
-        if provider_name.trim().is_empty() {
-            task_params.insert(
-                "base_url".to_string(),
-                json!(sanitize_snapshot_endpoint(&provider.base_url)),
-            );
-        }
-        task_params.insert("model".to_string(), json!(provider.model));
-        task_params.insert("vision_model".to_string(), json!(provider.vision_model));
-    }
-    task_params.insert("ocr_enabled".to_string(), json!(ocr_config.enabled));
-    task_params.insert("ocr_backend".to_string(), json!(ocr_config.backend));
-    task_params.insert(
-        "ocr_http_endpoint".to_string(),
-        json!(sanitize_snapshot_endpoint(&ocr_config.endpoint)),
-    );
-    task_params.insert("ocr_model".to_string(), json!(ocr_config.model));
-    task_params.insert("vision_enabled".to_string(), json!(vision_enabled));
-    task_params.insert("frame_interval".to_string(), json!(frame_interval));
-    task_params.insert("max_frames".to_string(), json!(max_frames));
-    task_params.insert("frame_mode".to_string(), json!(frame_mode));
-    if let Some(value) = raw_params.get("template") {
-        task_params.insert("template".to_string(), value.clone());
-    }
-    json!({
-        "version": 1,
-        "created_at": Utc::now().to_rfc3339(),
-        "task_params": task_params,
-        "settings": {
-            "whisper_model": whisper_model,
-            "whisper_device": whisper_device,
-            "ocr_enabled": ocr_config.enabled,
-            "ocr_backend": ocr_config.backend,
-            "ocr_http_endpoint": sanitize_snapshot_endpoint(&ocr_config.endpoint),
-            "ocr_model": ocr_config.model,
-            "vision_enabled": vision_enabled,
-            "frame_interval": frame_interval,
-            "max_frames": max_frames,
-            "frame_mode": frame_mode,
-            "active_provider": provider_name,
-            "provider": provider.map(|profile| {
-                let mut value = Map::new();
-                if provider_name.trim().is_empty() {
-                    value.insert("base_url".to_string(), json!(sanitize_snapshot_endpoint(&profile.base_url)));
-                }
-                value.insert("model".to_string(), json!(profile.model));
-                value.insert("vision_model".to_string(), json!(profile.vision_model));
-                Value::Object(value)
-            }),
-        }
-    })
-}
-
 pub(crate) fn active_provider_profile(settings: &Map<String, Value>) -> Result<NativeProviderProfile, String> {
     let active = string_value(settings, "active_provider").ok_or_else(|| {
         "No active provider configured. Set an AI provider in Settings.".to_string()
@@ -4789,156 +3375,6 @@ fn fetch_provider_models(profile: &NativeProviderProfile) -> Result<Vec<String>,
     } else {
         Ok(models)
     }
-}
-
-fn analyze_segment_vision(
-    profile: &NativeProviderProfile,
-    start_sec: f64,
-    end_sec: f64,
-    transcript_snippet: &str,
-    frames: &[&PathBuf],
-) -> Result<String, String> {
-    let model = if profile.vision_model.trim().is_empty() {
-        &profile.model
-    } else {
-        &profile.vision_model
-    };
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let url = format!(
-        "{}/chat/completions",
-        profile.base_url.trim_end_matches('/')
-    );
-    let mut content = vec![json!({
-        "type": "text",
-        "text": format!(
-            "请分析这段视频 [{:.0}s–{:.0}s] 中的关键帧，提取对学习笔记有帮助的视觉信息。\n该片段转写：{}\n要求：用中文输出，重点说明画面中的 UI、图表、步骤、参数、节点、对象关系；不要泛泛描述。",
-            start_sec, end_sec,
-            transcript_snippet.chars().take(500).collect::<String>()
-        )
-    })];
-    for frame in frames.iter().take(2) {
-        let bytes = fs::read(frame).map_err(|error| error.to_string())?;
-        let image = general_purpose::STANDARD.encode(bytes);
-        content.push(json!({
-            "type": "image_url",
-            "image_url": {
-                "url": format!("data:image/png;base64,{image}")
-            }
-        }));
-    }
-    if content.len() == 1 {
-        return Err("no frames available for segment vision".to_string());
-    }
-    let response = with_optional_bearer(client.post(url), &profile.api_key)
-        .json(&json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": format!("You are a visual analysis assistant for video learning notes. Focus on what happens in the time range [{:.0}s–{:.0}s]. Return concise Chinese Markdown only.", start_sec, end_sec)
-                },
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
-            "temperature": 0.1
-        }))
-        .send()
-        .map_err(|error| error.to_string())?;
-    let status = response.status();
-    let payload: Value = response.json().map_err(|error| error.to_string())?;
-    if !status.is_success() {
-        return Err(format!(
-            "vision segment chat completion returned {status}: {payload}"
-        ));
-    }
-    payload
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| {
-            message.get("content")
-                .or_else(|| message.get("reasoning"))
-        })
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|content| !content.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "vision segment returned no content".to_string())
-}
-
-fn synthesize_note_with_provider(
-    profile: &NativeProviderProfile,
-    title: &str,
-    source: &Path,
-    transcript: &str,
-    image_context: &str,
-    timeline_context: &str,
-) -> Result<String, String> {
-    let clipped = transcript.chars().take(24_000).collect::<String>();
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let url = format!(
-        "{}/chat/completions",
-        profile.base_url.trim_end_matches('/')
-    );
-    let timeline_section = if timeline_context.trim().is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\n时间线分段（含时间戳、转写片段、OCR、视觉信息）：\n{}\n",
-            timeline_context
-        )
-    };
-    let response = with_optional_bearer(client.post(url), &profile.api_key)
-        .json(&json!({
-            "model": profile.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You generate precise Chinese Markdown study notes for learning from video transcripts, OCR, and vision context. Return Markdown only. Preserve concrete teaching value: operations, parameters, node names, file paths, visual evidence, warnings, assignments, and practice tasks. Avoid filler, generic summaries, and full transcript repetition. If image assets are provided, insert only clearly relevant Markdown image links next to the related concepts, steps, or examples. If no image is clearly relevant, do not insert an image. Do not place images in a final gallery. Use only the provided relative image paths. When timeline context is provided, organize notes chronologically by time segments."
-                },
-                {
-                    "role": "user",
-                    "content": format!(
-                        "标题：{}\n来源：{}\n\n请生成结构化学习笔记，优先服务复习和实操。\n\n必须保留：\n- 教学目标/作业要求\n- 关键概念、节点/工具/文件路径/参数\n- 按时间顺序的操作步骤和视觉变化\n- 易错点、注意事项、实践建议\n- 支撑结论的少量关键转写/OCR/Vision 依据\n\n避免：\n- 泛泛总结、空洞评价和套话\n- 完整复述 transcript\n- 重复 OCR 或 Vision 描述\n- 没有学习价值的段落\n\n建议结构：\n# 标题\n## 本节目标\n## 操作步骤\n## 关键概念与参数\n## 视觉/截图依据\n## 易错点\n## 作业/练习\n## 关键依据\n\n图片素材：\n{}\n{}要求：\n- 只有图片与当前段落内容明确相关时，才在对应段落附近插入图片；没有相关图片就不插。\n- 图片语法必须使用素材中给出的 Markdown，例如 ![frame-001](xxx/frame-001.png)。\n- 不要把图片集中放在文末，也不要编造图片路径。\n- “关键依据”只列出支撑笔记结论的关键转写/OCR/Vision 片段，不要把它写成完整原文转录。\n\n转写：\n{}",
-                        title,
-                        source.display(),
-                        if image_context.trim().is_empty() { "无" } else { image_context },
-                        timeline_section,
-                        clipped
-                    )
-                }
-            ],
-            "temperature": 0.2
-        }))
-        .send()
-        .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("chat completion returned {}", response.status()));
-    }
-    let payload: Value = response.json().map_err(|error| error.to_string())?;
-    payload
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| {
-            message.get("content")
-                .or_else(|| message.get("reasoning"))
-        })
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|content| !content.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "chat completion returned no content".to_string())
 }
 
 fn find_provider<'a>(raw: &'a Map<String, Value>, name: &str) -> Option<&'a Map<String, Value>> {
@@ -5140,112 +3576,6 @@ fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
-#[derive(Clone, Copy)]
-enum ControlledOutputMode {
-    Piped,
-    Null,
-}
-
-const CANCELLATION_ERROR_PREFIX: &str = "__VIDEO_NOTES_CANCELLED__";
-
-fn cancellation_error(label: &str) -> String {
-    format!("{CANCELLATION_ERROR_PREFIX}: {label}")
-}
-
-fn is_cancellation_error(error: &str) -> bool {
-    error.starts_with(CANCELLATION_ERROR_PREFIX)
-}
-
-fn read_pipe_thread<R: Read + Send + 'static>(mut reader: R) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = reader.read_to_end(&mut bytes);
-        bytes
-    })
-}
-
-fn run_controlled_command(
-    mut command: Command,
-    control: &Arc<JobControl>,
-    label: &str,
-    stdout_mode: ControlledOutputMode,
-    stderr_mode: ControlledOutputMode,
-) -> Result<Output, String> {
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        return Err(cancellation_error(label));
-    }
-    match stdout_mode {
-        ControlledOutputMode::Piped => {
-            command.stdout(Stdio::piped());
-        }
-        ControlledOutputMode::Null => {
-            command.stdout(Stdio::null());
-        }
-    }
-    match stderr_mode {
-        ControlledOutputMode::Piped => {
-            command.stderr(Stdio::piped());
-        }
-        ControlledOutputMode::Null => {
-            command.stderr(Stdio::null());
-        }
-    }
-
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to run {label}: {error}"))?;
-    if let Ok(mut current_child) = control.current_child.lock() {
-        *current_child = Some(child.id());
-    }
-    let stdout_reader = child.stdout.take().map(read_pipe_thread);
-    let stderr_reader = child.stderr.take().map(read_pipe_thread);
-
-    let status = loop {
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            kill_process_tree_or_child(&mut child);
-            let _ = child.wait();
-            let stdout = stdout_reader
-                .map(|reader| reader.join().unwrap_or_default())
-                .unwrap_or_default();
-            let stderr = stderr_reader
-                .map(|reader| reader.join().unwrap_or_default())
-                .unwrap_or_default();
-            let _ = (stdout, stderr);
-            if let Ok(mut current_child) = control.current_child.lock() {
-                *current_child = None;
-            }
-            return Err(cancellation_error(label));
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => std::thread::sleep(Duration::from_millis(75)),
-            Err(error) => {
-                kill_process_tree_or_child(&mut child);
-                let _ = child.wait();
-                if let Ok(mut current_child) = control.current_child.lock() {
-                    *current_child = None;
-                }
-                return Err(format!("failed to wait for {label}: {error}"));
-            }
-        }
-    };
-
-    let stdout = stdout_reader
-        .map(|reader| reader.join().unwrap_or_default())
-        .unwrap_or_default();
-    let stderr = stderr_reader
-        .map(|reader| reader.join().unwrap_or_default())
-        .unwrap_or_default();
-    if let Ok(mut current_child) = control.current_child.lock() {
-        *current_child = None;
-    }
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
 #[cfg(target_os = "windows")]
 fn kill_process_pid(pid: u32) -> bool {
     let pid_str = pid.to_string();
@@ -5268,31 +3598,6 @@ fn kill_process_pid(pid: u32) -> bool {
     false
 }
 
-fn kill_process_tree_or_child(child: &mut std::process::Child) {
-    if child.try_wait().ok().flatten().is_some() {
-        return;
-    }
-    #[cfg(target_os = "windows")]
-    if kill_process_pid(child.id()) {
-        return;
-    }
-    let _ = child.kill();
-}
-
-fn run_controlled_command_piped(
-    command: Command,
-    control: &Arc<JobControl>,
-    label: &str,
-) -> Result<Output, String> {
-    run_controlled_command(
-        command,
-        control,
-        label,
-        ControlledOutputMode::Piped,
-        ControlledOutputMode::Piped,
-    )
-}
-
 fn executable_name(name: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{name}.exe")
@@ -5305,8 +3610,6 @@ fn component_runtime_version(component: &str, component_path: &Path) -> Option<S
     let (exe, args): (&str, &[&str]) = match component {
         "download-tools" => ("yt-dlp", &["--version"]),
         "ffmpeg-tools" => ("ffmpeg", &["-version"]),
-        "whisper-cpp-tools" | "whisper-cpp-cuda-tools" => ("whisper-cli", &["--version"]),
-        "tesseract-ocr-tools" => ("tesseract", &["--version"]),
         _ => return None,
     };
     let path = component_path.join(executable_name(exe));
@@ -5389,1426 +3692,6 @@ fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Opt
     })
 }
 
-/// Find yt-dlp on the system PATH (pip, choco, scoop, manual install).
-/// Prefer this over the bundled PyInstaller exe which frequently fails
-/// with PYI-21004 due to Python DLL loading issues on Windows.
-fn resolve_system_ytdlp() -> Option<PathBuf> {
-    let exe = executable_name("yt-dlp");
-    let candidate = PathBuf::from(&exe);
-    // Verify it actually runs (not just that the file exists).
-    if hidden_command(&candidate)
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-    {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-fn whisper_model_dirs(settings: &Map<String, Value>, data_dir: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(model_dir) =
-        string_value(settings, "whisper_model_dir").or_else(|| string_value(settings, "model_dir"))
-    {
-        if !model_dir.trim().is_empty() {
-            dirs.push(PathBuf::from(model_dir));
-        }
-    }
-    dirs.push(data_dir.join("models"));
-    dirs
-}
-
-fn resolve_whisper_model(model_dirs: &[PathBuf], model_id: &str) -> Option<PathBuf> {
-    let candidates = [
-        model_id.to_string(),
-        format!("{model_id}.bin"),
-        format!("{model_id}.gguf"),
-        format!("ggml-{model_id}.bin"),
-        format!("ggml-{model_id}.gguf"),
-    ];
-    for dir in model_dirs {
-        for candidate in candidates.iter() {
-            let path = dir.join(candidate);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-fn whisper_components_for_device(device: &str) -> Vec<&'static str> {
-    match device {
-        "cuda" => vec!["whisper-cpp-cuda-tools"],
-        "cpu" => vec!["whisper-cpp-tools"],
-        _ => vec!["whisper-cpp-cuda-tools", "whisper-cpp-tools"],
-    }
-}
-
-fn transcribe_with_whisper_cpp(
-    input_path: &Path,
-    output_dir: &Path,
-    file_stem: &str,
-    id: u64,
-    runtime_dir: &Path,
-    model_dirs: &[PathBuf],
-    whisper_model: &str,
-    whisper_device: &str,
-    whisper_language: &str,
-    control: &Arc<JobControl>,
-) -> Result<(String, Option<String>), String> {
-    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
-        "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
-    })?;
-    let whisper_components = whisper_components_for_device(whisper_device);
-    let whisper = resolve_tool_path("whisper-cli", &whisper_components, runtime_dir)
-        .or_else(|| resolve_tool_path("main", &whisper_components, runtime_dir))
-        .ok_or_else(|| {
-            if whisper_device == "cuda" {
-                "whisper.cpp CUDA executable not found; install whisper-cpp-cuda-tools".to_string()
-            } else {
-                "whisper.cpp executable not found; install whisper-cpp-tools".to_string()
-            }
-        })?;
-    let model = resolve_whisper_model(model_dirs, whisper_model).ok_or_else(|| {
-        format!("Whisper model '{whisper_model}' not found; configure whisper_model_dir")
-    })?;
-
-    let audio_path = output_dir.join(format!("{file_stem}-{id}.wav"));
-    let mut ffmpeg_command = hidden_command(&ffmpeg);
-    ffmpeg_command.args([
-        "-y",
-        "-i",
-        &input_path.to_string_lossy(),
-        "-vn",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        "-c:a",
-        "pcm_s16le",
-        &audio_path.to_string_lossy(),
-    ]);
-    let ffmpeg_output = run_controlled_command_piped(ffmpeg_command, control, "ffmpeg")?;
-    if !ffmpeg_output.status.success() {
-        return Err(format!(
-            "ffmpeg failed: {}",
-            String::from_utf8_lossy(&ffmpeg_output.stderr).trim()
-        ));
-    }
-
-    let out_prefix = output_dir.join(format!("{file_stem}-{id}-whisper"));
-    let mut whisper_command = hidden_command(&whisper);
-    whisper_command.args([
-        "-m",
-        &model.to_string_lossy(),
-        "-f",
-        &audio_path.to_string_lossy(),
-        "-otxt",
-        "-oj",
-        "-of",
-        &out_prefix.to_string_lossy(),
-    ]);
-    if !whisper_language.is_empty() {
-        whisper_command.args(["-l", whisper_language]);
-    }
-    let whisper_output = run_controlled_command_piped(whisper_command, control, "whisper.cpp")?;
-    let _ = fs::remove_file(&audio_path);
-    if !whisper_output.status.success() {
-        return Err(format!(
-            "whisper.cpp failed: {}",
-            String::from_utf8_lossy(&whisper_output.stderr).trim()
-        ));
-    }
-
-    let txt_path = out_prefix.with_extension("txt");
-    // Check output existence before reading — whisper-cli exits(0) even on
-    // unknown arguments, so a missing output file is the real error signal.
-    if !txt_path.exists() {
-        let stderr = String::from_utf8_lossy(&whisper_output.stderr).trim().to_string();
-        return Err(format!(
-            "whisper.cpp did not produce transcript output.\nstderr: {stderr}"
-        ));
-    }
-    let raw_text = fs::read_to_string(&txt_path)
-        .map(|text| text.trim().to_string())
-        .map_err(|error| format!("whisper.cpp transcript read error: {error}"))?;
-    // Post-process: collapse consecutive repeated lines that indicate
-    // whisper.cpp hallucination loops (the model can repeat a single
-    // phrase thousands of times when language detection fails or audio
-    // has long silent sections).
-    let text = collapse_repeated_lines(&raw_text);
-    let json_str = fs::read_to_string(out_prefix.with_extension("json")).ok();
-    Ok((text, json_str))
-}
-
-/// Collapse consecutive identical lines in a transcript.
-///
-/// whisper.cpp can fall into a hallucination loop where the same phrase is
-/// repeated hundreds or thousands of times. This function detects runs of
-/// identical consecutive non-empty lines and collapses them to at most 2
-/// occurrences. Empty lines are preserved as-is.
-fn collapse_repeated_lines(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return text.to_string();
-    }
-    let mut result: Vec<String> = Vec::with_capacity(lines.len());
-    let mut i = 0;
-    while i < lines.len() {
-        let current = lines[i].trim();
-        // Never collapse empty/whitespace-only lines — they are legitimate
-        // paragraph separators in the transcript.
-        if current.is_empty() {
-            result.push(lines[i].to_string());
-            i += 1;
-            continue;
-        }
-        // Count how many consecutive lines match (ignoring whitespace).
-        let mut count = 1;
-        while i + count < lines.len() && lines[i + count].trim() == current {
-            count += 1;
-        }
-        if count <= 2 {
-            // Keep up to 2 consecutive identical lines (legitimate repetition).
-            for _ in 0..count {
-                result.push(lines[i].to_string());
-            }
-        } else {
-            // Hallucination loop: keep only the first occurrence, drop the rest.
-            result.push(lines[i].to_string());
-        }
-        i += count;
-    }
-    result.join("\n")
-}
-
-fn download_with_ytdlp(
-    url: &str,
-    output_dir: &Path,
-    id: u64,
-    runtime_dir: &Path,
-    control: &Arc<JobControl>,
-) -> Result<PathBuf, String> {
-    // Prefer system-installed yt-dlp (pip, choco, scoop) over the bundled
-    // PyInstaller version.  The bundled exe is a PyInstaller archive that
-    // requires Python DLLs at runtime and frequently fails with PYI-21004
-    // on Windows.  System-installed yt-dlp (pip install yt-dlp) runs
-    // directly through Python and avoids this issue entirely.
-    let ytdlp = resolve_system_ytdlp()
-        .or_else(|| resolve_tool_path("yt-dlp", &["download-tools"], runtime_dir))
-        .ok_or_else(|| {
-            "yt-dlp not found. Install via: pip install yt-dlp, or install the download-tools plugin in Settings → 插件".to_string()
-        })?;
-    let download_dir = output_dir.join(format!("download-{id}"));
-    fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
-    let template = download_dir.join("%(title).180s.%(ext)s");
-    let mut command = hidden_command(&ytdlp);
-    command.args(["--no-playlist", "-o", &template.to_string_lossy()]);
-    // Read bilibili_cookie_file from AppData settings and pass --cookies if set.
-    if let Ok(settings_dir) = std::env::var("APPDATA") {
-        let settings_path = Path::new(&settings_dir).join("Video Notes AI").join("settings.json");
-        if let Ok(text) = fs::read_to_string(&settings_path) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
-                let cookie = string_value(cfg.as_object().unwrap_or(&Default::default()), "bilibili_cookie_file");
-                if let Some(ref cookie_path) = cookie {
-                    if Path::new(cookie_path).is_file() {
-                        command.arg("--cookies").arg(cookie_path);
-                    }
-                }
-            }
-        }
-    }
-    command.arg(url);
-    let output = run_controlled_command_piped(command, control, "yt-dlp")?;
-    if !output.status.success() {
-        return Err(format!(
-            "yt-dlp failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    newest_file(&download_dir).ok_or_else(|| {
-        format!(
-            "yt-dlp completed but no media file was found in {}",
-            download_dir.display()
-        )
-    })
-}
-
-fn extract_ocr_with_tesseract(
-    input_path: &Path,
-    output_dir: &Path,
-    file_stem: &str,
-    id: u64,
-    runtime_dir: &Path,
-    frame_interval: f64,
-    max_frames: u32,
-    frame_mode: &str,
-    control: &Arc<JobControl>,
-) -> Result<OcrExtraction, String> {
-    let tesseract = resolve_tool_path("tesseract", &["tesseract-ocr-tools"], runtime_dir)
-        .ok_or_else(|| "tesseract not found; install tesseract-ocr-tools".to_string())?;
-    // Check for Chinese tessdata to enable chi_sim+eng OCR.
-    // Use find_tessdata_dir for thorough detection (sibling dir + TESSDATA_PREFIX).
-    let tessdata_dir = tesseract
-        .parent()
-        .and_then(find_tessdata_dir)
-        .or_else(|| tesseract.parent().map(|p| p.join("tessdata")))
-        .unwrap_or_else(|| PathBuf::from("tessdata"));
-    let mut output = String::new();
-    let frame_result = extract_sample_frames(
-        input_path,
-        output_dir,
-        file_stem,
-        id,
-        runtime_dir,
-        frame_interval,
-        max_frames,
-        frame_mode,
-        control,
-    )?;
-    for frame in &frame_result.frames {
-        let mut command = hidden_command(&tesseract);
-        command.arg(&frame).arg("stdout");
-        // Auto-detect language: use chi_sim+eng if chi_sim tessdata is available,
-        // otherwise fall back to eng (tesseract default).
-        if tessdata_dir.join("chi_sim.traineddata").is_file() {
-            command.arg("-l").arg("chi_sim+eng");
-        }
-        // Catch and log execution errors per frame instead of failing the whole batch.
-        match run_controlled_command_piped(command, control, "tesseract") {
-            Ok(result) => {
-                if result.status.success() {
-                    let text = String::from_utf8(result.stdout)
-                        .unwrap_or_else(|error| {
-                            String::from_utf8_lossy(&error.into_bytes()).into_owned()
-                        })
-                        .trim()
-                        .to_string();
-                    if !text.is_empty() {
-                        output.push_str(&format!(
-                            "### {}\n\n{}\n\n",
-                            frame
-                                .file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("frame"),
-                            text
-                        ));
-                    }
-                } else {
-                    eprintln!("[ocr] tesseract failed on {}: {}", frame.display(),
-                        String::from_utf8_lossy(&result.stderr).trim());
-                }
-            }
-            Err(e) => {
-                eprintln!("[ocr] tesseract execution error on {}: {}", frame.display(), e);
-            }
-        }
-    }
-    Ok(OcrExtraction {
-        text: output,
-        frame_sampling: Some(FrameSamplingMetrics::from(&frame_result)),
-    })
-}
-
-fn extract_ocr_with_http(
-    input_path: &Path,
-    output_dir: &Path,
-    file_stem: &str,
-    id: u64,
-    runtime_dir: &Path,
-    config: &OcrRuntimeConfig,
-    frame_interval: f64,
-    max_frames: u32,
-    frame_mode: &str,
-    control: &Arc<JobControl>,
-) -> Result<OcrExtraction, String> {
-    let endpoint = config.endpoint.trim();
-    if endpoint.is_empty() {
-        return Err(
-            "OCR HTTP endpoint is empty. Set PaddleOCR / Custom OCR endpoint in Settings."
-                .to_string(),
-        );
-    }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut output = String::new();
-    let endpoint = if config.backend == "paddleocr_http" {
-        normalise_paddleocr_jobs_endpoint(endpoint)
-    } else {
-        endpoint.to_string()
-    };
-    let frame_result = extract_sample_frames(
-        input_path,
-        output_dir,
-        file_stem,
-        id,
-        runtime_dir,
-        frame_interval,
-        max_frames,
-        frame_mode,
-        control,
-    )?;
-    for frame in &frame_result.frames {
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            return Err(cancellation_error("OCR HTTP"));
-        }
-        let text = if config.backend == "paddleocr_http" {
-            ocr_frame_with_paddleocr(
-                &client,
-                &frame,
-                &endpoint,
-                &config.api_key,
-                &config.model,
-                control,
-            )?
-        } else {
-            ocr_frame_with_http(&client, &frame, &endpoint, &config.api_key, &config.model)?
-        };
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            return Err(cancellation_error("OCR HTTP"));
-        }
-        if !text.trim().is_empty() {
-            output.push_str(&format!(
-                "### {}\n\n{}\n\n",
-                frame
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("frame"),
-                text.trim()
-            ));
-        }
-    }
-    Ok(OcrExtraction {
-        text: output,
-        frame_sampling: Some(FrameSamplingMetrics::from(&frame_result)),
-    })
-}
-
-fn get_video_duration(
-    input_path: &Path,
-    runtime_dir: &Path,
-    control: &Arc<JobControl>,
-) -> Result<Option<f64>, String> {
-    let ffprobe = resolve_tool_path("ffprobe", &["ffmpeg-tools"], runtime_dir)
-        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))
-        .ok_or_else(|| "ffprobe not found for duration probe".to_string())?;
-    let mut command = hidden_command(&ffprobe);
-    command.args([
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "csv=p=0",
-        &input_path.to_string_lossy(),
-    ]);
-    let output = run_controlled_command_piped(command, control, "ffprobe duration")?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.trim().parse::<f64>().ok())
-}
-
-fn get_video_fps(
-    input_path: &Path,
-    runtime_dir: &Path,
-    control: &Arc<JobControl>,
-) -> Result<Option<f64>, String> {
-    let ffprobe = resolve_tool_path("ffprobe", &["ffmpeg-tools"], runtime_dir)
-        .or_else(|| resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir))
-        .ok_or_else(|| "ffprobe not found for fps probe".to_string())?;
-    let mut command = hidden_command(&ffprobe);
-    command.args([
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=r_frame_rate",
-        "-of",
-        "csv=p=0",
-        &input_path.to_string_lossy(),
-    ]);
-    let output = run_controlled_command_piped(command, control, "ffprobe fps")?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Ok(None);
-    }
-    // ffprobe returns rational like "30000/1001" or "25/1"
-    if let Some(slash) = stdout.find('/') {
-        let num: f64 = match stdout[..slash].parse() {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        let den: f64 = match stdout[slash + 1..].parse() {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        if den > 0.0 {
-            Ok(Some(num / den))
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(stdout.parse::<f64>().ok())
-    }
-}
-
-fn detect_scene_timestamps(
-    input_path: &Path,
-    runtime_dir: &Path,
-    threshold: f64,
-    control: &Arc<JobControl>,
-) -> Result<Vec<f64>, String> {
-    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir)
-        .ok_or_else(|| "ffmpeg not found for scene detection".to_string())?;
-    let threshold_str = format!("select='gt(scene,{threshold})',showinfo");
-    let mut command = hidden_command(&ffmpeg);
-    command.args([
-        "-i",
-        &input_path.to_string_lossy(),
-        "-vf",
-        &threshold_str,
-        "-vsync",
-        "vfr",
-        "-f",
-        "null",
-        "-",
-    ]);
-    let output = run_controlled_command(
-        command,
-        control,
-        "ffmpeg scene detection",
-        ControlledOutputMode::Null,
-        ControlledOutputMode::Piped,
-    )?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        // Check if it failed because there's no video stream (audio-only)
-        if stderr.contains("Stream map") && stderr.contains("No matching streams") {
-            return Ok(Vec::new());
-        }
-        return Err(format!("ffmpeg scene detection failed: {}", stderr.trim()));
-    }
-    let mut timestamps = Vec::new();
-    for line in stderr.lines() {
-        if let Some(pos) = line.find("pts_time:") {
-            let rest = &line[pos + 9..];
-            let end = rest
-                .find(|c: char| !c.is_ascii_digit() && c != '.')
-                .unwrap_or(rest.len());
-            if end > 0 {
-                if let Ok(ts) = rest[..end].parse::<f64>() {
-                    timestamps.push(ts);
-                }
-            }
-        }
-    }
-    timestamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    timestamps.dedup();
-    Ok(timestamps)
-}
-
-fn dedup_frames(
-    frames: Vec<PathBuf>,
-    timestamps: Vec<f64>,
-    similarity_threshold: f64,
-) -> (Vec<PathBuf>, Vec<f64>, u32, Vec<String>) {
-    if frames.is_empty() || frames.len() < 2 {
-        let kept = frames.len() as u32;
-        return (frames, timestamps, kept, Vec::new());
-    }
-    let mut keep_indices: Vec<usize> = Vec::new();
-    let mut discard_reasons: Vec<String> = Vec::new();
-
-    // Always keep first frame
-    keep_indices.push(0);
-    let mut prev_img = match image::open(&frames[0]) {
-        Ok(img) => img
-            .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
-            .to_rgba8(),
-        Err(_) => {
-            // If we can't read a frame, keep it
-            let kept = frames.len() as u32;
-            return (
-                frames,
-                timestamps,
-                kept,
-                vec!["dedup skipped: could not read frames".to_string()],
-            );
-        }
-    };
-
-    for i in 1..frames.len() {
-        let curr_img = match image::open(&frames[i]) {
-            Ok(img) => img
-                .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
-                .to_rgba8(),
-            Err(_) => {
-                keep_indices.push(i);
-                continue;
-            }
-        };
-
-        // Compute pixel difference ratio (simple MSE approach)
-        let total_pixels = (64 * 64 * 4) as f64;
-        let mut diff_sum = 0.0f64;
-        for y in 0..64 {
-            for x in 0..64 {
-                let p1 = prev_img.get_pixel(x, y);
-                let p2 = curr_img.get_pixel(x, y);
-                let dr = (p1[0] as f64 - p2[0] as f64).abs();
-                let dg = (p1[1] as f64 - p2[1] as f64).abs();
-                let db = (p1[2] as f64 - p2[2] as f64).abs();
-                let da = (p1[3] as f64 - p2[3] as f64).abs();
-                diff_sum += (dr + dg + db + da) / 4.0;
-            }
-        }
-        let diff_ratio = diff_sum / (255.0 * total_pixels);
-
-        // similarity_threshold: e.g. 0.95 means 95% similar → discard
-        let similarity = 1.0 - diff_ratio;
-        if similarity < similarity_threshold {
-            // Different enough, keep it
-            keep_indices.push(i);
-            prev_img = curr_img;
-        } else {
-            discard_reasons.push(format!(
-                "frame {} (t={:.1}s): {:.1}% similar to previous",
-                frames[i]
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("?"),
-                timestamps[i],
-                similarity * 100.0
-            ));
-        }
-    }
-
-    // Ensure last frame is kept (if not already)
-    let last = frames.len() - 1;
-    if keep_indices.last() != Some(&last) {
-        keep_indices.push(last);
-        // Remove the discard reason if we had previously discarded it
-        if keep_indices.len() > 1 {
-            // Keep last frame regardless
-        }
-    }
-
-    let kept_count = keep_indices.len() as u32;
-    let filtered_frames: Vec<PathBuf> = keep_indices.iter().map(|&i| frames[i].clone()).collect();
-    let filtered_timestamps: Vec<f64> = keep_indices.iter().map(|&i| timestamps[i]).collect();
-
-    (
-        filtered_frames,
-        filtered_timestamps,
-        kept_count,
-        discard_reasons,
-    )
-}
-
-/// RAII guard that removes a directory tree on drop unless dismissed.
-/// Used to clean up temporary frame files when frame extraction fails or is cancelled.
-struct FrameDirCleanup {
-    path: Option<PathBuf>,
-}
-
-impl FrameDirCleanup {
-    fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
-    }
-    fn dismiss(&mut self) {
-        self.path.take();
-    }
-}
-
-impl Drop for FrameDirCleanup {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = fs::remove_dir_all(&path);
-        }
-    }
-}
-
-fn extract_sample_frames(
-    input_path: &Path,
-    output_dir: &Path,
-    file_stem: &str,
-    id: u64,
-    runtime_dir: &Path,
-    frame_interval: f64,
-    max_frames: u32,
-    frame_mode: &str,
-    control: &Arc<JobControl>,
-) -> Result<FrameSampleResult, String> {
-    // Safety caps: prevent OOM from absurdly large values and disk flood
-    const MAX_FRAMES_CAP: u32 = 10_000;
-    let max_frames = max_frames.min(MAX_FRAMES_CAP);
-    let frame_interval = frame_interval.max(0.1);
-    let ffmpeg = resolve_tool_path("ffmpeg", &["ffmpeg-tools"], runtime_dir).ok_or_else(|| {
-        "ffmpeg not found; install ffmpeg-tools or add FFmpeg to PATH".to_string()
-    })?;
-    let frame_dir = output_dir.join(format!("{file_stem}-{id}-frames"));
-    fs::create_dir_all(&frame_dir).map_err(|error| error.to_string())?;
-    let mut _frames_guard = FrameDirCleanup::new(frame_dir.clone());
-    let pattern = frame_dir.join("frame-%03d.png");
-
-    let (interval, duration) = if frame_mode == "adaptive" {
-        let dur = get_video_duration(input_path, runtime_dir, control)?.unwrap_or(0.0);
-        if dur <= 0.0 {
-            (frame_interval, 0.0)
-        } else {
-            let computed = (dur / max_frames as f64).max(10.0);
-            (computed, dur)
-        }
-    } else {
-        (frame_interval, 0.0)
-    };
-
-    if frame_mode == "adaptive" && duration > 0.0 {
-        // Adaptive mode: scene detection + dedup pipeline
-        // Step 1: Generate evenly-spaced timestamps (ms)
-        let max_frames = max_frames.max(2);
-        let mut timestamps_ms: Vec<u64> = (0..max_frames)
-            .map(|i| ((i as f64 * duration) / max_frames as f64).round() as u64)
-            .collect();
-
-        // Step 2: Add scene change timestamps from source video (threshold 0.4)
-        match detect_scene_timestamps(input_path, runtime_dir, 0.4, control) {
-            Ok(scene_ts) => {
-                for ts in &scene_ts {
-                    timestamps_ms.push((ts * 1000.0).round() as u64);
-                }
-            }
-            Err(error) => {
-                if is_cancellation_error(&error) {
-                    return Err(error);
-                }
-            }
-        }
-
-        // Step 3: Sort, deduplicate, cap at max_frames
-        timestamps_ms.sort();
-        timestamps_ms.dedup();
-        let _candidate_count = timestamps_ms.len() as u32;
-        let final_ts_ms: Vec<u64> = if timestamps_ms.len() > max_frames as usize {
-            let n = max_frames as usize;
-            let step = (timestamps_ms.len() - 1) as f64 / (n - 1) as f64;
-            (0..n)
-                .map(|i| {
-                    let idx = (i as f64 * step).round() as usize;
-                    timestamps_ms[idx.min(timestamps_ms.len() - 1)]
-                })
-                .collect()
-        } else {
-            timestamps_ms
-        };
-
-        // Step 4: Compute frame numbers for ffmpeg select expression
-        let fps = get_video_fps(input_path, runtime_dir, control)?.unwrap_or(30.0);
-        let select_terms: Vec<String> = final_ts_ms
-            .iter()
-            .map(|ts_ms| format!("eq(n,{})", ((*ts_ms as f64 / 1000.0) * fps).round()))
-            .collect();
-        let select_expr = select_terms.join("+");
-
-        // Step 5: Single ffmpeg call with select filter
-        let mut command = hidden_command(&ffmpeg);
-        command.args([
-            "-y",
-            "-i",
-            &input_path.to_string_lossy(),
-            "-vf",
-            &format!("select='{}'", select_expr),
-            "-vsync",
-            "vfr",
-            &pattern.to_string_lossy(),
-        ]);
-        let ffmpeg_output =
-            run_controlled_command_piped(command, control, "ffmpeg adaptive frames")?;
-        if !ffmpeg_output.status.success() {
-            if control.cancel_requested.load(Ordering::SeqCst) {
-                return Err(cancellation_error("ffmpeg adaptive frames"));
-            }
-            // Fallback: try simple rate-limited extraction
-            let fps_str = format!("fps=1/{}", interval);
-            let frames_str = max_frames.to_string();
-            let mut fallback_command = hidden_command(&ffmpeg);
-            fallback_command.args([
-                "-y",
-                "-i",
-                &input_path.to_string_lossy(),
-                "-vf",
-                &fps_str,
-                "-frames:v",
-                &frames_str,
-                &pattern.to_string_lossy(),
-            ]);
-            let fallback =
-                run_controlled_command_piped(fallback_command, control, "ffmpeg frames")?;
-            if !fallback.status.success() {
-                return Err(format!(
-                    "ffmpeg frame extraction failed: {}",
-                    String::from_utf8_lossy(&fallback.stderr).trim()
-                ));
-            }
-        }
-
-        // Step 6: Collect extracted frames
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            return Err(cancellation_error("collecting frames"));
-        }
-        let mut frames: Vec<PathBuf> = fs::read_dir(&frame_dir)
-            .map_err(|error| error.to_string())?
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
-            .collect();
-        frames.sort();
-        let extracted_count = frames.len();
-
-        // Map extracted frames to their timestamps (in output order)
-        let extracted_ts: Vec<f64> = (0..extracted_count)
-            .map(|i| {
-                if i < final_ts_ms.len() {
-                    final_ts_ms[i] as f64 / 1000.0
-                } else {
-                    interval * i as f64
-                }
-            })
-            .collect();
-        let candidate_count_final = extracted_count as u32;
-
-        // Step 7: Dedup near-duplicate frames (95% similarity threshold)
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            return Err(cancellation_error("dedup frames"));
-        }
-        if frames.len() >= 2 {
-            let (deduped_frames, deduped_ts, kept_count, _discard) =
-                dedup_frames(frames, extracted_ts, 0.95);
-            _frames_guard.dismiss();
-            return Ok(FrameSampleResult {
-                frames: deduped_frames,
-                timestamps_sec: deduped_ts,
-                duration_sec: duration,
-                interval_sec: interval,
-                kept_count,
-                candidate_count: candidate_count_final,
-            });
-        }
-
-        _frames_guard.dismiss();
-        return Ok(FrameSampleResult {
-            frames,
-            timestamps_sec: extracted_ts,
-            duration_sec: duration,
-            interval_sec: interval,
-            kept_count: candidate_count_final,
-            candidate_count: candidate_count_final,
-        });
-    }
-
-    // Fixed mode: rate-limited frame extraction
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        return Err(cancellation_error("ffmpeg frames"));
-    }
-    let fps_str = format!("fps=1/{}", interval);
-    let frames_str = max_frames.to_string();
-    let mut command = hidden_command(&ffmpeg);
-    command.args([
-        "-y",
-        "-i",
-        &input_path.to_string_lossy(),
-        "-vf",
-        &fps_str,
-        "-frames:v",
-        &frames_str,
-        &pattern.to_string_lossy(),
-    ]);
-    let ffmpeg_output = run_controlled_command_piped(command, control, "ffmpeg frames")?;
-    if !ffmpeg_output.status.success() {
-        return Err(format!(
-            "ffmpeg frame extraction failed: {}",
-            String::from_utf8_lossy(&ffmpeg_output.stderr).trim()
-        ));
-    }
-    let mut frames: Vec<PathBuf> = fs::read_dir(&frame_dir)
-        .map_err(|error| error.to_string())?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
-        .collect();
-    frames.sort();
-    let kept = frames.len() as u32;
-    let timestamps_sec: Vec<f64> = frames
-        .iter()
-        .filter_map(|fp| {
-            let idx = frame_index_from_path(fp)?;
-            Some(idx as f64 * interval)
-        })
-        .collect();
-    _frames_guard.dismiss();
-    Ok(FrameSampleResult {
-        frames,
-        timestamps_sec,
-        duration_sec: duration,
-        interval_sec: interval,
-        kept_count: kept,
-        candidate_count: kept,
-    })
-}
-
-fn collect_frame_files(frame_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut frames = fs::read_dir(frame_dir)
-        .map_err(|error| error.to_string())?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp"
-                    )
-                })
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    frames.sort();
-    Ok(frames)
-}
-
-fn copy_frame_assets(frame_dir: &Path, output_dir: &Path, asset_stem: &str) -> Option<PathBuf> {
-    let frames = collect_frame_files(frame_dir).ok()?;
-    if frames.is_empty() {
-        return None;
-    }
-    let asset_dir = output_dir.join("assets").join(asset_stem);
-    fs::create_dir_all(&asset_dir).ok()?;
-    for frame in frames {
-        let Some(file_name) = frame.file_name() else {
-            continue;
-        };
-        let _ = fs::copy(&frame, asset_dir.join(file_name));
-    }
-    Some(asset_dir)
-}
-
-fn parse_whisper_segments(json_str: &str) -> Vec<TimelineSegment> {
-    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
-        Ok(value) => value,
-        Err(_) => return Vec::new(),
-    };
-    // Support two whisper.cpp JSON output formats:
-    // 1. "segments": [{"start": 0.0, "end": 5.2, "text": "..."}]
-    // 2. "transcription": [{"offsets": {"from": 260, "to": 4060}, "text": "..."}]
-    let raw_segments = parsed["segments"]
-        .as_array()
-        .or_else(|| parsed["transcription"].as_array())
-        .map(|segments| segments.clone())
-        .unwrap_or_default();
-    raw_segments
-        .iter()
-        .filter_map(|seg| {
-            let (start_ms, end_ms) =
-                if let (Some(s), Some(e)) = (seg["start"].as_f64(), seg["end"].as_f64()) {
-                    // Format 1: start/end in seconds
-                    (s * 1000.0, e * 1000.0)
-                } else if let (Some(from), Some(to)) = (
-                    seg["offsets"]["from"].as_f64(),
-                    seg["offsets"]["to"].as_f64(),
-                ) {
-                    // Format 2: offsets.from/offsets.to in milliseconds
-                    (from, to)
-                } else {
-                    return None;
-                };
-            let text = seg["text"].as_str()?.trim().to_string();
-            if text.is_empty() {
-                return None;
-            }
-            Some(TimelineSegment {
-                start_sec: start_ms / 1000.0,
-                end_sec: end_ms / 1000.0,
-                text,
-                ocr_text: None,
-                vision_summary: None,
-                frame_paths: Vec::new(),
-            })
-        })
-        .collect()
-}
-
-/// Merge consecutive TimelineSegments that have identical text into one,
-/// keeping the start time of the first and extending end time to the last.
-/// This suppresses whisper.cpp hallucination loops where the model repeats
-/// a single phrase across many short segments (e.g. "秦岚养老院" × 84).
-fn collapse_repeated_segments(segments: Vec<TimelineSegment>) -> Vec<TimelineSegment> {
-    let mut result: Vec<TimelineSegment> = Vec::with_capacity(segments.len());
-    for seg in segments {
-        if let Some(last) = result.last_mut() {
-            if last.text == seg.text {
-                // Extend the end time of the existing segment
-                last.end_sec = seg.end_sec;
-                // Merge frame_paths from the duplicate segment,
-                // skipping paths already present in the first occurrence.
-                let existing = &mut last.frame_paths;
-                for fp in seg.frame_paths {
-                    if !existing.contains(&fp) {
-                        existing.push(fp);
-                    }
-                }
-                continue;
-            }
-        }
-        result.push(seg);
-    }
-    result
-}
-
-fn frame_index_from_path(path: &Path) -> Option<usize> {
-    let stem = path.file_stem()?.to_str()?;
-    stem.strip_prefix("frame-")?.parse::<usize>().ok()
-}
-
-fn merge_frames_into_timeline(
-    segments: &mut [TimelineSegment],
-    frame_ocrs: &HashMap<String, String>,
-    frame_paths: &[PathBuf],
-    timestamps_sec: &[f64],
-) {
-    for (frame_path, ts) in frame_paths.iter().zip(timestamps_sec.iter()) {
-        let file_name = frame_path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("")
-            .to_string();
-        let ocr_text = frame_ocrs.get(&file_name).cloned();
-
-        // Find nearest segment by timestamp
-        let mut best: Option<usize> = None;
-        for (i, seg) in segments.iter().enumerate() {
-            if *ts >= seg.start_sec && *ts < seg.end_sec {
-                best = Some(i);
-                break;
-            }
-        }
-        // Fallback: find segment with closest start
-        let best = best.unwrap_or_else(|| {
-            let mut closest = 0usize;
-            let mut min_dist = f64::MAX;
-            for (i, seg) in segments.iter().enumerate() {
-                let dist = (*ts - seg.start_sec).abs();
-                if dist < min_dist {
-                    min_dist = dist;
-                    closest = i;
-                }
-            }
-            closest
-        });
-
-        let seg = &mut segments[best];
-        seg.frame_paths.push(frame_path.clone());
-        if let Some(text) = ocr_text {
-            seg.ocr_text = Some(text);
-        }
-    }
-}
-
-fn markdown_image_context(
-    note_path: &Path,
-    frame_dir: &Path,
-    transcript: &str,
-    limit: usize,
-) -> String {
-    let mut frames = fs::read_dir(frame_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|value| value.to_str())
-                .map(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp"
-                    )
-                })
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    frames.sort();
-    if frames.is_empty() {
-        return String::new();
-    }
-
-    let note_dir = note_path.parent().unwrap_or_else(|| Path::new("."));
-    let ocr_by_frame = ocr_text_by_frame(transcript);
-    let mut context = String::new();
-    for frame in frames.into_iter().take(limit) {
-        let rel = frame.strip_prefix(note_dir).unwrap_or(&frame);
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        let label = frame
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("frame");
-        let file_name = frame
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or(label);
-        let ocr = ocr_by_frame
-            .get(file_name)
-            .map(|value| value.chars().take(260).collect::<String>())
-            .unwrap_or_default();
-        context.push_str(&format!(
-            "- {}: ![{}]({})\n  OCR: {}\n",
-            file_name,
-            label,
-            rel,
-            if ocr.trim().is_empty() {
-                "无可用文字"
-            } else {
-                ocr.trim()
-            }
-        ));
-    }
-    context
-}
-
-fn decode_markdown_image_paths(text: &str) -> String {
-    // URL-decode paths in markdown image references.
-    // AI models sometimes URL-encode spaces (%20) and other characters.
-    // Obsidian resolves relative `assets/...` paths from the note's directory.
-    let mut result = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            let mut j = i + 2;
-            let mut paren_open = None;
-            while j + 1 < bytes.len() {
-                if bytes[j] == b']' && bytes[j + 1] == b'(' {
-                    paren_open = Some(j + 2);
-                    break;
-                }
-                j += 1;
-            }
-            if let Some(start) = paren_open {
-                let mut depth: i32 = 1;
-                let mut end = start;
-                while end < bytes.len() && depth > 0 {
-                    if bytes[end] == b'(' {
-                        depth += 1;
-                    } else if bytes[end] == b')' {
-                        depth -= 1;
-                    }
-                    end += 1;
-                }
-                if depth > 0 {
-                    // Unmatched '(' — not a valid image reference.
-                    // Treat '!' as a regular character and continue.
-                    let len = utf8_len_from_leading_byte(bytes[i]);
-                    let next = (i + len).min(bytes.len());
-                    result.push_str(&text[i..next]);
-                    i = next;
-                    continue;
-                }
-                result.push_str(&text[i..start]);
-                let raw_path = &text[start..end - 1];
-                let decoded = decode_percent(raw_path);
-                // Keep relative assets/ paths as-is (Obsidian resolves
-                // these relative to the note's directory on disk).
-                // Only URL-decode to handle AI models that encode %20 etc.
-                // Wrap in angle brackets to handle spaces and special chars
-                // in paths (e.g. "03. Prepare..." gets truncated at the period
-                // by some markdown parsers). If AI already wrapped them,
-                // preserve the existing angle brackets.
-                let stripped = decoded.trim_start_matches('<').trim_end_matches('>');
-                if stripped.starts_with("assets/") || stripped.starts_with("./assets/") {
-                    result.push_str(&format!("<{}>", stripped));
-                } else {
-                    result.push_str(&decoded);
-                }
-                i = end - 1;
-            } else {
-                // Not a valid image reference — copy the original UTF-8 character.
-                // Avoid `bytes[i] as char` which treats each byte as Latin-1,
-                // causing double-encoding (mojibake) for multi-byte characters.
-                let len = utf8_len_from_leading_byte(bytes[i]);
-                let end = (i + len).min(bytes.len());
-                result.push_str(&text[i..end]);
-                i = end;
-            }
-        } else {
-            // Regular character — copy preserving UTF-8 encoding.
-            let len = utf8_len_from_leading_byte(bytes[i]);
-            let end = (i + len).min(bytes.len());
-            result.push_str(&text[i..end]);
-            i = end;
-        }
-    }
-    result
-}
-
-/// Returns the number of bytes in the UTF-8 character whose leading byte is `b`.
-fn utf8_len_from_leading_byte(b: u8) -> usize {
-    match b {
-        0x00..=0x7F => 1,
-        0xC0..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF7 => 4,
-        // Continuation bytes (0x80-0xBF) or invalid leading bytes
-        // should never appear at the start of a valid UTF-8 sequence,
-        // but fall back to 1 to avoid infinite loops.
-        _ => 1,
-    }
-}
-
-fn decode_percent(s: &str) -> String {
-    // Decode percent-encoded sequences (e.g. %20 -> space, %E4%B8%AD -> 中)
-    // while preserving literal UTF-8 bytes. Collect raw bytes first, then
-    // interpret as UTF-8 — this avoids the `bytes[i] as char` pattern that
-    // treats each byte as Latin-1 and causes mojibake for non-ASCII text.
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && bytes[i + 1].is_ascii_hexdigit()
-            && bytes[i + 2].is_ascii_hexdigit()
-        {
-            let hi = (bytes[i + 1] as char).to_digit(16).unwrap_or(0);
-            let lo = (bytes[i + 2] as char).to_digit(16).unwrap_or(0);
-            out.push((hi * 16 + lo) as u8);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
-}
-
-fn ocr_text_by_frame(transcript: &str) -> HashMap<String, String> {
-    let mut by_frame = HashMap::new();
-    let mut current: Option<String> = None;
-    let mut buffer = String::new();
-    for line in transcript.lines() {
-        if let Some(name) = line.trim().strip_prefix("### ") {
-            if let Some(frame) = current.take() {
-                by_frame.insert(frame, buffer.trim().to_string());
-                buffer.clear();
-            }
-            current = Some(name.trim().to_string());
-        } else if current.is_some() {
-            buffer.push_str(line);
-            buffer.push('\n');
-        }
-    }
-    if let Some(frame) = current {
-        by_frame.insert(frame, buffer.trim().to_string());
-    }
-    by_frame
-}
-
-fn ocr_frame_with_paddleocr(
-    client: &reqwest::blocking::Client,
-    frame: &Path,
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-    control: &Arc<JobControl>,
-) -> Result<String, String> {
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        return Err(cancellation_error("PaddleOCR"));
-    }
-    if api_key.trim().is_empty() {
-        return Err("PaddleOCR API Key is empty".to_string());
-    }
-    let bytes = fs::read(frame).map_err(|error| error.to_string())?;
-    let filename = frame
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("frame.png");
-    let job_id = submit_paddleocr_job(client, endpoint, api_key, model, bytes, filename)?;
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        return Err(cancellation_error("PaddleOCR"));
-    }
-    let json_url = poll_paddleocr_job(client, endpoint, api_key, &job_id, control)?;
-    if control.cancel_requested.load(Ordering::SeqCst) {
-        return Err(cancellation_error("PaddleOCR"));
-    }
-    fetch_paddleocr_jsonl_text(client, &json_url)
-}
-
-fn normalise_paddleocr_jobs_endpoint(endpoint: &str) -> String {
-    let trimmed = endpoint.trim().trim_end_matches('/');
-    if let Some(index) = trimmed.find(PADDLEOCR_JOBS_PATH) {
-        return trimmed[..index + PADDLEOCR_JOBS_PATH.len()].to_string();
-    }
-    if trimmed.contains("paddleocr.aistudio-app.com") {
-        return "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs".to_string();
-    }
-    format!("{trimmed}{PADDLEOCR_JOBS_PATH}")
-}
-
-fn submit_paddleocr_job(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-    bytes: Vec<u8>,
-    filename: &str,
-) -> Result<String, String> {
-    let model = if model.trim().is_empty() {
-        PADDLEOCR_DEFAULT_MODEL
-    } else {
-        model.trim()
-    };
-    let optional_payload = json!({
-        "useDocOrientationClassify": false,
-        "useDocUnwarping": false,
-        "useChartRecognition": false,
-    });
-    let file_part =
-        reqwest::blocking::multipart::Part::bytes(bytes).file_name(filename.to_string());
-    let form = reqwest::blocking::multipart::Form::new()
-        .text("model", model.to_string())
-        .text("optionalPayload", optional_payload.to_string())
-        .part("file", file_part);
-    let response = client
-        .post(endpoint)
-        .bearer_auth(bearer_token(api_key))
-        .multipart(form)
-        .send()
-        .map_err(|error| format!("PaddleOCR job submit failed: {error}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|error| format!("PaddleOCR job response read failed: {error}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "PaddleOCR job submit failed: HTTP {status}: {text}"
-        ));
-    }
-    let value = serde_json::from_str::<Value>(&text)
-        .map_err(|error| format!("PaddleOCR job response is not JSON: {error}; body: {text}"))?;
-    value
-        .get("data")
-        .and_then(|data| data.get("jobId"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| format!("PaddleOCR job response missing data.jobId: {value}"))
-}
-
-fn poll_paddleocr_job(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    api_key: &str,
-    job_id: &str,
-    control: &Arc<JobControl>,
-) -> Result<String, String> {
-    let job_url = format!("{}/{}", endpoint.trim_end_matches('/'), job_id);
-    for _ in 0..60 {
-        if control.cancel_requested.load(Ordering::SeqCst) {
-            return Err(cancellation_error("PaddleOCR poll"));
-        }
-        let response = client
-            .get(&job_url)
-            .bearer_auth(bearer_token(api_key))
-            .send()
-            .map_err(|error| format!("PaddleOCR job poll failed: {error}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|error| format!("PaddleOCR job poll response read failed: {error}"))?;
-        if !status.is_success() {
-            return Err(format!("PaddleOCR job poll failed: HTTP {status}: {text}"));
-        }
-        let value = serde_json::from_str::<Value>(&text).map_err(|error| {
-            format!("PaddleOCR job poll response is not JSON: {error}; body: {text}")
-        })?;
-        let data = value
-            .get("data")
-            .ok_or_else(|| format!("PaddleOCR job poll response missing data: {value}"))?;
-        let state = data.get("state").and_then(Value::as_str).unwrap_or("");
-        match state {
-            "done" => {
-                return data
-                    .get("resultUrl")
-                    .and_then(|result_url| result_url.get("jsonUrl"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| format!("PaddleOCR job done but jsonUrl is missing: {value}"));
-            }
-            "failed" => {
-                let error = data
-                    .get("errorMsg")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
-                return Err(format!("PaddleOCR job failed: {error}"));
-            }
-            "pending" | "running" | "" => {
-                if control.cancel_requested.load(Ordering::SeqCst) {
-                    return Err(cancellation_error("PaddleOCR poll"));
-                }
-                std::thread::sleep(Duration::from_secs(5));
-                if control.cancel_requested.load(Ordering::SeqCst) {
-                    return Err(cancellation_error("PaddleOCR poll"));
-                }
-            }
-            other => return Err(format!("PaddleOCR job returned unknown state: {other}")),
-        }
-    }
-    Err("PaddleOCR job timed out after 300 seconds".to_string())
-}
-
-fn fetch_paddleocr_jsonl_text(
-    client: &reqwest::blocking::Client,
-    json_url: &str,
-) -> Result<String, String> {
-    // Validate URL scheme to prevent SSRF — only allow HTTPS.
-    if !json_url.starts_with("https://") {
-        return Err(format!(
-            "PaddleOCR result URL must be HTTPS, got: {json_url}"
-        ));
-    }
-    let response = client
-        .get(json_url)
-        .send()
-        .map_err(|error| format!("PaddleOCR result download failed: {error}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|error| format!("PaddleOCR result read failed: {error}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "PaddleOCR result download failed: HTTP {status}: {text}"
-        ));
-    }
-    let mut output = Vec::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let value = serde_json::from_str::<Value>(line)
-            .map_err(|error| format!("PaddleOCR jsonl line is invalid JSON: {error}"))?;
-        output.extend(extract_text_from_ocr_json(&value));
-    }
-    output.dedup();
-    Ok(output.join("\n"))
-}
 
 #[allow(dead_code)]
 fn simple_pdf_bytes(text: &str) -> Vec<u8> {
@@ -6848,122 +3731,6 @@ fn escape_pdf_text(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('(', "\\(")
         .replace(')', "\\)")
-}
-
-fn ocr_frame_with_http(
-    client: &reqwest::blocking::Client,
-    frame: &Path,
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-) -> Result<String, String> {
-    let bytes = fs::read(frame).map_err(|error| error.to_string())?;
-    let image = general_purpose::STANDARD.encode(bytes);
-    let filename = frame
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("frame.png");
-    let value = ocr_http_json_with_image(client, endpoint, api_key, &image, filename, model)?;
-    let text = extract_text_from_ocr_json(&value).join("\n");
-    Ok(text)
-}
-
-fn ocr_http_json_with_image(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    api_key: &str,
-    image_base64: &str,
-    filename: &str,
-    model: &str,
-) -> Result<Value, String> {
-    let mut body = json!({
-        "image": image_base64,
-        "filename": filename,
-    });
-    if !model.trim().is_empty() {
-        body["model"] = json!(model.trim());
-    }
-    let mut request = client.post(endpoint).json(&body);
-    if !api_key.trim().is_empty() {
-        request = request.bearer_auth(bearer_token(api_key));
-    }
-    let response = request
-        .send()
-        .map_err(|error| format!("OCR HTTP request failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "OCR HTTP request failed: HTTP {}",
-            response.status()
-        ));
-    }
-    response
-        .json::<Value>()
-        .map_err(|error| format!("OCR HTTP response is not JSON: {error}"))
-}
-
-fn extract_text_from_ocr_json(value: &Value) -> Vec<String> {
-    let mut result = Vec::new();
-    collect_ocr_text(value, None, &mut result);
-    result.dedup();
-    result
-}
-
-fn collect_ocr_text(value: &Value, key: Option<&str>, result: &mut Vec<String>) {
-    collect_ocr_text_depth(value, key, result, 0);
-}
-
-fn collect_ocr_text_depth(value: &Value, key: Option<&str>, result: &mut Vec<String>, depth: usize) {
-    // Prevent stack overflow from deeply nested JSON.
-    if depth > 20 {
-        return;
-    }
-    match value {
-        Value::String(text) => {
-            let key = key.unwrap_or("");
-            if matches!(
-                key,
-                "text"
-                    | "ocr_text"
-                    | "rec_text"
-                    | "rec_texts"
-                    | "recognized_text"
-                    | "transcription"
-                    | "label"
-                    | "word"
-                    | "words"
-            ) && !text.trim().is_empty()
-            {
-                result.push(text.trim().to_string());
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_ocr_text_depth(item, key, result, depth + 1);
-            }
-        }
-        Value::Object(map) => {
-            for (child_key, child) in map {
-                collect_ocr_text_depth(child, Some(child_key.as_str()), result, depth + 1);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn newest_file(dir: &Path) -> Option<PathBuf> {
-    fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_file() {
-                return None;
-            }
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((path, modified))
-        })
-        .max_by_key(|(_, modified)| *modified)
-        .map(|(path, _)| path)
 }
 
 fn collect_markdown_notes(
@@ -7123,7 +3890,7 @@ fn is_generic_note_heading(title: &str) -> bool {
     )
 }
 
-fn note_id(path: &Path) -> u32 {
+pub(crate) fn note_id(path: &Path) -> u32 {
     let mut hasher = DefaultHasher::new();
     path.to_string_lossy().to_lowercase().hash(&mut hasher);
     let id = (hasher.finish() & 0x7fff_ffff) as u32;
@@ -7888,97 +4655,6 @@ fn install_ffmpeg_tools_from_path(target: &Path) -> Result<(), String> {
     result
 }
 
-fn install_whisper_cpp_tools_from_path(target: &Path) -> Result<(), String> {
-    let whisper = system_executable_path("whisper-cli")
-        .or_else(|| system_executable_path("main"))
-        .ok_or_else(|| {
-            "Missing local package and whisper-cli was not found on PATH. Install whisper.cpp CLI or put a component package in runtime\\packages\\whisper-cpp-tools.".to_string()
-        })?;
-    let source_dir = whisper
-        .parent()
-        .ok_or_else(|| format!("Invalid whisper executable path: {}", whisper.display()))?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temp = parent.join(format!("{}.install", Uuid::new_v4()));
-    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-    let result = (|| -> Result<(), String> {
-        fs::copy(&whisper, temp.join(executable_name("whisper-cli")))
-            .map_err(|error| error.to_string())?;
-        for entry in fs::read_dir(source_dir)
-            .map_err(|error| error.to_string())?
-            .flatten()
-        {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) == Some("dll") {
-                fs::copy(&path, temp.join(entry.file_name())).map_err(|error| error.to_string())?;
-            }
-        }
-        if target.exists() {
-            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
-        }
-        rename_dir_cross_volume(&temp, target)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&temp);
-    }
-    result
-}
-
-fn install_tesseract_tools_from_path(target: &Path) -> Result<(), String> {
-    let tesseract = system_executable_path("tesseract").ok_or_else(|| {
-        "Missing local package and tesseract was not found on PATH. Install Tesseract OCR or put a component package in runtime\\packages\\tesseract-ocr-tools.".to_string()
-    })?;
-    let source_dir = tesseract
-        .parent()
-        .ok_or_else(|| format!("Invalid tesseract executable path: {}", tesseract.display()))?;
-    let tessdata = find_tessdata_dir(source_dir).ok_or_else(|| {
-        "Tesseract was found, but tessdata was not found. Set TESSDATA_PREFIX or put tessdata next to tesseract.exe.".to_string()
-    })?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("Invalid component target: {}", target.display()))?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temp = parent.join(format!("{}.install", Uuid::new_v4()));
-    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-    let result = (|| -> Result<(), String> {
-        fs::copy(&tesseract, temp.join(executable_name("tesseract")))
-            .map_err(|error| error.to_string())?;
-        copy_dir_recursive(&tessdata, &temp.join("tessdata"))?;
-        if target.exists() {
-            fs::remove_dir_all(target).map_err(|error| error.to_string())?;
-        }
-        rename_dir_cross_volume(&temp, target)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&temp);
-    }
-    result
-}
-
-fn find_tessdata_dir(tesseract_dir: &Path) -> Option<PathBuf> {
-    let sibling = tesseract_dir.join("tessdata");
-    if sibling.is_dir() {
-        return Some(sibling);
-    }
-    if let Ok(prefix) = std::env::var("TESSDATA_PREFIX") {
-        let candidate = PathBuf::from(prefix);
-        if candidate.is_dir()
-            && candidate.file_name().and_then(|value| value.to_str()) == Some("tessdata")
-        {
-            return Some(candidate);
-        }
-        let nested = candidate.join("tessdata");
-        if nested.is_dir() {
-            return Some(nested);
-        }
-    }
-    None
-}
-
 fn system_executable_path(name: &str) -> Option<PathBuf> {
     let exe = executable_name(name);
     let output = if cfg!(target_os = "windows") {
@@ -8092,30 +4768,6 @@ fn workspace_is_older_than(path: &Path, min_age: Duration) -> bool {
         .elapsed()
         .map(|age| age >= min_age)
         .unwrap_or(false)
-}
-
-fn count_frame_files(path: &Path) -> u32 {
-    let Ok(entries) = fs::read_dir(path) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp"
-                    )
-                })
-                .unwrap_or(false)
-        })
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX)
 }
 
 fn dir_counts(path: &Path) -> Value {

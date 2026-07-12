@@ -243,7 +243,7 @@
   });
 
   $effect(() => {
-    if (studyMode && selectedNote && (!graphData || graphData.nodes.length === 0)) {
+    if (studyMode && selectedNote && (!graphData || graphData.entities.length === 0)) {
       loadGraph();
     }
   });
@@ -329,7 +329,7 @@
               <h3>知识图谱</h3>
               {#if graphLoading}
                 <div class="study-loading"><span class="loading-ring"></span></div>
-              {:else if graphData && graphData.nodes.length > 0}
+              {:else if graphData && graphData.entities.length > 0}
                 <KnowledgeTree graph={graphData} />
               {:else}
                 <p class="study-empty">点击下方按钮生成知识图谱</p>

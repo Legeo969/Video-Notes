@@ -9,8 +9,23 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::raw::c_ulong;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: c_ulong = 0x08000000;
+
+/// Create a Command that doesn't flash a console window on Windows.
+fn hidden_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
 
 use image::{GrayImage, ImageEncoder};
 
@@ -149,7 +164,7 @@ fn extract_frames(
     let pattern = frame_dir.join("frame-%04d.png");
     let fps_str = format!("fps=1/{interval_sec}");
 
-    let output = Command::new(ffmpeg)
+    let output = hidden_cmd(ffmpeg)
         .args([
             "-y",
             "-i",
@@ -193,7 +208,7 @@ fn extract_audio(input: &Path, ffmpeg: &Path, duration_sec: f64) -> Result<Audio
     let temp_dir = tempfile_dir();
     let audio_path = temp_dir.join("audio.wav");
 
-    let output = Command::new(ffmpeg)
+    let output = hidden_cmd(ffmpeg)
         .args([
             "-y",
             "-i",
@@ -380,7 +395,7 @@ fn filter_frames(
 // ---------------------------------------------------------------------------
 
 fn probe_duration(input: &Path, ffprobe: &Path) -> Result<f64, String> {
-    let output = Command::new(ffprobe)
+    let output = hidden_cmd(ffprobe)
         .args([
             "-v",
             "error",
@@ -424,9 +439,66 @@ fn encode_png(img: &image::DynamicImage) -> Result<Vec<u8>, String> {
 // ---------------------------------------------------------------------------
 
 fn tempfile_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vn-compile-{}", std::process::id()));
+    let temp = resolve_temp_dir();
+    let dir = temp.join(format!("vn-compile-{}", std::process::id()));
     let _ = fs::create_dir_all(&dir);
     dir
+}
+
+/// Resolve the system temp directory, handling unexpanded environment variables on Windows.
+fn resolve_temp_dir() -> PathBuf {
+    let raw = std::env::temp_dir();
+
+    // Case 1: Path is absolute and contains no unexpanded vars — use it directly
+    let path_str = raw.to_string_lossy();
+    if raw.is_absolute() && !path_str.contains('%') {
+        return raw;
+    }
+
+    // Case 2: Path contains unexpanded vars (e.g. `%USERPROFILE%\AppData\Local\Temp`)
+    // or is relative. Reconstruct from USERPROFILE.
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.contains('%') {
+            let fallback = PathBuf::from(profile).join("AppData").join("Local").join("Temp");
+            let _ = std::fs::create_dir_all(&fallback);
+            return fallback;
+        }
+    }
+
+    // Case 3: Last resort — try to expand env vars in the raw path
+    let expanded = expand_windows_env_vars(&path_str);
+    let fallback = PathBuf::from(&expanded);
+    if fallback.is_absolute() {
+        let _ = std::fs::create_dir_all(&fallback);
+        return fallback;
+    }
+
+    // Case 4: Ultimate fallback — use current dir temp
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("temp")
+}
+
+/// Expand common Windows environment variables in a path string.
+fn expand_windows_env_vars(path: &str) -> String {
+    let mut result = path.to_string();
+    // %USERPROFILE%
+    if let Ok(val) = std::env::var("USERPROFILE") {
+        if !val.contains('%') {
+            result = result.replace("%USERPROFILE%", &val);
+        }
+    }
+    // %LOCALAPPDATA%
+    if let Ok(val) = std::env::var("LOCALAPPDATA") {
+        if !val.contains('%') {
+            result = result.replace("%LOCALAPPDATA%", &val);
+        }
+    }
+    // %APPDATA%
+    if let Ok(val) = std::env::var("APPDATA") {
+        if !val.contains('%') {
+            result = result.replace("%APPDATA%", &val);
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------

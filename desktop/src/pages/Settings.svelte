@@ -89,7 +89,7 @@
     { id: "general", label: "通用设置", icon: "settings", hint: "目录与编译" },
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
-    { id: "plugins", label: "插件", icon: "package", hint: "转写 / OCR 可选组件" },
+    { id: "plugins", label: "插件", icon: "package", hint: "ffmpeg / yt-dlp 运行时组件" },
     { id: "storage", label: "存储管理", icon: "database", hint: "缓存、工作区与导出" },
     { id: "diagnostics", label: "系统诊断", icon: "stethoscope", hint: "依赖与运行环境" },
   ];
@@ -138,8 +138,6 @@
   let selectedTemplate = $derived(templates.find((template) => template.id === settings.template));
   let passedChecks = $derived(checkResults.filter((item) => item.status === "pass").length);
   let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
-  let transcriptionComponents = $derived(runtimeComponents.filter((item) => item.component === "whisper-cpp-tools" || item.component === "whisper-cpp-cuda-tools" || (item.provides ?? []).includes("transcription-native")));
-  let ocrComponents = $derived(runtimeComponents.filter((item) => item.component === "tesseract-ocr-tools" || (item.provides ?? []).includes("ocr-native")));
 
   interface ComponentDownloadProgress {
     component: string;
@@ -445,11 +443,6 @@
     return "pending";
   }
 
-  function componentHelpUrl(component: RuntimeComponent) {
-    if (component.component === "tesseract-ocr-tools") return "https://github.com/UB-Mannheim/tesseract/wiki";
-    return "";
-  }
-
   async function openExternalUrl(url: string) {
     try {
       await engineCall("system.open_url", { url });
@@ -649,7 +642,7 @@
         {:else if activeTab === "plugins"}
           <section class="settings-pane">
             <div class="pane-head actions-head">
-              <div><span>PLUGINS</span><h2>插件</h2><p>按需安装转写和 OCR 运行时组件；主程序保持轻量，重依赖放在本机 runtime。</p></div>
+              <div><span>PLUGINS</span><h2>插件</h2><p>按需安装运行时工具组件；主程序保持轻量，重依赖放在本机 runtime。</p></div>
               <div style="display:flex;gap:8px;">
                 <button class="btn btn-secondary" type="button" onclick={checkAllUpdates} disabled={checkingUpdates || componentsLoading}><Icon name="refresh" size={15} />{checkingUpdates ? "检查中..." : "检查更新"}</button>
                 <button class="btn btn-secondary" type="button" onclick={refreshComponents} disabled={componentsLoading}><Icon name="list" size={15} />{componentsLoading ? "刷新中" : "刷新"}</button>
@@ -695,8 +688,6 @@
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else if component.downloadable}
                           <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
-                        {:else if componentHelpUrl(component)}
-                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
                         {/if}
                       </div>
                     </article>
@@ -705,106 +696,6 @@
               {/if}
             </div>
 
-            <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="audio" size={18} /></div><div><h3>转写引擎</h3><p>whisper.cpp CPU / CUDA 组件按需安装；模型文件单独放在模型目录。</p></div></div>
-              {#if componentsLoading && transcriptionComponents.length === 0}
-                <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
-              {:else if transcriptionComponents.length === 0}
-                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到转写插件清单</strong><small>请确认 runtime/manifests/whisper-cpp-tools.json 存在。</small></div></div>
-              {:else}
-                <div class="plugin-grid">
-                  {#each transcriptionComponents as component}
-                    <article class="plugin-card" class:installed={component.installed}>
-                      <div class="plugin-card-head">
-                        <div class="plugin-icon"><Icon name="audio" size={20} /></div>
-                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
-                        <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
-                      </div>
-                      <div class="plugin-meta">
-                        <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
-                        <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
-                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
-                      </div>
-                      {#if downloadProgress[component.component] !== undefined}
-                        <div class="plugin-download-progress">
-                          <div class="progress-bar"><div class="progress-fill" style="width: {downloadProgress[component.component]}%"></div></div>
-                          <span class="progress-label">{downloadProgress[component.component]}%</span>
-                        </div>
-                      {/if}
-                      <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
-                      {#if component.missing_files?.length}
-                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
-                      {/if}
-                      <div class="plugin-actions">
-                        {#if component.installed}
-                          <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.update_available}
-                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
-                          {/if}
-                          <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
-                        {:else if component.downloadable}
-                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
-                        {:else if componentHelpUrl(component)}
-                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
-                        {/if}
-                      </div>
-                    </article>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-
-            <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>OCR 插件</h3><p>PaddleOCR HTTP 不需要安装；仅 Tesseract 本地后端需要。</p></div></div>
-              {#if componentsLoading && ocrComponents.length === 0}
-                <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
-              {:else if ocrComponents.length === 0}
-                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到 OCR 插件清单</strong><small>请确认 runtime/manifests/tesseract-ocr-tools.json 存在。</small></div></div>
-              {:else}
-                <div class="plugin-grid">
-                  {#each ocrComponents as component}
-                    <article class="plugin-card" class:installed={component.installed}>
-                      <div class="plugin-card-head">
-                        <div class="plugin-icon"><Icon name="ocr" size={20} /></div>
-                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
-                        <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
-                      </div>
-                      <div class="plugin-meta">
-                        <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
-                        <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
-                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
-                      </div>
-                      {#if downloadProgress[component.component] !== undefined}
-                        <div class="plugin-download-progress">
-                          <div class="progress-bar"><div class="progress-fill" style="width: {downloadProgress[component.component]}%"></div></div>
-                          <span class="progress-label">{downloadProgress[component.component]}%</span>
-                        </div>
-                      {/if}
-                      <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
-                      {#if component.missing_files?.length}
-                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
-                      {/if}
-                      {#if component.component === "tesseract-ocr-tools" && !component.installed}
-                        <div class="plugin-warning plugin-note"><Icon name="info" size={14} /><span>使用 PaddleOCR HTTP 时可忽略；只有选择 Tesseract 本地后端才需要系统 Tesseract。</span></div>
-                      {/if}
-                      <div class="plugin-actions">
-                        {#if component.installed}
-                          <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.update_available}
-                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
-                          {/if}
-                          <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
-                        {:else if component.downloadable}
-                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
-                        {:else if componentHelpUrl(component)}
-                          <button class="btn btn-secondary" type="button" onclick={() => openExternalUrl(componentHelpUrl(component))}><Icon name="external" size={14} />安装说明</button>
-                        {/if}
-                      </div>
-                    </article>
-                  {/each}
-                </div>
-              {/if}
-            </div>
           </section>
 
         {:else if activeTab === "storage"}
