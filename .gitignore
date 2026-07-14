@@ -85,4 +85,5 @@ docs/
 tasks/
 spec/
 spec-manifest.yaml
+conformance/
 openspec/
