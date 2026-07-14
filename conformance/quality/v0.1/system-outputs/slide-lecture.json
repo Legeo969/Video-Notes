@@ -1,0 +1,39 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "slide-lecture_capsule",
+  "source_hash": "slide-lecture_hash",
+  "source_title": "Slide Lecture - Color-coded Topics",
+  "version": 1,
+  "total_duration": 15.0,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "mimo-v2.5",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "Orange slide covers introductory concepts with warm visual theme",
+      "timestamp_start_sec": 0.0,
+      "timestamp_end_sec": 5.0,
+      "evidence_type": "concept",
+      "speaker": null,
+      "confidence": 0.75
+    },
+    {
+      "id": "ev_002",
+      "content": "Green slide shows procedural steps with calm green theme",
+      "timestamp_start_sec": 5.0,
+      "timestamp_end_sec": 10.0,
+      "evidence_type": "procedure",
+      "speaker": null,
+      "confidence": 0.75
+    },
+    {
+      "id": "ev_003",
+      "content": "Blue slide presents factual summary",
+      "timestamp_start_sec": 10.0,
+      "timestamp_end_sec": 15.0,
+      "evidence_type": "fact",
+      "speaker": null,
+      "confidence": 0.75
+    }
+  ]
+}

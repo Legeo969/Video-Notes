@@ -1,0 +1,21 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "migrating-mrq-presets-unreal-for-vfx_capsule",
+  "source_hash": "migrating-mrq-presets-unreal-for-vfx_hash",
+  "source_title": "10 Rendering/09 Migrating MRQ Presets - Unreal for VFX",
+  "version": 1,
+  "total_duration": 169.74,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "subtitle-batch",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "in this lesson 在这个课程中 I want to walk through how we can take our MovieRenderQ configs and 我想详细介绍一下如何使用我们的MovieRenderQ配置文件 transfer them to any project file 将它们转移到任何项目文件中 Here in your content folder 在你的内容文件夹里 you might see a configs folder under your UEVFX 101 folder 你可能会在UEVFX 101文件夹下看到一个配置文件夹 This is outdated 这已经过时了 We've made some changes to make this even easier 我们做了一些改变，使得这更加容易 if you see this 如果你看到这个 the best option here is just to delete these old configs straight 在这里最好的选择就是直接删除这些旧的配置文件 There's no problem 没有问题 Let's just force delete these 我们就强制删除这些吧 let's install our MovieRenderQ configs into our content browser 让我们将MovieRenderQ配置文件安装到内容浏览器中 now if I press on the All folder 现在，如果我点击“全部”文件夹 if I right-click on the content folder 如果我右键点击内容文件夹 I can actually 我可以实际上 open up this folder in our file explorer by clicking on Show in Explorer 通过点击“在资源管理器中显示”来打开这个文件夹 And this will pop open the file browser with Windows 这将弹出Windows的文件浏览器 And below this lesson 在这个课程下面 you should be able to download this MovieRenderQ configs zip file 你应该能够下载这个MovieRenderQ配置文件的压缩包 all we have to do from here is right-click and press Extract All 我们只需要在这里右键点击并选择“全部解压缩” I'm going to remove the MRQ configs from that path 我将从该路径中删除MRQ配置文件 And when it unzips 当它解压缩时 you'll see we have this new MovieRenderQ configs folder 你会看到我们有了这个新的MovieRenderQ配置文件夹 And you can see immediately 你可以立即看到 it actually will update directly inside of our content browser 它实际上会直接在我们的内容浏览器内更新 if I go back into Unreal 如果我回到虚幻引擎 I can just click on this folder here 我只需点击这个文件夹 and you'll see we have 你会看到我们有 all of our MovieRenderQ configs 我们所有的MovieRenderQ配置 And that's as difficult as this should be 这就是应该的难度 It's just bringing in the zip file and unzipping it in the content browser 只需要将zip文件导入并在内容浏览器中解压缩 And the reason it has to be just like this is our ACES config here 而原因是我们这里的ACES配置必须是这样的 It has a very specific path that it's looking for 它有一个非常特定的路径正在寻找 if I click on these three dots here 如果我点击这里的三个点 I can navigate inside of our browser 我可以在我们的浏览器中导航 And you can see that we actually have a ocio 你可以看到我们实际上有一个ocio file that we need to be referencing in order 我们需要引用的文件 for these MovieRenderQ configs to work 使得这些MovieRenderQ配置能够工作 as long as you can open up this ocio 只要你能打开这个ocio file and you see our desired color spaces 文件并且看到我们期望的颜色空间 and display views 和显示视图 you shouldn't have a problem 你就不会有问题 just directly navigate to this configocio 直接导航到这个configocio click Reload and Rebuild 点击重新加载和重建 and then select the indexes manually 然后手动选择索引 And all we need is Utility Linear sRGB going into ACES and ACEScg 我们所需要的只是将Utility Linear sRGB转换为ACES和ACEScg when we're ready to render 当我们准备渲染时 we can click on the clapperboard to open up MovieRenderQ 我们可以点击卷轴打开MovieRenderQ and we'll see we have our new MovieRenderQ configs 我们将看到我们拥有新的MovieRenderQ配置 to start off 首先 you can either pick PlayBlast or PlayBlast QuickTime if you want a movie 如果你想要一个电影，你可以选择PlayBlast或PlayBlast QuickTime our ocio 我们的ocio settings are specifically for our EXR presets 设置专门针对我们的EXR预设 if you open this up 如果你打开这个 one thing to verify here 这里有一件事要验证一下 when you go to the color output 当你转到颜色输出时 may need to reassign our ocio 可能需要重新分配我们的OCIO ACES config and set this to Utility Linear sRGB and ACES 将ACES配置设置为Utility Linear sRGB和ACES And if you have these exact transforms 如果你有这些确切的变换 you know that your scene is set up correctly and 你知道你的场景设置正确，并且 you're ready to render 你已经准备好渲染了 just go through this process and refer to the screenshots below when setting this 只需按照这个过程进行，并在设置时参考下面的截图 up yourself 自己设置 you can transfer your MovieRenderQ configs into any project 你可以将MovieRenderQ配置转移到任何项目中",
+      "timestamp_start_sec": 0.5,
+      "timestamp_end_sec": 169.74,
+      "evidence_type": "concept",
+      "speaker": "instructor",
+      "confidence": 1.0
+    }
+  ]
+}

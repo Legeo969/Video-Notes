@@ -1,0 +1,84 @@
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+cookies.txt
+bilibili_cookies.txt
+yt-dlp.conf
+config/*.json
+config/*.jsonc
+release-keys/
+
+# JavaScript / Svelte
+node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/.svelte-kit/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Rust / Tauri
+target/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/*.fingerprint
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Runtime and build output
+.build/
+build/
+dist/
+runtime/packages/
+_internal/
+*.exe
+*.msi
+*.patched.exe
+*.bak
+
+# Product data
+output/
+.jobs/
+.note_index/
+*.db
+*.db-wal
+*.db-shm
+
+# Diagnostics and logs
+logs/
+*.log
+issue_bundle_*.zip
+diagnostics_*.zip
+
+# Temporary workspaces
+*.tmp
+tmp/
+temp/
+.temp_*/
+
+# Local AI/tool state
+.agent/
+.agents/
+.codegraph/
+.codex/
+.comet/
+.opencode/
+.worktrees/
+.workbuddy/
+.slim/
+docs/superpowers/
+openspec/

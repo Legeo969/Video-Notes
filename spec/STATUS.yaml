@@ -1,0 +1,48 @@
+spec_version: 0.2.0-rc.3
+status: foundation-complete
+baseline_product: 2.1.0
+started_at: 2026-07-12
+updated_at: 2026-07-15
+positioning: learning-material-compiler
+normative_areas:
+  architecture: merged-v0.2
+  ir: merged-v0.2
+  compiler: merged-v0.2
+  evidence: merged-v0.2
+machine_contracts:
+  json_schema: rc-implemented
+  openapi: planned-v1.0
+  task_schema: implemented
+  conformance: rc-implemented
+  migration: foundation-candidate
+counts:
+  normative_requirements: 191
+  json_schemas: 14
+  valid_exchange_examples: 3
+  invalid_exchange_examples: 25
+  task_files: 21
+release_gates:
+  terminology_unique: true
+  invariants_complete: true
+  compiler_pass_contracts_complete: true
+  evidence_semantics_complete: true
+  red_team_revisions_normative: true
+  schemas_validate: true
+  examples_validate: true
+  migration_contract_defined: true
+  traceability_complete: true
+  external_security_review: true
+  rust_reference_conformance: true
+foundation:
+  status: complete
+  completed_internal_gates:
+    - normative-v0.2-merge
+    - machine-contracts
+    - red-team-regressions
+    - deterministic-migration-design
+    - structural-quality-benchmark
+  completed_external_gates_2026_07_15:
+    - independent-security-review
+    - compiler-v3-rust-conformance
+    - python-rust-cross-language-interop
+    - semantic-quality-benchmark-baseline

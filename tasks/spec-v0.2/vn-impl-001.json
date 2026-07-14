@@ -1,0 +1,43 @@
+{
+  "task_id": "VN-IMPL-001",
+  "title": "Implement v0.2 IR behind compiler_v3 feature gate",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-021",
+    "SPEC-IR-001",
+    "SPEC-IR-037",
+    "SPEC-COMPILER-027"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile_v3/**",
+    "desktop/src-tauri/src/storage/**",
+    "desktop/src-tauri/tests/**",
+    "desktop/src-tauri/Cargo.toml"
+  ],
+  "forbidden_changes": [
+    "legacy Capsule overwrite",
+    "default activation of compiler_v3",
+    "removal of v0.1/v2.1 reader"
+  ],
+  "deliverables": [
+    "Rust v0.2 IR types",
+    "Versioned reader and writer",
+    "Feature gate",
+    "Migration boundary tests"
+  ],
+  "acceptance_tests": [
+    "compiler_v3 is off by default",
+    "v0.2 objects round-trip without field loss",
+    "legacy Capsules remain replayable",
+    "invalid v0.2 fixtures are rejected"
+  ],
+  "security_requirements": [
+    "Reject unknown digests and access-policy escalation before persistence"
+  ],
+  "dependencies": [
+    "VN-MIG-001",
+    "VN-SEC-001"
+  ],
+  "status": "done"
+}

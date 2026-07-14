@@ -1,0 +1,71 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "02.mp4 (Houdini for 3D Artists Week 1 - audio only test)",
+  "annotator": "liny",
+  "annotation_date": "2026-07-13T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "视频开始，讲师欢迎学员参加《面向3D艺术家的Houdini》课程第一周。他解释本周主要关注概念和技术概述，可能对初学者来说有些复杂，但在实际创作中会逐步引导。",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 223000000,
+        "confidence": 1.0
+      },
+      "speaker": "讲师"
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "quote",
+      "type": "procedure_step",
+      "text": "讲师提到，如果学员之前从未使用过Houdini，建议先查看他们提供的基础课程。该课程前三小时免费，内容涵盖项目和桌面设置、创建基本几何体等，有助于理解Houdini工作流和视口导航。",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 223000000,
+        "confidence": 1.0
+      },
+      "speaker": "讲师"
+    },
+    {
+      "item_id": "gt_ev_003",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "讲师概述本周内容：首先查看参考资料和灵感（使用Miro白板），然后讲解如何在大规模上构建项目（涉及高分辨率几何体和简化技术难点），接着探讨渲染部分，最后设置实际项目（包括帧范围、基本工具架，并简要介绍Houdini 20.5的新功能‘配方’）。他强调会清理桌面以减少杂乱。",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 223000000,
+        "confidence": 1.0
+      },
+      "speaker": "讲师"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "Houdini课程为3D艺术家设计，内容有挑战性但实践中可以掌握",
+      "evidence_ids": [
+        "gt_ev_001"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "gt_gap_001",
+      "description": "系统未提取教师提到课程难度对于初学者的具体说明和鼓励",
+      "modality": "audio",
+      "expected_kind": "concept_explanation",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 10000000
+      }
+    }
+  ],
+  "conflicts": []
+}

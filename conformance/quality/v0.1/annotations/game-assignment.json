@@ -1,0 +1,24 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "03 Game Mode\\05 Game Assignment.mp4",
+  "annotator": "subtitle-batch",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "好了，现在轮到你们在此基础上进行补充了。这是你要自己完成的任务。 Alright, so now it's your turn to add on top of this. Here's your assignment to do on your own. 我要你在场景中添加橙色宝石，这是个新的蓝图，能让你的速度升级。 I want you to add orange gems into your scene, a new blueprint that will create a speed upgrade. 让你的升级、跳跃和速度升级在五秒钟后失效，这样它只能 Have your upgrades, the jump and the speed upgrade, disable after five seconds, so it only 总共持续五秒钟。收集 10 颗宝石后，里面会打开一扇门 lasts for five seconds in total. And after collecting 10 gems, have a door open up inside 的地图上，打开第二关的另一个区域。因此，最简单的方法就是 of this map that opens to another section for level two. So the easiest way to do that is just 将这些墙壁复制到另一个区域。达到 10 分后，我们就可以打开 copy these walls into another section. And after a score of 10 has been reached, we can open up 在这两个部分之间开一条缝，然后进入第二层。现在，这应该是相当 a slot in between these two sections and open up into our second level. Now, this should be fairly 但我希望你们尝试应用这些概念，而不仅仅是理解它们，还要 straightforward, but I want you to try to apply these concepts, not just understand them, but 实际上，您可以尝试通过工程设计来解决自己的问题，而这正是蓝图的意义所在 actually try to engineer solutions to your own problems, which is the whole point of blueprints 和蓝图事件图。因此，请尝试一下，玩一玩你的游戏，确保一切正常。 and the blueprint event graph. So try things out, play your game to make sure that everything is 工作正常。不要害怕在这个庞大的列表中搜索。同样，我们将 working correctly. And don't be afraid to search through this massive list. Again, we're going to 获取和设置大部分数据。如果你遇到困难，只要看看这些下拉菜单，比如添加事件 get and set most of our data. And if you're ever stuck, just look at these dropdowns like add events 将为我们提供更多事件，您可以在实用程序和流量控制下进行查看。 will give us more events and you can go under utilities and then flow control. 这将为您提供不同的逻辑，以及以不同方式分割执行引脚的不同方法、 And this will give you the logic, different ways to split off your execution pins in different ways, 创建 for 循环，就像我们之前做的那样，或者创建延迟，但仅此而已。祝你好运我会 create for loops like we were doing earlier or create delays, but that's it. Good luck. And I'll 下期视频再见 see you in the next video.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 84080000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [],
+  "gaps": [],
+  "conflicts": []
+}

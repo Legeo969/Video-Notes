@@ -1,0 +1,37 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "synthetic/v0.2/visual-only-partial",
+  "annotator": "synthetic_generator",
+  "annotation_date": "2026-07-13T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "visual_observation",
+      "type": "verification",
+      "text": "幻灯片标题为“所有权规则”。",
+      "modality": "visual",
+      "anchor": {"start_us": 0, "end_us": 5000000, "confidence": 0.95},
+      "speaker": null
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "inference",
+      "type": "concept_explanation",
+      "text": "从视觉内容可以推断该幻灯片可能讲解所有权转移规则。",
+      "modality": "visual",
+      "anchor": {"start_us": 5000000, "end_us": 60000000, "confidence": 0.7},
+      "speaker": null
+    }
+  ],
+  "claims": [],
+  "gaps": [
+    {
+      "gap_id": "gt_gap_001",
+      "description": "仅视觉部分的视频缺乏音频说明",
+      "modality": "audio",
+      "expected_kind": "concept_explanation",
+      "anchor": {"start_us": 0, "end_us": 60000000}
+    }
+  ],
+  "conflicts": []
+}

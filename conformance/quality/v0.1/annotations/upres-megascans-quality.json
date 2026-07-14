@@ -1,0 +1,24 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "09 Shrine - Raya and the Last Dragon\\12 Upres Megascans Quality.mp4",
+  "annotator": "subtitle-batch",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "我即将完成这次拍摄的照明工作，但有一点我注意到了 So I'm getting close to wrapping up the lighting on this shot, but the one thing that I'm noticing 只是有些岩石无法靠近镜头，因为我们正在靠近它们、 is just not holding up close to camera are some of these rocks, since we're getting close to them, 可以看出它们的像素非常低。其中有几个绝对是为了 and you can just tell that they're really low poly. A couple of them are definitely meant to 我们正在使用它们，使它们变得更大。所以，我只想快速 be a lot smaller, and we're using them and making them a lot bigger. So I just want to do a quick 如何将这些几何图形换成更高分辨率的指南。所以我已经导入了 8k guide on how to swap these out for the higher res geometry. So I've already imported the 8k 纳米版本的网格。我们有低分辨率版本和高分辨率版本。 nanite version of this mesh. We have our low res version and our high res version, and the way to 搜索就是查找七位数代码。本例中是 WD3EFE3。所以我只要输入 search that is look for that seven digit code. In this case it's WD3EFE3. So I just type that 进入桥接器，然后就会弹出你的资产。您只需下载纳米版本，并将其添加到 into bridge, and then it'll pop up your asset. You just download the nanite version and add it to 您的项目。在这里，你要转到高分辨率版本。本例中就是变体一、 your project. From there you want to go to the high res version. In this case it's variation one, 然后我们要分配 2k 纹理，因为我们不想使用自带的 8k 纹理、 and we want to assign our 2k texture, because we don't want to use the 8k texture that came with it, 因为这肯定会让我们的场景无端超载。我们不需要纹理是 because that'll definitely overload our scene for no good reason. We don't need a texture that is 那么高的分辨率。因此，当你打开材料槽时，就会看到这两个材料紧挨着。 that high res. So when you open up the material slot, you'll see both of them next to each other. 因此，只需将 8k 版本替换为 2k 版本，并确保这是默认版本，然后保存 So just swap from the 8k over to the 2k version, and make sure that's the default version, and save 在静态网格编辑器中。我们在这里更新默认材质槽的原因是 that inside your static mesh editor. And why we're updating the default material slot here, is because 我们要更新的方式是，我们可以在场景中看到所有这些内容。所以我们要点击 the way we're going to update this is we can see all of these in our scene. So we're going to click 单击第一个，然后移位单击最下面的一个，然后我们将交换到我们的高 the first one, and then shift click on the bottom one, and then we're going to swap out to our high 按下 \"使用所选资产 \"按钮，就能获得高分辨率的静态网格。现在我们有了一些漂亮的高分辨率 res static mesh by pressing this use selected asset button. And now we have some nice high res 这里是几何图形。因此，只需继续在所有资产上这样做即可。我注意到在这种情况下 geometry here. So just go ahead and do that on all your assets. I will say I noticed in this case 这样做真的拖慢了我的场景。所以你也可以试试 4k 版本。方法是 doing that really slowed down my scene. So you can also try out the 4k versions. The methodology is 完全一样。您只需下载两个版本，然后删除高分辨率纹理即可、 exactly the same. You just download both versions, and then you can just delete the high res textures, 这样就不用担心 8k 图像会使场景超载。 and that way you don't have to worry about overloading your scene with those 8k images.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 109360000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [],
+  "gaps": [],
+  "conflicts": []
+}

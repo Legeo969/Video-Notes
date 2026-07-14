@@ -1,0 +1,66 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "houdini-week1_capsule",
+  "source_hash": "houdini-week1_hash",
+  "source_title": "02",
+  "version": 1,
+  "total_duration": 223.061,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "mimo-v2.5",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "The speaker introduces Week 1 of the Houdini for 3D artists course, explaining that this week focuses on concepts and technical material.",
+      "timestamp_start_sec": 0.0,
+      "timestamp_end_sec": 39.0,
+      "evidence_type": "fact",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    },
+    {
+      "id": "ev_002",
+      "content": "The speaker suggests that users who have never used Houdini before should watch a beginner tutorial on procedural modeling.",
+      "timestamp_start_sec": 39.0,
+      "timestamp_end_sec": 59.0,
+      "evidence_type": "procedure",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    },
+    {
+      "id": "ev_003",
+      "content": "The speaker plays a clip from the beginner tutorial covering an introduction to Houdini interface and basic navigation.",
+      "timestamp_start_sec": 59.0,
+      "timestamp_end_sec": 68.0,
+      "evidence_type": "concept",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    },
+    {
+      "id": "ev_004",
+      "content": "The instructor begins the Week 1 overview, mentioning the first part will cover basic concepts as a refresher.",
+      "timestamp_start_sec": 69.0,
+      "timestamp_end_sec": 80.0,
+      "evidence_type": "concept",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    },
+    {
+      "id": "ev_005",
+      "content": "The instructor recommends a free 3+ hour beginner tutorial for Houdini newbies.",
+      "timestamp_start_sec": 80.0,
+      "timestamp_end_sec": 126.0,
+      "evidence_type": "procedure",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    },
+    {
+      "id": "ev_006",
+      "content": "The instructor transitions to the basic overview of what will be covered this week.",
+      "timestamp_start_sec": 126.0,
+      "timestamp_end_sec": 223.061,
+      "evidence_type": "concept",
+      "speaker": "Instructor",
+      "confidence": 0.74
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "synthetic/v0.2/course-video",
+  "annotator": "synthetic_generator",
+  "annotation_date": "2026-07-13T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "multimodal_observation",
+      "type": "concept_explanation",
+      "text": "讲师说明所有权规则，并在屏幕上展示变量移动后不可再次使用。",
+      "modality": "audio",
+      "anchor": {"start_us": 0, "end_us": 30000000, "confidence": 1.0},
+      "speaker": "Instructor"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "在该示例中，值被移动后原绑定不可继续使用。",
+      "evidence_ids": ["gt_ev_001"],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [],
+  "conflicts": []
+}

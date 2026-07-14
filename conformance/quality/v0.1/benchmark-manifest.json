@@ -1,0 +1,25 @@
+{
+  "benchmark_version": "0.1.0",
+  "kind": "structural-foundation-baseline",
+  "cases": [
+    "examples/v0.2/valid/course-video-complete.json",
+    "examples/v0.2/valid/document-page-region.json",
+    "examples/v0.2/valid/visual-only-partial.json"
+  ],
+  "minimums": {
+    "evidence_anchor_reference_rate": 1.0,
+    "supported_claim_evidence_rate": 1.0,
+    "artifact_lineage_locator_rate": 1.0,
+    "source_range_revision_rate": 1.0
+  },
+  "semantic_metrics": {
+    "evidence_precision": "framework_ready",
+    "evidence_recall": "framework_ready",
+    "anchor_error_us": "framework_ready",
+    "claim_support_precision": "framework_ready",
+    "gap_recall": "framework_ready",
+    "conflict_detection_rate": "framework_ready"
+  },
+  "semantic_minimums": {},
+  "next_step": "Replace synthetic annotations in conformance/quality/v0.1/annotations/ with human-annotated ground truth from real media"
+}

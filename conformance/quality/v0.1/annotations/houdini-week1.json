@@ -1,0 +1,110 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "real-houdini-course-video",
+  "annotator": "claude-code",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "paraphrase",
+      "type": "fact",
+      "text": "The speaker introduces Week 1 of the Houdini for 3D artists course, explaining that this week focuses on concepts and technical material.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 39000000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "paraphrase",
+      "type": "procedure_step",
+      "text": "The speaker suggests that users who have never used Houdini before should watch a beginner tutorial on procedural modeling.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 39000000,
+        "end_us": 59000000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    },
+    {
+      "item_id": "gt_ev_003",
+      "kind": "paraphrase",
+      "type": "concept_explanation",
+      "text": "The speaker plays a clip from the beginner tutorial covering an introduction to Houdini interface and basic navigation.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 59000000,
+        "end_us": 68000000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    },
+    {
+      "item_id": "gt_ev_004",
+      "kind": "paraphrase",
+      "type": "concept_explanation",
+      "text": "The instructor begins the Week 1 overview, mentioning the first part will cover basic concepts as a refresher.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 69000000,
+        "end_us": 80000000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    },
+    {
+      "item_id": "gt_ev_005",
+      "kind": "paraphrase",
+      "type": "procedure_step",
+      "text": "The instructor recommends a free 3+ hour beginner tutorial for Houdini newbies.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 80000000,
+        "end_us": 126000000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    },
+    {
+      "item_id": "gt_ev_006",
+      "kind": "paraphrase",
+      "type": "concept_explanation",
+      "text": "The instructor transitions to the basic overview of what will be covered this week.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 126000000,
+        "end_us": 223061000,
+        "confidence": 1.0
+      },
+      "speaker": "Instructor"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "Week 1 of the Houdini course covers foundational concepts for 3D artists.",
+      "evidence_ids": [
+        "gt_ev_001",
+        "gt_ev_004"
+      ],
+      "relation": "supports"
+    },
+    {
+      "claim_id": "gt_clm_002",
+      "status": "supported",
+      "statement": "Beginners are directed to a separate free tutorial before Week 1.",
+      "evidence_ids": [
+        "gt_ev_002",
+        "gt_ev_005"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [],
+  "conflicts": []
+}

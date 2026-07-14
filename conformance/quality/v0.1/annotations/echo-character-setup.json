@@ -1,0 +1,24 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "04 Tunnel - Raya and the Last Dragon\\02 Echo - Character Setup.mp4",
+  "annotator": "subtitle-batch",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "因此，我继续迁移该项目文件夹中的回声内容。 So I've gone ahead and I've migrated the echo content from that project folder. 如果您需要将其移植到虚幻5.2中，我唯一需要做的就是在插件菜单中进行操作、 If you need to migrate this into Unreal 5.2, the only things I had to do was in the plugins menu, 是启用这两个插件，即新郎插件和 Alembic 新郎导入器。 was to enable these two plugins, the Groom plugin and the Alembic Groom Importer. 在 \"内容\"、\"回声内容\"、\"蓝图 \"下面，拖入 BP 下划线 \"回声 \"即可。 And underneath Content, Echo Content, Blueprints, just drag in BP underscore Echo. 现在，这是一个游戏控制器，因此，嵌套在这个蓝图内部的是 Now this is a game controller, and because of that, nested inside of this blueprint 就是这个弹簧臂和摄像头选项。因此，如果你想继续，只需复制 BP Echo 即可。 is this spring arm and camera option. So if you want to go ahead, just duplicate BP Echo 将其重命名为 BP Echo Sequencer，然后打开。然后删除弹簧臂 and rename this to BP Echo Sequencer and open this up. And we'll go ahead and delete the spring arm 和摄像头。为了让你对控制器有一个基本的了解，这些控制器有一个 and camera. And just so you have a basic understanding with controllers, these have a 特定类型的事件称为输入事件。右键单击此处并向下滚动，直到找到 specific type of event called input events. If you right click here and scroll down until you can find 输入，这些是我们可以有的所有不同类型的输入事件。最常见的是 input, these are all the different types of input events that we can have. The most common one, 如果你想快速调试蓝图中的某些内容，可以在键盘事件下拉菜单中找到它。 if you want to quickly debug something in your blueprint, is under this keyboard events drop down. 在这里，你可以让键盘上的任意键创建一个事件。因此，如果我只抓取一个键 And here you can have any key on your keyboard create an event. So if I just grab the one key 在这里，只要在游戏过程中按下一个键，或者在游戏进行到 here, this pin will execute as soon as the one key is pressed while your game is playing or when it's 释放。好的，我们删除它，保存资产，然后添加新的 BP 回声编曲器 released. All right, so we'll delete that, save our asset, and let's add in our new BP Echo Sequencer 到我们的场景中。现在我们有了比例参考。 into our scene. And now we have our scale reference.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 108240000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [],
+  "gaps": [],
+  "conflicts": []
+}

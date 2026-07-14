@@ -1,0 +1,21 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "assignment-improve-your-environment_capsule",
+  "source_hash": "assignment-improve-your-environment_hash",
+  "source_title": "04 Tunnel - Raya and the Last Dragon/17 Assignment - Improve Your Environment",
+  "version": 1,
+  "total_duration": 34.2,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "subtitle-batch",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "So now we've reached the end of the chapter 所以现在我们来到了章节的结尾 so the question is 问题是 where do we go from here 接下来我们要去哪里呢 and what assignment can we give ourselves to get the most out of this environment 我们可以给自己什么任务以充分利用这个环境呢 So if you're an environment artist or going down that path 所以，如果你是环境艺术家或者正在朝这条路走 keep going 继续前进吧 There's much more detail you can add with decals by adding in those same techniques we had before 通过添加之前的同样技巧，你可以添加更多贴花的细节 and adding in different foliage from Quixel Megascans 还可以添加Quixel Megascans中不同的植被 So go to Quixel Bridge and add those into your scene 所以去Quixel Bridge，将它们添加到你的场景中 and also try relighting this environment 还可以尝试重新照明这个环境 We'll go more into this in Chapter 7 我们会在第7章更深入地讲解这个内容 but find some additional references 但是找一些额外的参考资料 different movies that you really like 你真正喜欢的不同电影 and see if you can match their color schemes and lighting in this environment 看看你是否能在这个环境中匹配它们的色彩方案和照明",
+      "timestamp_start_sec": 0.0,
+      "timestamp_end_sec": 34.2,
+      "evidence_type": "concept",
+      "speaker": "instructor",
+      "confidence": 1.0
+    }
+  ]
+}

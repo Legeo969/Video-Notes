@@ -1,0 +1,73 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "test-media/audio-lecture.wav",
+  "annotator": "claude-code",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "paraphrase",
+      "type": "fact",
+      "text": "Section 1 introduces fundamental concepts using a 440Hz tone",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 5000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "paraphrase",
+      "type": "procedure_step",
+      "text": "Section 2 explains the step-by-step process with a 660Hz tone",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 5000000,
+        "end_us": 10000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_003",
+      "kind": "paraphrase",
+      "type": "concept_explanation",
+      "text": "Section 3 provides advanced concept explanations with a 880Hz tone",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 10000000,
+        "end_us": 15000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "The lecture progresses from basic concepts to advanced material",
+      "evidence_ids": [
+        "gt_ev_001",
+        "gt_ev_002",
+        "gt_ev_003"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "gt_gap_001",
+      "description": "No section summary or transition explanation provided",
+      "modality": "audio",
+      "expected_kind": "verification",
+      "anchor": {
+        "start_us": 14000000,
+        "end_us": 15000000
+      }
+    }
+  ],
+  "conflicts": []
+}

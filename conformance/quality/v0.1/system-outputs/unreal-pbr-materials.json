@@ -1,0 +1,93 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "unreal-pbr-materials_capsule",
+  "source_hash": "unreal-pbr-materials_hash",
+  "source_title": "02 Building Environments/02 What are PBR Materials",
+  "version": 1,
+  "total_duration": 345.0,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "mimo-v2.5",
+  "evidences": [
+    {
+      "id": "ev_gt_001",
+      "content": "PBR stands for Physically Based Rendering, a standard approach to materials.",
+      "timestamp_start_sec": 0,
+      "timestamp_end_sec": 20,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_002",
+      "content": "PBR materials have three core properties: Base Color, Roughness, and Metalness.",
+      "timestamp_start_sec": 20,
+      "timestamp_end_sec": 50,
+      "evidence_type": "definition",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_003",
+      "content": "Base Color defines the albedo of the surface without lighting.",
+      "timestamp_start_sec": 50,
+      "timestamp_end_sec": 90,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_004",
+      "content": "Roughness controls how smooth or rough a surface appears, affecting specular reflections.",
+      "timestamp_start_sec": 90,
+      "timestamp_end_sec": 130,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_005",
+      "content": "Metalness determines if a surface behaves like a metal or a dielectric.",
+      "timestamp_start_sec": 130,
+      "timestamp_end_sec": 180,
+      "evidence_type": "definition",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_006",
+      "content": "Metals have colored specular reflections and no diffuse. Dielectrics have white specular.",
+      "timestamp_start_sec": 180,
+      "timestamp_end_sec": 230,
+      "evidence_type": "procedure_step",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_007",
+      "content": "UE5 uses the Microfacet BRDF model for realistic surface rendering.",
+      "timestamp_start_sec": 230,
+      "timestamp_end_sec": 280,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_008",
+      "content": "Example: A rusty metal pipe has high roughness but full metalness for a weathered look.",
+      "timestamp_start_sec": 280,
+      "timestamp_end_sec": 320,
+      "evidence_type": "example",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_009",
+      "content": "In Unreal, you create materials in the Material Editor using node-based graph.",
+      "timestamp_start_sec": 320,
+      "timestamp_end_sec": 345,
+      "evidence_type": "procedure_step",
+      "speaker": "instructor",
+      "confidence": 0.85
+    }
+  ]
+}

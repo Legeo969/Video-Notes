@@ -1,0 +1,84 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "unreal-game-mode_capsule",
+  "source_hash": "unreal-game-mode_hash",
+  "source_title": "03 Game Mode/01 Understanding Game Mode",
+  "version": 1,
+  "total_duration": 297.0,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "mimo-v2.5",
+  "evidences": [
+    {
+      "id": "ev_gt_001",
+      "content": "Game Mode defines the rules and mechanics of your game in Unreal Engine.",
+      "timestamp_start_sec": 0,
+      "timestamp_end_sec": 25,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_002",
+      "content": "Game Mode Blueprint controls: Default Pawn, HUD, Player Controller, and Game State.",
+      "timestamp_start_sec": 25,
+      "timestamp_end_sec": 55,
+      "evidence_type": "definition",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_003",
+      "content": "Create a Game Mode Blueprint by right-clicking in Content Browser.",
+      "timestamp_start_sec": 55,
+      "timestamp_end_sec": 90,
+      "evidence_type": "procedure_step",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_004",
+      "content": "The Game Mode works with Game State to track multiplayer game progress.",
+      "timestamp_start_sec": 90,
+      "timestamp_end_sec": 130,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_005",
+      "content": "Set your Game Mode in Project Settings or per-level in World Settings.",
+      "timestamp_start_sec": 130,
+      "timestamp_end_sec": 170,
+      "evidence_type": "procedure_step",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_006",
+      "content": "Game Mode only exists on the server in multiplayer. Clients get Game State.",
+      "timestamp_start_sec": 170,
+      "timestamp_end_sec": 210,
+      "evidence_type": "fact",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_007",
+      "content": "To test, set the Default Pawn class to your custom character blueprint.",
+      "timestamp_start_sec": 210,
+      "timestamp_end_sec": 260,
+      "evidence_type": "procedure_step",
+      "speaker": "instructor",
+      "confidence": 0.85
+    },
+    {
+      "id": "ev_gt_008",
+      "content": "Understanding Game Mode is essential before building game mechanics.",
+      "timestamp_start_sec": 260,
+      "timestamp_end_sec": 297,
+      "evidence_type": "concept_explanation",
+      "speaker": "instructor",
+      "confidence": 0.85
+    }
+  ]
+}

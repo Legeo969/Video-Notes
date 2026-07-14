@@ -1,0 +1,73 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "test-media/slide-lecture.mp4",
+  "annotator": "claude-code",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "visual_observation",
+      "type": "concept_explanation",
+      "text": "Orange slide covers introductory concepts with warm visual theme",
+      "modality": "visual",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 5000000,
+        "confidence": 1.0
+      },
+      "speaker": "presenter"
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "visual_observation",
+      "type": "procedure_step",
+      "text": "Green slide shows procedural steps with calm green theme",
+      "modality": "visual",
+      "anchor": {
+        "start_us": 5000000,
+        "end_us": 10000000,
+        "confidence": 1.0
+      },
+      "speaker": "presenter"
+    },
+    {
+      "item_id": "gt_ev_003",
+      "kind": "visual_observation",
+      "type": "fact",
+      "text": "Blue slide presents factual summary with professional blue theme",
+      "modality": "visual",
+      "anchor": {
+        "start_us": 10000000,
+        "end_us": 15000000,
+        "confidence": 1.0
+      },
+      "speaker": "presenter"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "The lecture uses color-coded slides to organize content by section",
+      "evidence_ids": [
+        "gt_ev_001",
+        "gt_ev_002",
+        "gt_ev_003"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "gt_gap_001",
+      "description": "No audio narration track to explain slide content",
+      "modality": "visual",
+      "expected_kind": "concept_explanation",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 15000000
+      }
+    }
+  ],
+  "conflicts": []
+}

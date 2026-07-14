@@ -1,0 +1,38 @@
+{
+  "task_id": "VN-SEC-001",
+  "title": "Perform independent Spec v0.2 security review",
+  "phase": "v0.2-revision",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-014",
+    "SPEC-COMPILER-031",
+    "SPEC-EVIDENCE-024"
+  ],
+  "allowed_paths": [
+    "red-team/v0.2/**",
+    "spec/security-model.md",
+    "SECURITY.md"
+  ],
+  "forbidden_changes": [
+    "production implementation",
+    "finding deletion without disposition",
+    "synthetic signing private key reuse outside fixtures"
+  ],
+  "deliverables": [
+    "Independent review report",
+    "Finding dispositions",
+    "Trust-policy review"
+  ],
+  "acceptance_tests": [
+    "Reviewer is not the author of the challenged revision",
+    "Every Critical and High finding has an explicit disposition",
+    "Accepted risks identify owner and review date"
+  ],
+  "security_requirements": [
+    "Review Ed25519 key trust, source rights, external dependency resolution and prompt-injection boundaries"
+  ],
+  "dependencies": [
+    "VN-RED-001"
+  ],
+  "status": "done"
+}

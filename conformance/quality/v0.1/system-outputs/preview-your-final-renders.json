@@ -1,0 +1,21 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "preview-your-final-renders_capsule",
+  "source_hash": "preview-your-final-renders_hash",
+  "source_title": "11 Filmmaking/05 Preview Your Final Renders",
+  "version": 1,
+  "total_duration": 153.7,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "subtitle-batch",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "as a last step here 作为最后一步 I want to talk about game mode and what exactly is the difference 我想谈谈游戏模式以及它们之间的区别 between playing back in Sequencer and when I press Render through Movie Render Queue 在Sequencer中回放和通过电影渲染队列渲染时的区别 Now I could go into my Level Sequence and look through our camera cut track here 现在我可以进入我的关卡序列，查看我们的摄像机切换轨道 and by pressing Play 通过按下播放按钮 I'm getting a very close resemblance to what our final render 我得到了一个与我们最终渲染非常相似的效果 will look like 看起来会是什么样子 but I'm not getting a perfect match 但并不完全一样 Now the important thing to know here is that in order to simulate physics and trigger 现在需要知道的重要一点是，为了模拟物理和触发 we have to play our game 我们必须玩游戏 Now I mentioned it once before that when we go to render our Level Sequence inside of 现在我之前提过，当我们在关卡序列中进行渲染时 Movie Render Queue 电影渲染队列 as soon as we press this Render Local button 一旦我们按下此处的本地渲染按钮 our game is going 我们的游戏就会 to start playing 开始播放 So it begs the question 这就引出了一个问题 how can we make sure that what we see in the viewport is 我们如何确保在视口中看到的是 the exact result that we'll get when we press Render 我们按下渲染按钮时得到的确切结果 Now to be honest 现在说实话 there's only one way to do this correctly 只有一种正确的方法 so pay attention 所以请注意 This is a really important lesson that you'll want to use on all of your projects going 这是一个非常重要的教训，你将在你的所有项目中使用 So what we want to do is start playing back our timeline here as soon as we press the 所以我们要做的是，在我们按下 That way we know that our game is simulating because we press the Play button 这样我们就知道我们的游戏正在模拟，因为我们按下了播放按钮 can make sure that our timeline is starting from frame one 可以确保我们的时间轴从第一帧开始 Now this is actually incredibly easy to do once you know why you're doing it 一旦你知道为什么要这样做，这实际上非常容易 So what we'll do is in Sequencer 所以我们要做的是在Sequencer中 let's just press on the Browse icon here 让我们点击这里的浏览图标 this will browse to the Level Sequence inside of our Content Browser 这将浏览到我们内容浏览器中的关卡序列 Now all we have to do is take our Sequencer timeline and just click and drag it into 现在我们所要做的就是将我们的Sequencer时间轴拖放到 our 3D world 我们的3D世界中 And just like any other actor 就像任何其他角色一样 like the characters or our cameras or our lights 像角色、摄像机或灯光一样 our Sequence can also exist in the 3D world 我们的序列也可以存在于3D世界中 And now if I go into the Details panel of this Level Sequence 现在，如果我进入此关卡序列的详细信息面板 we just need to 我们只需要 enable Autoplay and set Loop to Loop Indefinitely 启用自动播放并将循环设置为无限循环 And by doing those two steps 通过执行这两个步骤 now when we press the Play button 现在当我们按下播放按钮时 it will auto-possess 它将自动控制 our camera and we'll get a one-to-one preview of our final render 我们的摄像机，我们将得到一个与最终渲染完全相同的预览 This is the best way to preview your work 这是预览您的作品的最佳方式 so I definitely recommend doing this in every 所以我强烈建议在每个项目中都这样做 Sequence that you make 您制作的序列 Just make sure that as soon as you're creating more and more shots 只需确保在创建更多镜头时 changing out this Level Sequence because once we're in here 更改此关卡序列，因为一旦我们在这里 we can swap this out 我们可以将其替换 to any Sequence in our entire project 到我们整个项目中的任何序列 So whenever you make duplicates and new shots 所以每当您制作副本和新镜头时 just make sure to auto-assign that Level 只需确保自动分配该关卡 Sequence inside of the Details panel 在详细信息面板中的序列 And as a friendly reminder 友情提醒 just make sure your default Pawn Class is set to None 只需确保您的默认Pawn类设置为None so that we're not controlling any characters and we're just previewing our final Sequence 这样我们就不控制任何角色，只是预览我们的最终序列 And there you go 就是这样 that's the perfect workflow to preview your renders by pressing the Play button 这是通过按下播放按钮预览渲染的完美工作流程",
+      "timestamp_start_sec": 0.38,
+      "timestamp_end_sec": 153.7,
+      "evidence_type": "concept",
+      "speaker": "instructor",
+      "confidence": 1.0
+    }
+  ]
+}

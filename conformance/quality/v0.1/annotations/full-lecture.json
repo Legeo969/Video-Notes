@@ -1,0 +1,45 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "test-media/full-lecture.mp4",
+  "annotator": "claude-code",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "multimodal_observation",
+      "type": "concept_explanation",
+      "text": "Purple background video with 330Hz audio presents integrated lecture content",
+      "modality": "multimodal",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 15000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "The full lecture combines visual presentation with synchronized audio narration",
+      "evidence_ids": [
+        "gt_ev_001"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "gt_gap_001",
+      "description": "No captions or text overlay for accessibility",
+      "modality": "visual",
+      "expected_kind": "metadata",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 15000000
+      }
+    }
+  ],
+  "conflicts": []
+}

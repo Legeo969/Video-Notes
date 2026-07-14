@@ -1,0 +1,24 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "07 Lighting\\08 Baked Lighting - Intro - Unreal for VFX.mp4",
+  "annotator": "subtitle-batch",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "baked lighting is with both static and stationary lights 烘焙光照是使用静态和固定光源 and this is a way for Unreal 这是虚幻引擎的一种方式 to pre-compute the lighting 预计算光照 So this is a technique that's mostly used in video games and also in in-camera visual 这是一种主要用于视频游戏和摄影机视觉效果的技术 effects on LED volumes because it's a lot better for performance 对LED体积的效果，因为它对性能更好 It means we can render our scene a lot faster because we're not calculating the lighting 这意味着我们可以更快地渲染场景，因为我们不需要计算光照 every single frame 每一帧 we're pre-computing that lighting 我们预先计算了那些光照 we're actually taking all the lighting 我们实际上采用了所有的光照 and baking it to a texture map instead 并将其烘焙到纹理贴图中 So now we're just reading these texture maps instead of generating our lighting in the 所以现在我们只是读取这些纹理贴图，而不是在场景中生成光照 But this means that we can't have any dynamic shadows because our lights are now baked into 但这意味着我们不能有任何动态阴影，因为我们的光源现在被烘焙到了 these texture maps 这些纹理贴图中 so we're a lot more limited on what we can do with them 所以我们在使用它们时受到很多限制 And that's why we're just going to focus on dynamic lighting in this course 这就是为什么我们在这门课程中只专注于动态光照 That's the best option when using Unreal for VFX because we're getting our final renders 这是在使用虚幻引擎进行视觉效果时的最佳选择，因为我们得到的是最终渲染结果 through Movie Render Queue where we can take longer than a second to render each frame 通过电影渲染队列，我们可以花费超过一秒的时间来渲染每一帧 We're not limited by that frame count 我们不受帧数限制 This will be one of the primary focuses of our ICVFX course later on 这将是我们后续ICVFX课程的重点之一 But just so you know where this leads to and what you would need to know if you want to 但是只是为了让你知道这会导致什么以及如果你想要的话，你需要了解什么 dive down the rabbit hole of baked lighting yourself 自己深入研究烘焙光照 the requirements for baked lighting 烘焙光照的要求 is every single object 是每一个物体 every static mesh needs a lightmap UV created for it 每个静态网格都需要创建一个光照贴图UV can generate that yourself in the Static Mesh Editor 可以在静态网格编辑器中自己生成 This image you're seeing on the right is the lightmap density viewport 你在右侧看到的是光照贴图密度视口 which if you just 如果你只是 press Alt-0 after clicking inside your viewport 在视口内单击后按下Alt-0键 it'll bring up this view 它会显示这个视图 And every square you see here is a pixel that'll be used in that texture map that we're baking 这里的每个方块都是我们要烘焙的纹理贴图中使用的像素 out when we're baking our lighting 在我们烘焙光照时 So right here 所以就在这里 the pixels are very 像素非常 so we probably have a fairly low-quality light 所以我们可能有一个相当低质量的光照 bake if that were the case 如果是这样的话，就进行烘焙 And this is our way to preview what the quality is going to look like after we bake our lighting 这是我们预览在烘焙光照后质量会如何的方式 We're going to bake our lighting using the GPU Lightmass system 我们将使用GPU Lightmass系统来烘焙光照 So this is a plugin that you have to enable 所以这是一个你必须启用的插件 But if you go on the top bar 但是如果你去顶部菜单栏 go to the Build Settings 进入构建设置 and you'll see the GPU Lightmass 你会看到GPU Lightmass option there 选项在那里 We'll bake our lighting through this plugin 我们将通过这个插件来烘焙光照 And if you ever want to destroy a light bake 如果你想要销毁一个光照烘焙 if you've downloaded a project 如果你下载了一个项目 from the marketplace 从市场 like this ICVFX sample project 像这个ICVFX示例项目 this actually came in with baked 这实际上是带有烘焙的 lighting originally 最初的光照 If you want to remove the baked lighting and have your scene entirely dynamic 如果你想要移除烘焙的光照并使场景完全动态 pre-computed lighting is set to true 预计算光照设置为true and that's what will destroy your lighting 这会破坏你的光照 And I'll walk through step-by-step how to destroy your light bake in the bonus lesson 我将逐步介绍如何在附加课程中销毁你的光照烘焙 at the end of this chapter 在本章的最后 So what this means is if you see reflection captures or a Lightmass importance volume 所以这意味着如果你看到反射捕捉或Lightmass重要性体积 this is a thing you'll see all the time in tutorials 这是你在教程中经常会看到的东西 especially in Unreal 4. 尤其是在虚幻4中。 But know that you do not need to use these if we're using Lumen 但是要知道，如果我们使用Lumen，你就不需要使用这些。 if we're using Dynamic 如果我们使用Dynamic， this will take over this entire system for us 这将完全接管我们的整个系统 So we don't need any of those objects inside of our scene 所以我们不需要场景中的任何这些对象 Now that's all we're going to talk about for baked lighting 现在我们只会讨论烘焙光照的内容了 We're going to move on from this 我们将继续进行下一步 but hopefully that'll get you up and running if you want 但是如果你想的话，希望这会让你启动并运行起来 to experiment with that system yourself 自己尝试一下这个系统",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 660000,
+        "end_us": 179380000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [],
+  "gaps": [],
+  "conflicts": []
+}

@@ -1,0 +1,24 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "03 Game Mode\\04 Creating Power-Ups.mp4",
+  "annotator": "subtitle-batch",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "但我们最后要补充的是，一旦达到 5 分，我们就想提高我们的 But the last thing that we wanted to add was once we hit a score of five, we wanted to increase our 这样，我们就能跳到更高的地面上。那我们该怎么做呢？现在 jump so that we could make this jump onto these taller surfaces. So how could we do that? So now 如果我打开这个 BP 第三人称角色，运动和四处移动的设置方式是 if I open up this BP third person character, the way that locomotion and moving around is set up 都是由这个角色移动组件控制的。现在，每当你看到 with this character is all controlled within this character movement component. Now whenever you see 这里的任何组件旁边的 C++ 编辑，这意味着它不是创建的东西 this edit in C++ next to any component here, it means that it's not something that was created 使用蓝图。这是一个定制的 C++ 组件，这意味着需要一些额外的代码。 using blueprints. It was a custom C++ component and it means there's some additional code going 在引擎盖下，这对角色运动来说是件好事，因为他们已经包含了大量的 on under the hood, which for character locomotion can be nice because they've included just a ton 的设置。但通常情况下，我们仍然可以访问这些数据。所以，如果我向下滚动 of settings here. But usually we can still access any of these pieces of data. So if I scroll down, 你可以看到，角色移动跳跃和下落的设置是每秒 700 厘米。 you can see that the character movement jumping and falling setting is set to 700 centimeters per 第二。因此，如果我们想增加跳转次数，可以跳转到 second. So if we wanted to increase our jump here, what we could do is jump into the event graph of 我们的第三人称角色。在得分检查活动结束时，我们可以更改跳转 z our third person character. And at the end of our score check event, we can change that jump z 速度让我们来看看你是如何考虑修改的。到目前为止，你可能 velocity. And let's walk through how you would think of modifying this. So, so far you probably 以为我们拉动这个执行引脚，然后输入跳跃的 z 速度，但我们没有看到 think that we pull on this execution pin and then we would type in jump z velocity, but we don't see 下拉菜单中的任何内容。这是因为所有这些数据实际上都在这个单独的 anything in this dropdown. And that's because all of this data is actually in this separate 组件，即角色移动组件。因此，我们实际上必须引用这个运动 component, this character movement component. So we would actually have to reference this movement 组件来访问或更改这些数据。但我要做的就是把它拖到我们的 component if we want to access or change this data. But all I have to do is drag this into our 场景现在，我们突然可以以同样的方式访问铸造针上的所有数据、 scene. And now suddenly in the same way that we could access all the data from that casting pin, 现在我们可以通过这个引脚访问所有的角色移动数据。因此，现在如果我输入 jump z now we can access all of the character movement data from this pin. So now if I type in jump z 速度，现在我们就可以获得跳跃的 z 速度，或者输入设置跳跃的 z 速度。如果 velocity, now we can get that jump z velocity, or we could type in set jump z velocity. And now if 我们将其设置为 1000，而不是之前的 700，然后就可以玩游戏了。所以，在这里你 we set this to 1000 instead of 700, like it was before, and then we play our game. So here you 可以看到我们的跳跃距离很短，但在我们收集了五颗宝石后，我们现在可以跳起来了 can see our jump is really short, but after we collect our five gemstones, we can now jump up 到这些表面的最顶端，我们就成功地改变了跳跃高度。由于 to the very top of these surfaces and we've successfully changed our jump height. And as 提醒一下，我们使用的所有执行引脚，都只能在以下情况下触发 a reminder, all of those execution pins that we were using, these can only be triggered when we're 要么是在模拟，要么是在玩我们的游戏。我应该说，玩游戏和 either simulating or playing our game. And I should say the only difference between playing a game and 模拟是指当你模拟时，你并不拥有棋子。所以我们还在玩我们的游戏。 simulating is that when you simulate, you're not possessing a pawn. So we're still playing our game. 物理模拟在这里运行，但我们控制的不是棋子。这是唯一的区别 The physics simulation is running here, but we're not controlling a pawn. That's the only difference 这里。现在，你已经做出了自己的简化游戏。所有的构件都在这里了。而我 here. So now you've made your own very simplified game. All of the building blocks are there. And I 希望你现在已经非常清楚地了解我们如何在所有这些节点之间发送数据、 hope now you have a very clear understanding of how we can send data between all these nodes, 特别是在蓝图之间。 especially between blueprints.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 186640000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [],
+  "gaps": [],
+  "conflicts": []
+}

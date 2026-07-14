@@ -1,0 +1,21 @@
+{
+  "ir_schema_version": 2,
+  "capsule_id": "troubleshoot-motion-blending_capsule",
+  "source_hash": "troubleshoot-motion-blending_hash",
+  "source_title": "11 Filmmaking/06 Troubleshoot Motion Blending",
+  "version": 1,
+  "total_duration": 137.84,
+  "processed_at": "2026-07-15T00:00:00Z",
+  "model_used": "subtitle-batch",
+  "evidences": [
+    {
+      "id": "ev_001",
+      "content": "In this lesson 在这节课中 I want to walk through common problems with motion blending and how to troubleshoot 我想解决动作混合中常见的问题以及如何进行故障排除 those and I'll continue to update this video as we find new situations that might come 这些问题，我们将继续更新这个视频，以便在发现新的可能出现的情况时进行更新 up to help you quickly and easily add animation to your characters inside of Unreal 帮助您快速轻松地在虚幻引擎中为角色添加动画 So one thing that's a little bit unique when compared to how we set up the run 所以与我们设置奔跑动画的方式相比，有一点是有些独特的 animations for Echo earlier on 之前为Echo设置的动画 where we have the animation stuck to the hips so 在那里，我们将动画固定在臀部 that the character is locked to one position instead of traveling throughout the world 使角色锁定在一个位置，而不是在整个世界中移动 But one thing that's a little bit tricky that happens when you're mixing animations like this 但是当您像这样混合动画时，有一件有些棘手的事情会发生 a run animation 奔跑动画 and combining it with other animations that we're stringing together 将其与其他动画组合在一起 is sometimes this root motion will just stop working altogether 有时候，这个根运动会完全停止工作 So this animation asset 所以这个动画资源 I've actually enabled that root motion so it should be locked in 我实际上已经启用了根运动，所以它应该被锁定 but when we're adding it into Sequencer 但是当我们将其添加到Sequencer中时 we can see that obviously that's not working 我们可以看到，显然这不起作用 So one way around this is when we've set up our root motion and if there's ever any 解决这个问题的一种方法是，当我们设置好了根运动，并且如果有任何问题 one thing you can do is we can just export the animation that we're seeing here in 您可以做的一件事是，我们可以将我们在这里看到的动画导出 the timeline by going to export asset and we actually want to export the preview mesh 通过转到导出资源，我们实际上要导出预览网格 This just means it's going to export our animation and our skeletal mesh together 这意味着它将同时导出我们的动画和骨骼网格 So now we can save this anywhere as Sword and Shield Run 1 and just add in place after it 现在我们可以将其另存为任何位置，例如Sword and Shield Run 1，并在后面添加在原地 so we know what this animation is 这样我们就知道这个动画是什么了 And a really important thing is we want to map our skeletal 而且一个非常重要的事情是，我们要映射我们的骨骼 motion to the root 将骨骼运动映射到根部 This will basically bake our root motion animation and it'll make it so when 这将基本上烘焙我们的根运动动画，并且这样做时 we re-import this animation 重新导入这个动画 everything works correctly 一切都正常工作 So we'll go ahead and press export 所以我们继续并按下导出按钮 So now when we go and drag and drop this animation into our content browser to import it 现在当我们将此动画拖放到内容浏览器中进行导入时 all we have to do is select our Vanguard skeleton 我们只需要选择我们的Vanguard骨骼 our original skeleton 我们的原始骨骼 and press import 然后按导入按钮 Now we have run in place that we can add into our scene 现在我们有了在原地奔跑的动画，我们可以将其添加到场景中 So I'm just going to go into 所以我要进入 our animation drop down and add in place and we'll see our run animation here 我们的动画下拉菜单中，选择添加在原地，我们将在这里看到我们的奔跑动画 And now when we drag it into our scene 现在当我们将其拖放到场景中时 we can see that everything's set up as intended 我们可以看到一切都按预期设置 And what's cool about this is now when we extend this out and drag it beyond the bounds 而且很酷的是，现在当我们将其延伸并拖动超出边界时 of the original animation 原始动画的边界 it'll loop correctly and work as we would expect 它将正确循环并按照我们的预期工作 just follow the same steps we covered before to make characters travel while we're playing 只需按照之前介绍的相同步骤，在游戏过程中使角色移动 these run animations 这些奔跑动画",
+      "timestamp_start_sec": 0.0,
+      "timestamp_end_sec": 137.84,
+      "evidence_type": "concept",
+      "speaker": "instructor",
+      "confidence": 1.0
+    }
+  ]
+}

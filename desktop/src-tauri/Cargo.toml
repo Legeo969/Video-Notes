@@ -1,0 +1,44 @@
+[package]
+name = "video-notes-ai"
+version = "2.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Traceable multimodal video compilation and versioned note generation"
+authors = ["Video Notes AI Team"]
+license = "MIT"
+readme = "../../README.md"
+
+
+[package.metadata.tauri-winres]
+"OriginalFilename" = "Video Notes AI.exe"
+"ProductName" = "Video Notes AI"
+"FileVersion" = "2.1.0"
+"ProductVersion" = "2.1.0"
+"FileDescription" = "Video Notes AI"
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+sha2 = "0.10"
+ring = { version = "0.17.14", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol", "tauri/protocol-asset"]
+compiler_v3 = ["dep:ring"]

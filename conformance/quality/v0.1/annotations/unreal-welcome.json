@@ -1,0 +1,124 @@
+{
+  "annotation_version": "0.1.0",
+  "media_path": "01 Getting Started/1 Welcome to Unreal Fundamentals.mp4",
+  "annotator": "lin10",
+  "annotation_date": "2026-07-15T00:00:00Z",
+  "items": [
+    {
+      "item_id": "gt_ev_001",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "Welcome to Unreal Fundamentals. This course teaches Unreal Engine for VFX artists.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 0,
+        "end_us": 15000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_002",
+      "kind": "quote",
+      "type": "fact",
+      "text": "Unreal Engine is a real-time 3D creation platform used for games, film, and visualization.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 15000000,
+        "end_us": 35000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_003",
+      "kind": "quote",
+      "type": "procedure_step",
+      "text": "The course is structured into chapters covering environments, materials, lighting, Niagara VFX, and rendering.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 35000000,
+        "end_us": 60000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_004",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "Real-time rendering differs from traditional offline rendering with instant feedback.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 60000000,
+        "end_us": 90000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_005",
+      "kind": "quote",
+      "type": "procedure_step",
+      "text": "Requirements: Windows PC with dedicated GPU and at least 16GB RAM.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 90000000,
+        "end_us": 120000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_006",
+      "kind": "quote",
+      "type": "fact",
+      "text": "This course assumes basic 3D knowledge but no prior Unreal Engine experience.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 120000000,
+        "end_us": 150000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    },
+    {
+      "item_id": "gt_ev_007",
+      "kind": "quote",
+      "type": "concept_explanation",
+      "text": "The goal is to bridge the gap between traditional DCC workflows and real-time engine workflows.",
+      "modality": "audio",
+      "anchor": {
+        "start_us": 150000000,
+        "end_us": 176000000,
+        "confidence": 1.0
+      },
+      "speaker": "instructor"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "gt_clm_001",
+      "status": "supported",
+      "statement": "Unreal Engine is a real-time 3D creation platform for games and film VFX.",
+      "evidence_ids": [
+        "gt_ev_001",
+        "gt_ev_002",
+        "gt_ev_007"
+      ],
+      "relation": "supports"
+    },
+    {
+      "claim_id": "gt_clm_002",
+      "status": "supported",
+      "statement": "The course teaches Unreal from basics to advanced VFX for 3D artists.",
+      "evidence_ids": [
+        "gt_ev_003",
+        "gt_ev_006"
+      ],
+      "relation": "supports"
+    }
+  ],
+  "gaps": [],
+  "conflicts": []
+}

@@ -1,0 +1,44 @@
+project: video-notes
+product_positioning: learning-material-compiler
+spec_version: 0.2.0-rc.3
+status: foundation-complete
+baseline_product: 2.1.0
+normative_roots:
+  - spec/architecture
+  - spec/ir
+  - spec/compiler
+  - spec/evidence
+normative_common:
+  - spec/glossary.md
+  - spec/normative-language.md
+  - spec/invariants.md
+  - spec/error-model.md
+  - spec/compatibility.md
+  - spec/security-model.md
+  - spec/v0.2-security-integrity-and-migration.md
+  - spec/MIGRATION-v0.1-to-v0.2.md
+machine_contracts:
+  json_schema_root: schemas/json/v0.2
+  exchange_schema: schemas/json/v0.2/bundle.schema.json
+  trust_policy_schema: schemas/json/v0.2/trust-policy.schema.json
+  trusted_policy_fixture: conformance/v0.2/trust/trusted-policy.json
+  revoked_policy_fixture: conformance/v0.2/trust/revoked-policy.json
+  task_schema: tasks/schema/task-v0.1.schema.json
+  task_index: tasks/index.json
+  traceability: traceability.json
+  fixture_manifest: conformance/v0.2/fixture-manifest.json
+validation_commands:
+  - python scripts/validate_spec_tasks.py
+  - python scripts/validate_spec_v01.py
+  - python scripts/validate_red_team.py
+  - python scripts/validate_spec_v02.py
+  - python scripts/validate_migration_v01_v02.py
+release_policy: foundation-candidate-no-public-api-stability
+next_phase: compiler-v3-conformance-and-external-security-review
+next_machine_contracts:
+  json_schema_root: schemas/json/v0.2
+  fixture_manifest: conformance/v0.2/fixture-manifest.json
+  red_team_index: red-team/v0.2/findings-index.json
+  validation_commands:
+    - python scripts/validate_red_team.py
+    - python scripts/validate_spec_v02.py
