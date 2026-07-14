@@ -82,4 +82,7 @@ temp/
 .slim/
 docs/superpowers/
 docs/
+tasks/
+spec/
+spec-manifest.yaml
 openspec/
