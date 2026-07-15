@@ -294,7 +294,7 @@
 
     // Status
 
-    // Tooltip
+    // Tooltip (compact)
     if (selectedId && nodeData) {
       if (ttLabelEl) {
         ttLabelEl.textContent = nodeData.label;
@@ -328,6 +328,28 @@
       tooltipEl.style.display = '';
     } else {
       tooltipEl.style.display = 'none';
+    }
+
+    // Visual glow on selected node (Obsidian style)
+    const allCircles = graphContent?.querySelectorAll('circle');
+    if (allCircles) {
+      for (const c of allCircles) {
+        const parent = c.closest('[data-nid]') as SVGElement | null;
+        const nid = parent?.getAttribute('data-nid');
+        if (nid === selectedId) {
+          c.setAttribute('stroke', nodeData?.color || '#fff');
+          c.setAttribute('stroke-width', '3.5');
+          c.setAttribute('filter', 'drop-shadow(0 0 6px ' + (nodeData?.color || '#fff') + ')');
+        } else if (nid === hoveredId && nid !== selectedId) {
+          c.setAttribute('stroke', '#fff');
+          c.setAttribute('stroke-width', '2.5');
+          c.removeAttribute('filter');
+        } else {
+          c.setAttribute('stroke', '#fff');
+          c.setAttribute('stroke-width', '2');
+          c.removeAttribute('filter');
+        }
+      }
     }
 
     updateHighlights();
@@ -647,14 +669,14 @@
   .gt-input::placeholder { color:var(--text-tertiary); }
   .gt-info { font-size:9px; color:var(--text-tertiary); white-space:nowrap; }
   .graph-svg { flex:1; width:100%; min-height:0; display:block; user-select:none; touch-action:none; }
-  .tooltip { position:absolute; bottom:14px; left:14px; right:14px; padding:12px 14px; border:1px solid var(--border-color); border-radius:11px; background:var(--bg-elevated); box-shadow:var(--shadow-md); z-index:100; max-width:340px; }
-  .tt-head { display:flex; align-items:center; gap:8px; margin-bottom:2px; }
-  .tt-dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
-  .tt-label { font-size:14px; }
-  .tt-meta { display:flex; gap:10px; margin-bottom:6px; }
-  .tt-type { font-size:10px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:.05em; }
-  .tt-degree { font-size:10px; color:var(--accent-color); }
-  .tt-summary { font-size:11px; color:var(--text-secondary); line-height:1.5; margin-bottom:8px; }
-  .tt-relations { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px; }
-  .tt-close { border:0; background:transparent; color:var(--accent-color); cursor:pointer; font-size:11px; font-weight:600; padding:0; }
+  .tooltip { position:absolute; bottom:14px; left:14px; padding:8px 12px; border:1px solid var(--accent-faint); border-radius:8px; background:var(--bg-elevated); box-shadow:var(--shadow-sm); z-index:100; max-width:280px; }
+  .tt-head { display:flex; align-items:center; gap:6px; }
+  .tt-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .tt-label { font-size:12px; }
+  .tt-meta { display:flex; gap:8px; margin-bottom:4px; }
+  .tt-type { font-size:10px; color:var(--text-tertiary); }
+  .tt-degree { font-size:10px; color:var(--text-secondary); }
+  .tt-summary { font-size:11px; color:var(--text-secondary); line-height:1.4; margin-bottom:4px; }
+  .tt-relations { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:2px; }
+  .tt-close { border:0; background:transparent; color:var(--text-tertiary); cursor:pointer; font-size:10px; padding:0; }
 </style>
