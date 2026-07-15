@@ -200,22 +200,25 @@
   let simTimer: ReturnType<typeof setInterval> | null = null;
   function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; } }
 
-  function simulate() {
+  function simulate(frame = 999) {
     const n = nodes.length;
     if (n === 0) return;
-    const repulsion = 40;
-    const attraction = 0.01;
-    const gravity = 0.0003;
-    const damping = 0.97;
+    const ramp = Math.min(1, frame / 60);
+    const repulsion = 20 * ramp;
+    const attraction = 0.006 * ramp;
+    const gravity = 0.00015 * ramp;
+    const damping = 0.995;
+    const breathAmp = 0.008 * (0.3 + 0.7 * ramp);
 
-    // Gentle repulsion — keeps nodes from overlapping without scattering
+    // Gentle repulsion + tiny breathing wave
+    const now = Date.now();
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = nodes[i], b = nodes[j];
         let dx = a.x - b.x, dy = a.y - b.y;
         let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        if (dist > 80) continue; // skip far pairs — local repulsion only
-        let force = repulsion / (dist + 5);
+        if (dist > 50) continue;
+        let force = repulsion / (dist + 15);
         const fx = dx / dist * force, fy = dy / dist * force;
         if (!a.pinned) { a.vx += fx; a.vy += fy; }
         if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
@@ -235,6 +238,9 @@
       if (nd.pinned) continue;
       nd.vx += (0 - nd.x) * gravity;
       nd.vy += (0 - nd.y) * gravity;
+      // Gentle breathing wave — prevents dead stillness
+      const breath = Math.sin(now * 0.002 + nd.x * 0.01 + nd.y * 0.01) * breathAmp;
+      nd.vx += breath; nd.vy += breath;
       nd.vx *= damping; nd.vy *= damping;
       nd.x += nd.vx; nd.y += nd.vy;
     }
@@ -272,8 +278,10 @@
   function startSim() {
     if (nodes.length === 0) return;
     stopSim();
+    let frame = 0;
     simTimer = setInterval(() => {
-      simulate();
+      frame++;
+      simulate(frame);
     }, 40);
   }
 
@@ -466,7 +474,7 @@
       node.x = start.x + (ev.clientX - r2.left - start.mx) / transform.scale;
       node.y = start.y + (ev.clientY - r2.top - start.my) / transform.scale;
       // Push connected nodes via the edge spring
-      const push = 0.025;
+      const push = 0.01;
       const pushed = new Set<string>();
       for (const e of edges) {
         const oid = e.source === id ? e.target : e.source;
@@ -509,8 +517,8 @@
         if (e.source !== id && e.target !== id) continue;
         const other = nodes.find(nd => nd.id === oid);
         if (!other) continue;
-        node.vx += (other.x - node.x) * 0.02;
-        node.vy += (other.y - node.y) * 0.02;
+        node.vx += (other.x - node.x) * 0.005;
+        node.vy += (other.y - node.y) * 0.005;
       }
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
