@@ -86,4 +86,5 @@ tasks/
 spec/
 spec-manifest.yaml
 conformance/
+AGENTS.md
 openspec/
