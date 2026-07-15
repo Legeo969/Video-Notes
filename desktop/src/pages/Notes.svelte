@@ -520,6 +520,12 @@
 
   onMount(() => {
     loadNotes();
+    // Check if navigated from another page with a specific note ID
+    const pendingNoteId = $selectedNoteIdStore;
+    if (pendingNoteId !== null) {
+      selectedNoteIdStore.set(null);
+      selectNote(pendingNoteId);
+    }
   });
 
   onDestroy(() => {
@@ -529,8 +535,8 @@
   $effect(() => {
     const targetNoteId = $selectedNoteIdStore;
     if (targetNoteId !== null) {
-      selectedNoteId = targetNoteId;
       selectedNoteIdStore.set(null);
+      selectNote(targetNoteId);
     }
   });
 

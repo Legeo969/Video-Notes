@@ -70,7 +70,7 @@
 
     const rect = svgEl.getBoundingClientRect();
     const viewSize = Math.max(rect.width, rect.height, 400);
-    const spread = Math.min(Math.max(entities.length * 6, viewSize * 0.2), viewSize * 0.4);
+    const spread = Math.min(Math.max(entities.length * 2, viewSize * 0.12), viewSize * 0.25);
     const nodeMap = new Map<string, any>();
     nodes = [];
     edges = [];
@@ -203,20 +203,20 @@
   function simulate() {
     const n = nodes.length;
     if (n === 0) return;
-    const repulsion = Math.min(1200, 400 + n * 8);
-    const attraction = 0.008;
-    const gravity = 0.001;
-    const damping = 0.97;
-    const minDist = 20;
+    const repulsion = Math.min(600, 200 + n * 4);
+    const attraction = 0.004;
+    const gravity = 0.0006;
+    const damping = 0.98;
+    const minDist = 30;
 
-    for (let sub = 0; sub < 2; sub++) {
+    for (let sub = 0; sub < 1; sub++) {
       for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++) {
           const a = nodes[i], b = nodes[j];
           let dx = a.x - b.x, dy = a.y - b.y;
           let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          let force = repulsion / (dist * dist + 1);
-          if (dist < minDist) force *= 4;
+          let force = repulsion / (dist + 10);
+          if (dist < minDist) force = Math.min(force, 80);
           const fx = dx / dist * force, fy = dy / dist * force;
           if (!a.pinned) { a.vx += fx; a.vy += fy; }
           if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
