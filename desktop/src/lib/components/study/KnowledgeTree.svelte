@@ -70,7 +70,7 @@
 
     const rect = svgEl.getBoundingClientRect();
     const viewSize = Math.max(rect.width, rect.height, 400);
-    const spread = Math.min(Math.max(entities.length * 2, viewSize * 0.12), viewSize * 0.25);
+    const spread = Math.min(Math.max(entities.length * 1.5, 50), viewSize * 0.12);
     const nodeMap = new Map<string, any>();
     nodes = [];
     edges = [];
@@ -203,41 +203,40 @@
   function simulate() {
     const n = nodes.length;
     if (n === 0) return;
-    const repulsion = Math.min(600, 200 + n * 4);
-    const attraction = 0.004;
-    const gravity = 0.0006;
-    const damping = 0.98;
-    const minDist = 30;
+    const repulsion = 40;
+    const attraction = 0.01;
+    const gravity = 0.0003;
+    const damping = 0.97;
 
-    for (let sub = 0; sub < 1; sub++) {
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          const a = nodes[i], b = nodes[j];
-          let dx = a.x - b.x, dy = a.y - b.y;
-          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          let force = repulsion / (dist + 10);
-          if (dist < minDist) force = Math.min(force, 80);
-          const fx = dx / dist * force, fy = dy / dist * force;
-          if (!a.pinned) { a.vx += fx; a.vy += fy; }
-          if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
-        }
+    // Gentle repulsion — keeps nodes from overlapping without scattering
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        if (dist > 80) continue; // skip far pairs — local repulsion only
+        let force = repulsion / (dist + 5);
+        const fx = dx / dist * force, fy = dy / dist * force;
+        if (!a.pinned) { a.vx += fx; a.vy += fy; }
+        if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
       }
-      for (const e of edges) {
-        const s = nodes.find((nd: any) => nd.id === e.source);
-        const t = nodes.find((nd: any) => nd.id === e.target);
-        if (!s || !t) continue;
-        const dx = t.x - s.x, dy = t.y - s.y;
-        const fx = dx * attraction, fy = dy * attraction;
-        if (!s.pinned) { s.vx += fx; s.vy += fy; }
-        if (!t.pinned) { t.vx -= fx; t.vy -= fy; }
-      }
-      for (const nd of nodes) {
-        if (nd.pinned) continue;
-        nd.vx += (0 - nd.x) * gravity;
-        nd.vy += (0 - nd.y) * gravity;
-        nd.vx *= damping; nd.vy *= damping;
-        nd.x += nd.vx; nd.y += nd.vy;
-      }
+    }
+    // Edge attraction
+    for (const e of edges) {
+      const s = nodes.find((nd: any) => nd.id === e.source);
+      const t = nodes.find((nd: any) => nd.id === e.target);
+      if (!s || !t) continue;
+      const dx = t.x - s.x, dy = t.y - s.y;
+      const fx = dx * attraction, fy = dy * attraction;
+      if (!s.pinned) { s.vx += fx; s.vy += fy; }
+      if (!t.pinned) { t.vx -= fx; t.vy -= fy; }
+    }
+    for (const nd of nodes) {
+      if (nd.pinned) continue;
+      nd.vx += (0 - nd.x) * gravity;
+      nd.vy += (0 - nd.y) * gravity;
+      nd.vx *= damping; nd.vy *= damping;
+      nd.x += nd.vx; nd.y += nd.vy;
     }
     syncNodePositions();
   }
@@ -436,12 +435,28 @@
     // Status: show sim is active
 
     const dragOffsets = new Map();
+    // First-degree neighbors
+    const neighbors = new Set<string>();
     for (const e of edges) {
       const oid = e.source === id ? e.target : e.source;
       if (e.source !== id && e.target !== id) continue;
       const other = nodes.find((nd) => nd.id === oid);
       if (!other) continue;
       dragOffsets.set(oid, { ox: other.x - n.x, oy: other.y - n.y });
+      neighbors.add(oid);
+    }
+    // Second-degree neighbors (connected through first-degree)
+    for (const nid of neighbors) {
+      for (const e of edges) {
+        const oid = e.source === nid ? e.target : e.source;
+        if (e.source !== nid && e.target !== nid) continue;
+        if (oid === id || neighbors.has(oid) || dragOffsets.has(oid)) continue;
+        const other = nodes.find((nd) => nd.id === oid);
+        if (!other) continue;
+        const first = nodes.find((nd) => nd.id === nid);
+        if (!first) continue;
+        dragOffsets.set(oid, { ox: other.x - first.x, oy: other.y - first.y });
+      }
     }
 
     const move = (ev: PointerEvent) => {
@@ -450,8 +465,9 @@
       if (!node) return;
       node.x = start.x + (ev.clientX - r2.left - start.mx) / transform.scale;
       node.y = start.y + (ev.clientY - r2.top - start.my) / transform.scale;
-      // Push connected nodes via the edge spring (matches sim attraction formula)
-      const push = 0.08;
+      // Push connected nodes via the edge spring
+      const push = 0.025;
+      const pushed = new Set<string>();
       for (const e of edges) {
         const oid = e.source === id ? e.target : e.source;
         if (e.source !== id && e.target !== id) continue;
@@ -461,8 +477,22 @@
         const tx = node.x + off.ox, ty = node.y + off.oy;
         other.vx += (tx - other.x) * push;
         other.vy += (ty - other.y) * push;
-        other.x += (tx - other.x) * push * 2;
-        other.y += (ty - other.y) * push * 2;
+        other.x += (tx - other.x) * push * 1.5;
+        other.y += (ty - other.y) * push * 1.5;
+        pushed.add(oid);
+      }
+      // Push second-degree neighbors (gentler via first-degree)
+      for (const nid of neighbors) {
+        if (pushed.has(nid)) continue;
+        const first = nodes.find((nd: any) => nd.id === nid);
+        if (!first || first.pinned) continue;
+        const off = dragOffsets.get(nid) || { ox: 0, oy: 0 };
+        const tx = first.x + off.ox, ty = first.y + off.oy;
+        first.vx += (tx - first.x) * push * 0.5;
+        first.vy += (ty - first.y) * push * 0.5;
+        first.x += (tx - first.x) * push;
+        first.y += (ty - first.y) * push;
+        pushed.add(nid);
       }
       syncNodePositions();
     };
@@ -493,7 +523,6 @@
   }
 
   function navigateToNode(id: string) {
-    stopSim();
     selectedId = id;
     updateUI();
     const node = nodes.find((n: any) => n.id === id);
@@ -505,7 +534,6 @@
   }
 
   function handleBackgroundClick() {
-    stopSim();
     selectedId = null;
     updateUI();
   }
@@ -598,7 +626,7 @@
     </div>
     <p bind:this={ttSummaryEl} class="tt-summary" style="display:none"></p>
     <div bind:this={ttRelationsEl} class="tt-relations"></div>
-    <button class="tt-close" onclick={() => { stopSim(); selectedId = null; updateUI(); }}>close</button>
+    <button class="tt-close" onclick={() => { selectedId = null; updateUI(); }}>close</button>
   </div>
 </div>
 
