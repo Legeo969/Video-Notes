@@ -352,6 +352,24 @@
       }
     }
 
+    // Edge glow on selected node connections
+    const allLines = graphContent?.querySelectorAll('line');
+    if (allLines && selectedId) {
+      for (const line of allLines) {
+        const x1 = line.getAttribute('x1');
+        const y1 = line.getAttribute('y1');
+        // Simple check: connected to selected node if edge endpoints are near the dragged node
+        // We'll just glow the direct edges via opacity/color
+        for (const e of edges) {
+          if (e.source === selectedId || e.target === selectedId) {
+            line.setAttribute('stroke', 'var(--accent-color)');
+            line.setAttribute('stroke-width', '2');
+            line.style.filter = 'brightness(1.3)';
+          }
+        }
+      }
+    }
+
     updateHighlights();
   }
 
@@ -454,6 +472,7 @@
     }
     selectedId = selectedId === id ? null : id;
     n.pinned = true;
+    n.vx = 0; n.vy = 0; // zero velocity to prevent wobble on grab
     dragNodeId = id;
 
     const rect = svgEl.getBoundingClientRect();
