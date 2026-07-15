@@ -292,45 +292,8 @@
     const activeId = selectedId || hoveredId || null;
     const nodeData = activeId ? nodes.find((n: any) => n.id === activeId) : null;
 
-    // Status
-
-    // Tooltip (compact)
-    if (selectedId && nodeData) {
-      if (ttLabelEl) {
-        ttLabelEl.textContent = nodeData.label;
-        const dot = ttLabelEl.previousElementSibling as HTMLElement;
-        if (dot) dot.style.background = nodeData.color;
-      }
-      if (ttTypeEl) ttTypeEl.textContent = nodeData.type;
-      if (ttDegreeEl) ttDegreeEl.textContent = `${nodeData.degree} connections`;
-      if (ttSummaryEl) {
-        const s = nodeData.summary || (nodeData.aliases?.length ? 'Aliases: ' + nodeData.aliases.join(', ') : '') || (nodeData.sourceRefs?.length ? 'From ' + nodeData.sourceRefs.length + ' sources' : '');
-        ttSummaryEl.textContent = s;
-        ttSummaryEl.style.display = s ? '' : 'none';
-      }
-      if (ttRelationsEl) {
-        let html = '';
-        for (const e of edges) {
-          if (e.source !== selectedId && e.target !== selectedId) continue;
-          const otherId = e.source === selectedId ? e.target : e.source;
-          const other = nodes.find((o: any) => o.id === otherId);
-          if (!other) continue;
-          html += `<span class="relation-btn" data-rid="${otherId}" tabindex="0">${e.label} → ${other.label}</span>`;
-        }
-        ttRelationsEl.innerHTML = html;
-        for (const btn of ttRelationsEl.querySelectorAll('.relation-btn')) {
-          btn.addEventListener('click', () => {
-            const rid = btn.getAttribute('data-rid');
-            if (rid) navigateToNode(rid);
-          });
-        }
-      }
-      tooltipEl.style.display = '';
-    } else {
-      tooltipEl.style.display = 'none';
-    }
-
-    // Visual glow on selected node (Obsidian style)
+    // Visual glow on selected node (Obsidian style) — no floating box
+    tooltipEl.style.display = 'none';
     const allCircles = graphContent?.querySelectorAll('circle');
     if (allCircles) {
       for (const c of allCircles) {
