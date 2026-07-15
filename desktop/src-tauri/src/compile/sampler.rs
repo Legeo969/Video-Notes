@@ -219,10 +219,10 @@ pub fn cut_video_segment(
     ];
     match encoder {
         FastEncoder::Nvenc => {
-            args.extend_from_slice(&["-c:v", "h264_nvenc", "-preset", "p7", "-cq", "30", "-vf", "scale=960:-2"]);
+            args.extend_from_slice(&["-c:v", "h264_nvenc", "-preset", "p7", "-cq", "30", "-vf", "scale=640:-2"]);
         }
         FastEncoder::Software => {
-            args.extend_from_slice(&["-c:v", "libx264", "-preset", "faster", "-crf", "30", "-vf", "scale=960:-2"]);
+            args.extend_from_slice(&["-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-vf", "scale=640:-2"]);
         }
     }
     args.extend_from_slice(&["-c:a", "aac", "-b:a", "64k", &out_str]);
@@ -239,8 +239,8 @@ pub fn cut_video_segment(
             let mut sw_args: Vec<&str> = vec![
                 "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", &start_str, "-i", &input_str, "-t", &duration_str,
-                "-c:v", "libx264", "-preset", "faster", "-crf", "30",
-                "-vf", "scale=960:-2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
+                "-vf", "scale=640:-2",
                 "-c:a", "aac", "-b:a", "64k", &out_str,
             ];
             let sw_output = hidden_cmd(ffmpeg).args(&sw_args).output()
