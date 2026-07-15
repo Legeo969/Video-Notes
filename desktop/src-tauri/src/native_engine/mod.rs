@@ -2262,6 +2262,7 @@ impl NativeEngine {
                 "input": item.input.clone(),
                 "title": item.title.clone(),
                 "mode": item.compile_mode.clone(),
+                "sync": true,
             }));
             match result {
                 Ok(value) => {
@@ -2684,7 +2685,7 @@ impl NativeEngine {
         let thread_control = job_control.clone();
         let thread_cookie_file = bilibili_cookie_file.clone();
 
-        std::thread::spawn(move || {
+        let thread_handle = std::thread::spawn(move || {
             let _active_job_guard = ActiveJobGuard {
                 id,
                 controls: job_controls,
@@ -2975,6 +2976,11 @@ impl NativeEngine {
                 let _ = std::fs::remove_dir_all(workspace);
             }
         });
+
+        // If sync mode, wait for the compile thread to complete
+        if params.get("sync").and_then(Value::as_bool).unwrap_or(false) {
+            let _ = thread_handle.join();
+        }
 
         Ok(json!({ "job_id": id }))
     }
