@@ -200,50 +200,49 @@
   let simTimer: ReturnType<typeof setInterval> | null = null;
   function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; } }
 
-      function simulate(frame = 999) {
+        function simulate(frame = 999) {
     const n = nodes.length;
     if (n === 0) return;
-    // All forces only active during drag — idle stays on initial layout
-    if (dragNodeId !== null) {
-      const ramp = Math.min(1, frame / 40);
-      const repulsion = 20 * ramp;
-      const attraction = 0.006;
-      const damping = 0.98;
-      const now = Date.now();
+    const moving = dragNodeId !== null;
+    const ramp = moving ? Math.min(1, frame / 40) : 1;
+    const repulsion = 15 * ramp;
+    const attraction = 0.004;
+    const gravity = 0.0002;
+    const damping = moving ? 0.96 : 0.99;
+    const now = Date.now();
 
-      // Repulsion during drag
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          const a = nodes[i], b = nodes[j];
-          let dx = a.x - b.x, dy = a.y - b.y;
-          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist > 50) continue;
-          let force = repulsion / (dist + 15);
-          const fx = dx / dist * force, fy = dy / dist * force;
-          if (!a.pinned) { a.vx += fx; a.vy += fy; }
-          if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
-        }
+    // Subtle all-pairs repulsion (always on, very gentle)
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        if (dist > 80) continue;
+        let force = repulsion / (dist + 20);
+        const fx = dx / dist * force, fy = dy / dist * force;
+        if (!a.pinned) { a.vx += fx; a.vy += fy; }
+        if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
       }
-      // Edge attraction during drag
-      for (const e of edges) {
-        const s = nodes.find((nd: any) => nd.id === e.source);
-        const t = nodes.find((nd: any) => nd.id === e.target);
-        if (!s || !t) continue;
-        const dx = t.x - s.x, dy = t.y - s.y;
-        const fx = dx * attraction, fy = dy * attraction;
-        if (!s.pinned) { s.vx += fx; s.vy += fy; }
-        if (!t.pinned) { t.vx -= fx; t.vy -= fy; }
-      }
-      // Gravity + breathing during drag
-      for (const nd of nodes) {
-        if (nd.pinned) continue;
-        nd.vx += (0 - nd.x) * 0.00015;
-        nd.vy += (0 - nd.y) * 0.00015;
-        const breath = Math.sin(now * 0.002 + nd.x * 0.01 + nd.y * 0.01) * 0.006;
-        nd.vx += breath; nd.vy += breath;
-        nd.vx *= damping; nd.vy *= damping;
-        nd.x += nd.vx; nd.y += nd.vy;
-      }
+    }
+    // Edge attraction
+    for (const e of edges) {
+      const s = nodes.find((nd: any) => nd.id === e.source);
+      const t = nodes.find((nd: any) => nd.id === e.target);
+      if (!s || !t) continue;
+      const dx = t.x - s.x, dy = t.y - s.y;
+      const fx = dx * attraction, fy = dy * attraction;
+      if (!s.pinned) { s.vx += fx; s.vy += fy; }
+      if (!t.pinned) { t.vx -= fx; t.vy -= fy; }
+    }
+    for (const nd of nodes) {
+      if (nd.pinned) continue;
+      nd.vx += (0 - nd.x) * gravity;
+      nd.vy += (0 - nd.y) * gravity;
+      // Gentle breathing wave
+      const breath = Math.sin(now * 0.0015 + nd.x * 0.008 + nd.y * 0.008) * 0.004;
+      nd.vx += breath; nd.vy += breath;
+      nd.vx *= damping; nd.vy *= damping;
+      nd.x += nd.vx; nd.y += nd.vy;
     }
     syncNodePositions();
   }
