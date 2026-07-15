@@ -10,7 +10,6 @@
   let fileSource = $state("");
   let linkSource = $state("");
   let title = $state("");
-  let compileMode = $state<"precision" | "draft">("precision");
   let template = $state("default");
   let templates = $state<Array<{id: string, name: string, description: string}>>([]);
   let activeProvider = $state("");
@@ -32,7 +31,6 @@
       const rawSettings = await engineCall<Record<string, any>>("settings.get");
       const settings = rawSettings as any;
       activeProvider = String(settings.active_provider || "");
-      compileMode = (["precision", "draft"].includes(String(settings.compile_mode)) ? String(settings.compile_mode) : "precision") as "precision" | "draft";
       template = String(settings.template || "default");
     } catch (error) {
       errorMessage = toErrorMessage(error);
@@ -108,7 +106,7 @@
       const result = await engineCall<{ job_id: number }>("compile.video", {
         input,
         title: title.trim() || undefined,
-        mode: compileMode,
+        mode: "precision",
         template,
       });
       startedJobId = Number(result.job_id);
@@ -167,7 +165,7 @@
       <div class="workflow-steps" aria-label="任务创建步骤">
         <div class="workflow-step active"><span>1</span><div><strong>选择媒体</strong><small>文件或链接</small></div></div>
         <div class="step-line"></div>
-        <div class="workflow-step active"><span>2</span><div><strong>编译模式</strong><small>精确 / 草稿</small></div></div>
+        <div class="workflow-step active"><span>2</span><div><strong>编译模式</strong><small>云端精确编译</small></div></div>
         <div class="step-line"></div>
         <div class="workflow-step"><span>3</span><div><strong>后台生成</strong><small>实时同步进度</small></div></div>
       </div>
@@ -224,14 +222,10 @@
         </div>
 
         <div class="enhancement-grid" aria-label="内容增强开关">
-          <button type="button" class="enhancement-card" class:enabled={compileMode === "precision"} onclick={() => (compileMode = compileMode === "precision" ? "draft" : "precision")} aria-pressed={compileMode === "precision"}>
-            <div class="enhance-icon"><Icon name={compileMode === "precision" ? "cloud" : "offline"} size={20} /></div>
-            <div class="enhance-copy"><strong>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"}</strong><span>{compileMode === "precision" ? "调用多模态 AI 分析视频帧和音频，输出结构化笔记" : "离线可用，仅生成关键词和概要，置信度较低"}</span></div>
-            <span class="switch" aria-hidden="true">
-              <input type="checkbox" checked={compileMode === "precision"} tabindex="-1" />
-              <span class="switch-track"></span>
-            </span>
-          </button>
+          <div class="enhancement-card enabled">
+            <div class="enhance-icon"><Icon name="cloud" size={20} /></div>
+            <div class="enhance-copy"><strong>云端精确编译</strong><span>调用多模态 AI 分析视频帧和音频，输出结构化笔记</span></div>
+          </div>
         </div>
 
         <div class="template-selector">
@@ -270,7 +264,7 @@
       <div class="submit-bar">
         <div class="submit-summary">
           <span class="summary-icon"><Icon name="sparkles" size={16} /></span>
-          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : "已准备好创建任务"}</strong><small>{compileMode === "precision" ? "云端精确编译" : "本地草稿模式"} · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
+          <div><strong>{!source.trim() ? "请先选择媒体来源" : !publicUrlValid ? "请修正公开视频链接" : "已准备好创建任务"}</strong><small>云端精确编译 · {activeProvider ? `AI：${activeProvider}` : "未设置 AI 供应商"}</small></div>
         </div>
         <div class="submit-actions">
           {#if startedJobId !== null}<button class="btn btn-secondary" type="button" onclick={resetForm}>新建另一个</button>{/if}

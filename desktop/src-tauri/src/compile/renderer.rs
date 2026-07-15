@@ -106,9 +106,14 @@ fn render_markdown(capsule: &VideoCapsule) -> Result<String, String> {
     }
 
     if !capsule.global_summary.trim().is_empty() {
-        md.push_str("## 全局摘要\n\n");
-        md.push_str(&capsule.global_summary);
-        md.push_str("\n\n");
+        let summary: Vec<&str> = capsule.global_summary
+            .lines()
+            .filter(|l| !l.trim().starts_with("[Chunk"))
+            .collect();
+        if !summary.is_empty() {
+            md.push_str("## 全局摘要\n\n");
+            md.push_str(&format!("{}\n\n", summary.join("\n")));
+        }
     }
 
     if capsule.evidences.is_empty() {
@@ -148,7 +153,7 @@ fn render_markdown(capsule: &VideoCapsule) -> Result<String, String> {
 // ── Lecture template ────────────────────────────────────────
 
 fn render_lecture(capsule: &VideoCapsule) -> Result<String, String> {
-    let mut md = String::new();
+    let mut md = frontmatter(capsule);
     let title = if capsule.source_title.trim().is_empty() {
         "Video Notes"
     } else {
@@ -157,7 +162,14 @@ fn render_lecture(capsule: &VideoCapsule) -> Result<String, String> {
     md.push_str(&format!("# {} — 课程笔记\n\n", title));
 
     if !capsule.global_summary.trim().is_empty() {
-        md.push_str(&format!("{}\n\n", capsule.global_summary));
+        // Filter out [Chunk N] summary lines
+        let summary: Vec<&str> = capsule.global_summary
+            .lines()
+            .filter(|l| !l.trim().starts_with("[Chunk"))
+            .collect();
+        if !summary.is_empty() {
+            md.push_str(&format!("{}\n\n", summary.join("\n")));
+        }
     }
 
     if capsule.evidences.is_empty() {
@@ -202,8 +214,13 @@ fn render_summary(capsule: &VideoCapsule) -> Result<String, String> {
     ));
 
     if !capsule.global_summary.trim().is_empty() {
-        md.push_str(&capsule.global_summary);
-        md.push_str("\n\n");
+        let summary: Vec<&str> = capsule.global_summary
+            .lines()
+            .filter(|l| !l.trim().starts_with("[Chunk"))
+            .collect();
+        if !summary.is_empty() {
+            md.push_str(&format!("{}\n\n", summary.join("\n")));
+        }
     }
 
     if capsule.evidences.is_empty() {
@@ -249,10 +266,13 @@ fn render_concise(capsule: &VideoCapsule) -> Result<String, String> {
         mode_label(capsule.compilation_mode)
     ));
 
-    // Global summary (short)
-    let summary = capsule.global_summary.trim();
-    if !summary.is_empty() {
-        md.push_str(&format!("{}\n\n", summary));
+    // Global summary (filtered)
+    let summary_lines: Vec<&str> = capsule.global_summary
+        .lines()
+        .filter(|l| !l.trim().starts_with("[Chunk"))
+        .collect();
+    if !summary_lines.is_empty() {
+        md.push_str(&format!("{}\n\n", summary_lines.join("\n")));
     }
 
     if capsule.evidences.is_empty() {
@@ -339,7 +359,7 @@ fn render_mindmap(capsule: &VideoCapsule) -> Result<String, String> {
         mm.push_str("- 全局摘要\n");
         for line in capsule.global_summary.lines() {
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && !trimmed.starts_with("[Chunk") {
                 mm.push_str(&format!("  - {trimmed}\n"));
             }
         }

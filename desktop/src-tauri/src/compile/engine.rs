@@ -78,14 +78,16 @@ pub fn compile_video(
 
     let requested_mode = match &opts.client_config {
         Some(config) => draft::resolve_compile_mode(&config.base_url, opts.prefer_draft),
-        None => CompileMode::LocalDraft,
+        None => return Err(
+            "未配置 API Provider。请在设置中添加 Provider 和 API Key 后再编译。".to_string()
+        ),
     };
     progress(
         "sampling",
         5,
         match requested_mode {
             CompileMode::CloudPrecision => "模式: Cloud Precision",
-            _ => "模式: Local Draft",
+            _ => "模式: Cloud Precision",
         },
     );
 
@@ -139,60 +141,38 @@ pub fn compile_video(
             &format!("编译切片 {}/{}", index + 1, chunks.len()),
         );
 
-        let has_audio = !sample.audio.data.is_empty() && chunk.end_sec > chunk.start_sec;
+        let _has_audio = !sample.audio.data.is_empty() && chunk.end_sec > chunk.start_sec;
 
         let output = if requested_mode == CompileMode::CloudPrecision {
-            if let Some(config) = &opts.client_config {
-                if config.accepts_video {
-                    let video_data = sampler::cut_video_segment(
-                        input_path,
-                        &opts.ffmpeg_path,
-                        chunk.start_sec,
-                        chunk.end_sec,
-                    )
-                    .map_err(|e| format!("chunk {} video cut failed: {}", chunk.sequence, e))?;
-                    if video_data.is_empty() {
-                        return Err(format!(
-                            "chunk {} video cut produced empty output",
-                            chunk.sequence
-                        ));
-                    }
-                    let output = client::compile_chunk_video(
-                        config,
-                        chunk.sequence,
-                        total_chunks,
-                        &chunk.anchor_indices,
-                        &video_data,
-                        Some(&context.prev_chunk_summary),
-                    )?;
-                    output
-                } else {
-                    // Provider does not support video; use local draft
-                    draft::generate_local_draft(
-                        title,
-                        chunk.end_sec - chunk.start_sec,
-                        &chunk.frames,
-                        &chunk.anchor_indices,
-                        has_audio,
-                    )
-                }
-            } else {
-                draft::generate_local_draft(
-                    title,
-                    chunk.end_sec - chunk.start_sec,
-                    &chunk.frames,
-                    &chunk.anchor_indices,
-                    has_audio,
-                )
+            let config = opts.client_config.as_ref().ok_or_else(||
+                "未配置 API Provider，无法编译。".to_string()
+            )?;
+            if !config.accepts_video {
+                return Err("当前 Provider 不支持视频分析，无法编译。请更换支持多模态的 Provider。".to_string());
             }
-        } else {
-            draft::generate_local_draft(
-                title,
-                chunk.end_sec - chunk.start_sec,
-                &chunk.frames,
-                &chunk.anchor_indices,
-                has_audio,
+            let video_data = sampler::cut_video_segment(
+                input_path,
+                &opts.ffmpeg_path,
+                chunk.start_sec,
+                chunk.end_sec,
             )
+            .map_err(|e| format!("chunk {} video cut failed: {}", chunk.sequence, e))?;
+            if video_data.is_empty() {
+                return Err(format!(
+                    "chunk {} video cut produced empty output",
+                    chunk.sequence
+                ));
+            }
+            client::compile_chunk_video(
+                config,
+                chunk.sequence,
+                total_chunks,
+                &chunk.anchor_indices,
+                &video_data,
+                Some(&context.prev_chunk_summary),
+            )?
+        } else {
+            return Err("未配置 API Provider，无法编译。请在设置中添加 Provider 和 API Key。".to_string());
         };
         context = context.advance(&output.chunk_summary);
         outputs.push(output);
@@ -223,21 +203,12 @@ pub fn compile_video(
         }
     }
 
-    let final_mode = if requested_mode == CompileMode::CloudPrecision
-        && opts
-            .client_config
-            .as_ref()
-            .map(|c| c.accepts_video)
-            .unwrap_or(false)
-    {
-        CompileMode::CloudPrecision
-    } else {
-        CompileMode::LocalDraft
-    };
-    let model_used = match (&opts.client_config, final_mode) {
-        (Some(config), CompileMode::CloudPrecision) => config.model.clone(),
-        _ => "local-draft".to_string(),
-    };
+    let final_mode = CompileMode::CloudPrecision;
+    let model_used = opts
+        .client_config
+        .as_ref()
+        .map(|c| c.model.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     let mut builder = CapsuleBuilder::new(
         source_hash.to_string(),
         title.to_string(),

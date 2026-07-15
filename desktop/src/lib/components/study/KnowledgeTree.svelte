@@ -86,8 +86,8 @@
         aliases: e.aliases || [], sourceRefs: e.sourceRefs || [],
         color: nodeColor(e.entityType),
         radius: Math.max(6, Math.min(24, 6 + deg * 1.5)),
-        x: Math.cos(angle) * spread + Math.random() * 20 - 10,
-        y: Math.sin(angle) * spread + Math.random() * 20 - 10,
+        x: Math.cos(angle) * spread + Math.random() * 8 - 4,
+        y: Math.sin(angle) * spread + Math.random() * 8 - 4,
         vx: 0, vy: 0, pinned: false,
       };
       nodeMap.set(n.id, n);
@@ -105,8 +105,8 @@
         summary: '', degree: deg,
         color: nodeColor('chapter'),
         radius: Math.max(8, Math.min(28, 8 + deg * 1.2)),
-        x: Math.cos(angle) * spread * 0.7 + Math.random() * 15 - 7.5,
-        y: Math.sin(angle) * spread * 0.7 + Math.random() * 15 - 7.5,
+        x: Math.cos(angle) * spread * 0.7 + Math.random() * 6 - 3,
+        y: Math.sin(angle) * spread * 0.7 + Math.random() * 6 - 3,
         vx: 0, vy: 0, pinned: false,
       };
       nodeMap.set(n.id, n);
@@ -200,17 +200,14 @@
   let simTimer: ReturnType<typeof setInterval> | null = null;
   function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; } }
 
-  function simulate(frame = 0) {
+  function simulate() {
     const n = nodes.length;
     if (n === 0) return;
-    const repulsion = Math.min(3000, 1000 + n * 15);
-    const attraction = 0.02;
-    const gravity = 0.002;
-    const damping = 0.94;
-    const minDist = 15;
-
-    // Ramp: gradually increase force intensity over first 40 frames to prevent jitter
-    const ramp = Math.min(1, frame / 40);
+    const repulsion = Math.min(1200, 400 + n * 8);
+    const attraction = 0.008;
+    const gravity = 0.001;
+    const damping = 0.97;
+    const minDist = 20;
 
     for (let sub = 0; sub < 2; sub++) {
       for (let i = 0; i < n; i++) {
@@ -220,7 +217,7 @@
           let dist = Math.sqrt(dx * dx + dy * dy) || 1;
           let force = repulsion / (dist * dist + 1);
           if (dist < minDist) force *= 4;
-          const fx = dx / dist * force * ramp, fy = dy / dist * force * ramp;
+          const fx = dx / dist * force, fy = dy / dist * force;
           if (!a.pinned) { a.vx += fx; a.vy += fy; }
           if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
         }
@@ -230,14 +227,14 @@
         const t = nodes.find((nd: any) => nd.id === e.target);
         if (!s || !t) continue;
         const dx = t.x - s.x, dy = t.y - s.y;
-        const fx = dx * attraction * ramp, fy = dy * attraction * ramp;
+        const fx = dx * attraction, fy = dy * attraction;
         if (!s.pinned) { s.vx += fx; s.vy += fy; }
         if (!t.pinned) { t.vx -= fx; t.vy -= fy; }
       }
       for (const nd of nodes) {
         if (nd.pinned) continue;
-        nd.vx += (0 - nd.x) * gravity * ramp;
-        nd.vy += (0 - nd.y) * gravity * ramp;
+        nd.vx += (0 - nd.x) * gravity;
+        nd.vy += (0 - nd.y) * gravity;
         nd.vx *= damping; nd.vy *= damping;
         nd.x += nd.vx; nd.y += nd.vy;
       }
@@ -277,7 +274,7 @@
     if (nodes.length === 0) return;
     stopSim();
     simTimer = setInterval(() => {
-      simulate(999);
+      simulate();
     }, 40);
   }
 
