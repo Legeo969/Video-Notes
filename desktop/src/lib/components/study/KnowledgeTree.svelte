@@ -200,31 +200,39 @@
   let simTimer: ReturnType<typeof setInterval> | null = null;
   function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; } }
 
-  function simulate(frame = 999) {
+    function simulate(frame = 999) {
     const n = nodes.length;
     if (n === 0) return;
-    const ramp = Math.min(1, frame / 60);
+    const moving = dragNodeId !== null;
+    const ramp = moving ? Math.min(1, frame / 40) : 0;
     const repulsion = 20 * ramp;
-    const attraction = 0.006 * ramp;
-    const gravity = 0.00015 * ramp;
-    const damping = 0.995;
-    const breathAmp = 0.008 * (0.3 + 0.7 * ramp);
+    const attraction = 0.006;
+    const gravity = 0.00015;
+    const damping = moving ? 0.98 : 0.997;
 
-    // Gentle repulsion + tiny breathing wave
-    const now = Date.now();
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const a = nodes[i], b = nodes[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        if (dist > 50) continue;
-        let force = repulsion / (dist + 15);
-        const fx = dx / dist * force, fy = dy / dist * force;
-        if (!a.pinned) { a.vx += fx; a.vy += fy; }
-        if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+    // Repulsion + breathing only while dragging
+    if (moving) {
+      const now = Date.now();
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const a = nodes[i], b = nodes[j];
+          let dx = a.x - b.x, dy = a.y - b.y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (dist > 50) continue;
+          let force = repulsion / (dist + 15);
+          const fx = dx / dist * force, fy = dy / dist * force;
+          if (!a.pinned) { a.vx += fx; a.vy += fy; }
+          if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+        }
+      }
+      // Breathing wave during drag
+      for (const nd of nodes) {
+        if (nd.pinned) continue;
+        const breath = Math.sin(now * 0.002 + nd.x * 0.01 + nd.y * 0.01) * 0.006;
+        nd.vx += breath; nd.vy += breath;
       }
     }
-    // Edge attraction
+    // Edge attraction (always gentle)
     for (const e of edges) {
       const s = nodes.find((nd: any) => nd.id === e.source);
       const t = nodes.find((nd: any) => nd.id === e.target);
@@ -238,9 +246,6 @@
       if (nd.pinned) continue;
       nd.vx += (0 - nd.x) * gravity;
       nd.vy += (0 - nd.y) * gravity;
-      // Gentle breathing wave — prevents dead stillness
-      const breath = Math.sin(now * 0.002 + nd.x * 0.01 + nd.y * 0.01) * breathAmp;
-      nd.vx += breath; nd.vy += breath;
       nd.vx *= damping; nd.vy *= damping;
       nd.x += nd.vx; nd.y += nd.vy;
     }
