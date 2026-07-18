@@ -1,0 +1,45 @@
+{
+  "task_id": "VN-BUG-015",
+  "title": "Eliminate runtime component update false positives",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-017",
+    "SPEC-ARCH-023"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/native_engine/tests.rs",
+    "desktop/src/pages/Settings.svelte",
+    "tasks/spec-v0.2/vn-bug-015.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-BUG-015.md"
+  ],
+  "forbidden_changes": [
+    "Weakening runtime package digest or signature verification",
+    "Treating an unpinned GitHub release as an installable update",
+    "Changing bundled component manifests or download URLs",
+    "Showing an update action when the installed marker matches the bundled manifest"
+  ],
+  "deliverables": [
+    "Deterministic update status based on the trusted bundled manifest",
+    "Installed-version fallback to the verified component marker",
+    "Regression tests for matching and stale component markers",
+    "Accurate plugin version and update controls"
+  ],
+  "acceptance_tests": [
+    "Matching installed and bundled manifest versions return update_available false",
+    "A stale installed marker returns the bundled version as the available update",
+    "components.check_updates performs no live GitHub version lookup",
+    "A verified installed component never renders its version as uninstalled",
+    "Svelte and Rust regression suites pass"
+  ],
+  "security_requirements": [
+    "Only a package represented by the bundled digest-pinned manifest may be offered for installation",
+    "The frontend must not supply or override a component URL, version, or digest"
+  ],
+  "dependencies": [
+    "VN-BUG-014"
+  ],
+  "status": "done"
+}

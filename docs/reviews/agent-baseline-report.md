@@ -508,3 +508,18 @@ Node 24 is outside the repository-declared `>=20 <23` range. `npm ci` therefore 
 - Ed25519 payload and external Trust Policy interoperability: passed; untrusted and revoked signers fail closed.
 - Optional real-player launch test requires `VN_TEST_MPV_PATH` and `VN_TEST_MEDIA_PATH`; command construction, one-window IPC seek, and playback routing regressions pass in the default suite.
 - Existing blocked tasks outside this audit remain `VN-API-001` and `VN-BUG-002`.
+
+## VN-BUG-013 responsive UI baseline
+
+**Date:** 2026-07-18
+**Purpose:** Establish a clean pre-change baseline for eliminating text and control overlap during desktop window resizing and display scaling.
+
+| Gate | Exit | Result |
+|---|---:|---|
+| 10 Python repository/spec/security/media/interoperability commands | 0 | All passed; task validation reports 42 tasks. |
+| `npm --prefix desktop ci` | 0 | Dependencies installed; no install failure. |
+| `npm --prefix desktop run verify` | 0 | Svelte 0 errors/0 warnings; Vite production build passed with 149 modules. |
+| Default Cargo fmt/check/test | 0 | Formatting, compilation, and tests passed. |
+| Cargo check/test with `compiler_v3` | 0 | Feature build and tests passed. |
+
+The baseline has no compile or conformance failures. The observed defect is presentation-specific: fixed-width shell regions, grid columns, and action clusters compete for width under the minimum supported 900×600 window, display scaling, and long localized text.

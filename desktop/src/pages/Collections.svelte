@@ -479,13 +479,13 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .metric small { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
   .collection-alert { margin-bottom: 14px; }
   .collection-alert span { flex: 1; }
-  .collection-alert button { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; color: inherit; background: transparent; cursor: pointer; }
+  .collection-alert button { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; border: 0; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; }
 
   .collection-workspace { display: grid; grid-template-columns: minmax(240px, 280px) minmax(0,1fr); min-height: 600px; overflow: hidden; }
   .collection-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid var(--border-color); background: var(--bg-subtle); }
   .collection-search { margin: 14px 13px 8px; }
-  .collection-search input { min-height: 35px; font-size: 14px; }
-  .search-clear { position: absolute; right: 6px; display: grid; place-items: center; width: 23px; height: 23px; border: 0; border-radius: 6px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
+  .collection-search input { min-height: 40px; padding-right: 42px; font-size: 14px; }
+  .search-clear { position: absolute; right: 1px; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 8px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
   .sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; color: var(--text-tertiary); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
   .sidebar-label em { font-style: normal; }
   .collection-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 7px; }
@@ -506,14 +506,14 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .collection-detail { min-width: 0; background: var(--bg-card); }
-  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid var(--border-color); }
+  .detail-header { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; padding: 20px 22px; border-bottom: 1px solid var(--border-color); }
   .detail-title-wrap { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .detail-folder { display: grid; place-items: center; width: 45px; height: 45px; flex: 0 0 auto; border-radius: 14px; color: var(--accent-color); background: var(--accent-soft); }
   .detail-title-wrap > div:last-child { display: flex; min-width: 0; flex-direction: column; }
   .detail-title-wrap span { color: var(--accent-color); font-size: 11px; font-weight: 800; letter-spacing: .11em; }
-  .detail-title-wrap h2 { margin-top: 2px; overflow: hidden; font-size: 21px; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
-  .detail-title-wrap p { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
-  .detail-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; flex: 0 1 auto; }
+  .detail-title-wrap h2 { margin-top: 2px; overflow: hidden; font-size: 21px; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; text-wrap: balance; }
+  .detail-title-wrap p { margin-top: 3px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; text-wrap: pretty; }
+  .detail-actions { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 7px; min-width: 0; }
   .detail-actions .btn { min-height: 40px; white-space: nowrap; }
   .detail-actions .icon-btn { width: 40px; height: 40px; flex: 0 0 40px; }
   .batch-mode-label { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 640; }
@@ -535,8 +535,9 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .items-toolbar span { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
   .item-counter { margin: 0 !important; padding: 4px 8px; border-radius: 99px; background: var(--bg-muted); font-size: 12px !important; font-weight: 650; }
   .items-list { padding: 0 22px 22px; }
-  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 210px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
-  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 210px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
+  .items-head { display: grid; grid-template-columns: minmax(0,1fr) minmax(170px,.55fr); gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .items-head > span:last-child { display: none; }
+  .media-row { display: grid; grid-template-columns: 28px 34px minmax(0,1fr) minmax(170px,.55fr); align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px 12px; border-bottom: 1px solid var(--border-color); }
   .media-row:last-child { border-bottom: 0; }
   .row-index { color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
   .row-media-icon { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
@@ -547,7 +548,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .row-status > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
   .row-status em { color: var(--text-secondary); font-size: 12px; font-style: normal; font-variant-numeric: tabular-nums; }
   .row-status .progress-track { height: 4px; }
-  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+  .row-actions { grid-column: 3 / -1; display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 4px; min-width: 0; }
   .link-btn { display: inline-flex; align-items: center; gap: 4px; min-height: 40px; border: 0; color: var(--accent-color); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; padding: 4px 8px; border-radius: 6px; }
   .link-btn:hover { background: var(--accent-soft); }
   .remove-item { width: 40px; height: 40px; color: var(--text-tertiary); }
@@ -593,7 +594,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .metric small { font-size: 11px; color: var(--text-tertiary); }
   .collection-workspace { grid-template-columns: 290px minmax(0,1fr); min-height: 560px; border-radius: 14px; box-shadow: var(--shadow-sm); }
   .collection-sidebar { padding: 14px 11px; }
-  .collection-search input { min-height: 38px; font-size: 12px; }
+  .collection-search input { min-height: 40px; font-size: 12px; }
   .sidebar-label { padding: 12px 9px 8px; font-size: 10px; }
   .collection-item { grid-template-columns: 38px minmax(0,1fr) auto; gap: 10px; padding: 10px; }
   .collection-folder { width: 36px; height: 36px; }
@@ -620,10 +621,10 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
     .collection-workspace { grid-template-columns: 1fr; min-height: auto; }
     .collection-sidebar { border-right: 0; border-bottom: 1px solid var(--border-color); max-height: 45vh; overflow: hidden; }
     .collection-list { max-height: 260px; }
-    .detail-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+    .detail-header { align-items: flex-start; gap: 10px; }
     .detail-actions { width: 100%; flex-wrap: wrap; }
-    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 190px; }
-    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 190px; gap: 5px; padding: 7px 2px; }
+    .items-head { grid-template-columns: minmax(0, 1fr) minmax(140px, .55fr); }
+    .media-row { grid-template-columns: 22px 28px minmax(0, 1fr) minmax(140px, .55fr); gap: 7px; padding: 8px 2px 12px; }
     .detail-progress-strip { grid-template-columns: 85px 1fr; }
     .collection-metrics { grid-template-columns: repeat(3, 1fr); }
     .detail-actions .btn { min-height: 40px; padding: 7px 10px; font-size: 11px; }

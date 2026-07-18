@@ -1,0 +1,44 @@
+{
+  "task_id": "VN-BUG-014",
+  "title": "Expose the direct playback component in Settings",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-023"
+  ],
+  "allowed_paths": [
+    "desktop/src/pages/Settings.svelte",
+    "desktop/src/lib/api/mockTauri.ts",
+    "desktop/scripts/responsive-audit.mjs",
+    "tasks/spec-v0.2/vn-bug-014.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-BUG-014.md"
+  ],
+  "forbidden_changes": [
+    "Changing component manifest trust or integrity verification",
+    "Using FFmpeg as the interactive note video player",
+    "Hiding unavailable playback capability from the user",
+    "Adding interactive hit areas smaller than 40 by 40 pixels"
+  ],
+  "deliverables": [
+    "Visible mpv-tools card in Settings plugins",
+    "Clear direct-playback and timestamp-seek capability labels",
+    "Responsive plugin card and action layout",
+    "Browser audit fixture covering playback component visibility"
+  ],
+  "acceptance_tests": [
+    "Every runtime component returned by components.list is visible in Settings plugins",
+    "mpv-tools is labelled as the local video player and exposes an install action when absent",
+    "The plugin page remains free of overlap from 900 through 1920 CSS pixels",
+    "Svelte check and production frontend build complete with zero errors and zero warnings",
+    "Existing component integrity and Rust regression tests remain compatible"
+  ],
+  "security_requirements": [
+    "Installation must continue through the existing native component verifier",
+    "No component download URL or digest may be overridden by frontend input"
+  ],
+  "dependencies": [
+    "VN-BUG-013"
+  ],
+  "status": "done"
+}

@@ -90,7 +90,7 @@
     { id: "general", label: "通用设置", icon: "settings", hint: "目录与编译" },
     { id: "providers", label: "AI 供应商", icon: "bot", hint: "文本与视觉模型" },
     { id: "templates", label: "笔记模板", icon: "template", hint: "输出结构与场景" },
-    { id: "plugins", label: "插件", icon: "package", hint: "ffmpeg / yt-dlp 运行时组件" },
+    { id: "plugins", label: "插件", icon: "package", hint: "播放、分析与下载组件" },
     { id: "storage", label: "存储管理", icon: "database", hint: "缓存、工作区与导出" },
     { id: "diagnostics", label: "系统诊断", icon: "stethoscope", hint: "依赖与运行环境" },
   ];
@@ -243,7 +243,47 @@
 
   let selectedTemplate = $derived(templates.find((template) => template.id === settings.template));
   let passedChecks = $derived(checkResults.filter((item) => item.status === "pass").length);
-  let toolComponents = $derived(runtimeComponents.filter((item) => ["download-tools", "ffmpeg-tools"].includes(item.component) || (item.provides ?? []).some((cap) => ["download", "ffmpeg"].includes(cap))));
+  let toolComponents = $derived([...runtimeComponents].sort((left, right) => {
+    const rank = (component: string) => component === "mpv-tools" ? 0 : component === "ffmpeg-tools" ? 1 : component === "download-tools" ? 2 : 3;
+    return rank(left.component) - rank(right.component) || left.component.localeCompare(right.component);
+  }));
+
+  const componentLabels: Record<string, { name: string; description: string; icon: string }> = {
+    "mpv-tools": {
+      name: "本地视频播放器",
+      description: "直接读取本地视频，复用播放器窗口并支持证据时间戳跳转",
+      icon: "play",
+    },
+    "ffmpeg-tools": {
+      name: "媒体分析工具",
+      description: "用于媒体探测和内容分析，不承担笔记页面的交互播放",
+      icon: "video",
+    },
+    "download-tools": {
+      name: "在线视频下载工具",
+      description: "用于下载受支持的公开视频来源",
+      icon: "download",
+    },
+  };
+
+  const capabilityLabels: Record<string, string> = {
+    "video-playback": "本地播放",
+    "timestamp-seek": "时间戳跳转",
+    ffmpeg: "媒体分析",
+    download: "视频下载",
+  };
+
+  function componentLabel(component: RuntimeComponent) {
+    return componentLabels[component.component] ?? {
+      name: component.component,
+      description: component.description || "本机运行时组件",
+      icon: "package",
+    };
+  }
+
+  function componentCapabilities(component: RuntimeComponent) {
+    return (component.provides ?? []).map((capability) => capabilityLabels[capability] ?? capability).join(" / ") || "运行时支持";
+  }
 
   interface ComponentDownloadProgress {
     component: string;
@@ -537,25 +577,26 @@
       });
       const updatesAvailable = results.filter(r => r.update_available);
       if (updatesAvailable.length > 0) {
-        showToast(`发现 ${updatesAvailable.length} 个可更新组件：${updatesAvailable.map(u => u.component).join(", ")}`, "info");
+        showToast(`发现 ${updatesAvailable.length} 个组件与当前应用内置版本不一致：${updatesAvailable.map(u => u.component).join(", ")}`, "info");
       } else {
-        showToast("所有组件均为最新版本", "success");
+        showToast("所有组件均与当前应用内置版本一致", "success");
       }
     } catch (e: any) {
-      showToast(`检查更新失败：${e?.message ?? e}`, "error");
+      showToast(`检查组件版本失败：${e?.message ?? e}`, "error");
     } finally {
       checkingUpdates = false;
     }
   }
 
-  async function installComponent(component: RuntimeComponent, updating = false) {
+  async function installComponent(component: RuntimeComponent, mode: "install" | "update" | "repair" = "install") {
+    const actionLabel = mode === "update" ? "同步" : mode === "repair" ? "修复" : "安装";
     componentAction = `install:${component.component}`;
     try {
       await engineCall("components.install", { component: component.component });
-      showToast(`${component.component} ${updating ? "已更新" : "已安装"}`, "success");
+      showToast(`${component.component} ${actionLabel}完成`, "success");
       await refreshComponents();
     } catch (e: any) {
-      showToast(`${updating ? "更新" : "安装"} ${component.component} 失败：${e?.message ?? e}`, "error");
+      showToast(`${actionLabel} ${component.component} 失败：${e?.message ?? e}`, "error");
     } finally {
       componentAction = null;
       // Clear progress bar when done
@@ -672,7 +713,7 @@
           <button class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
             <span class="tab-icon"><Icon name={tab.icon} size={17} /></span>
             <span class="tab-copy"><strong>{tab.label}</strong><small>{tab.hint}</small></span>
-            <Icon name="chevron-right" size={14} />
+            <span class="tab-chevron"><Icon name="chevron-right" size={14} /></span>
           </button>
         {/each}
         <div class="security-note"><Icon name="shield" size={17} /><div><strong>本地安全存储</strong><p>敏感凭据不会写入任务快照或诊断日志。</p></div></div>
@@ -732,7 +773,7 @@
             <div class="pane-head actions-head">
               <div><span>PLUGINS</span><h2>插件</h2><p>按需安装运行时工具组件；主程序保持轻量，重依赖放在本机 runtime。</p></div>
               <div style="display:flex;gap:8px;">
-                <button class="btn btn-secondary" type="button" onclick={checkAllUpdates} disabled={checkingUpdates || componentsLoading}><Icon name="refresh" size={15} />{checkingUpdates ? "检查中..." : "检查更新"}</button>
+                <button class="btn btn-secondary" type="button" onclick={checkAllUpdates} disabled={checkingUpdates || componentsLoading}><Icon name="refresh" size={15} />{checkingUpdates ? "检查中..." : "检查组件版本"}</button>
                 <button class="btn btn-secondary" type="button" onclick={refreshComponents} disabled={componentsLoading}><Icon name="list" size={15} />{componentsLoading ? "刷新中" : "刷新"}</button>
               </div>
             </div>
@@ -754,24 +795,24 @@
             {/if}
 
             <div class="setting-group">
-              <div class="group-head"><div class="group-icon"><Icon name="download" size={18} /></div><div><h3>外部工具</h3><p>yt-dlp 和 FFmpeg 以 standalone executable 运行。</p></div></div>
+              <div class="group-head"><div class="group-icon"><Icon name="package" size={18} /></div><div><h3>运行组件</h3><p>按需安装本地播放、时间戳跳转、媒体分析与视频下载能力。</p></div></div>
               {#if componentsLoading && toolComponents.length === 0}
                 <div class="plugin-empty-state"><span class="loading-ring compact"></span><div><strong>正在读取插件状态</strong><small>检查本机 runtime 组件清单与已安装目录。</small></div></div>
               {:else if toolComponents.length === 0}
-                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到工具组件清单</strong><small>请确认 runtime/manifests/download-tools.json 或 ffmpeg-tools.json 存在。</small></div></div>
+                <div class="plugin-empty-state"><Icon name="package" size={20} /><div><strong>未找到运行组件清单</strong><small>请检查应用内置组件清单是否完整。</small></div></div>
               {:else}
                 <div class="plugin-grid">
                   {#each toolComponents as component}
-                    <article class="plugin-card" class:installed={component.installed}>
+                    <article class="plugin-card" class:installed={component.installed} data-component={component.component}>
                       <div class="plugin-card-head">
-                        <div class="plugin-icon"><Icon name={component.component === "download-tools" ? "download" : "video"} size={20} /></div>
-                        <div class="plugin-title"><strong>{component.component}</strong><small>{component.description}</small></div>
+                        <div class="plugin-icon"><Icon name={componentLabel(component).icon} size={20} /></div>
+                        <div class="plugin-title"><strong>{componentLabel(component).name}</strong><small>{component.component} · {componentLabel(component).description}</small></div>
                         <StatusPill status={componentStatusType(component)} label={componentStatusLabel(component)} />
                       </div>
                       <div class="plugin-meta">
                         <div><span>工具版本</span><strong>{component.installed_version || "未安装"}</strong></div>
                         <div><span>体积</span><strong>{component.size_mb ? `${component.size_mb} MB` : "未知"}</strong></div>
-                        <div><span>能力</span><strong>{(component.provides ?? []).join(" / ") || "runtime"}</strong></div>
+                        <div><span>能力</span><strong>{componentCapabilities(component)}</strong></div>
                       </div>
                       {#if downloadProgress[component.component] !== undefined}
                         <div class="plugin-download-progress">
@@ -780,18 +821,26 @@
                         </div>
                       {/if}
                       <div class="plugin-path"><span>安装位置</span><code>{component.component_path || "尚未安装"}</code></div>
+                      {#if component.component === "mpv-tools"}
+                        <div class="plugin-warning plugin-note"><Icon name="play" size={14} /><span>笔记视频播放与证据时间戳跳转依赖此组件。</span></div>
+                      {/if}
                       {#if component.missing_files?.length}
                         <div class="plugin-warning"><Icon name="alert" size={14} /><span>缺少 {component.missing_files.length} 个组件文件，建议重新安装。</span></div>
+                      {:else if component.installed && component.status !== "ok"}
+                        <div class="plugin-warning"><Icon name="alert" size={14} /><span>组件完整性校验未通过，请重新安装修复。</span></div>
                       {/if}
                       <div class="plugin-actions">
                         {#if component.installed}
+                          {#if component.status !== "ok" && component.downloadable}
+                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, "repair")} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "修复中" : "重新安装修复"}</button>
+                          {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => verifyComponent(component)} disabled={componentAction !== null}><Icon name="check" size={14} />{componentAction === `verify:${component.component}` ? "验证中" : "验证"}</button>
-                          {#if component.update_available}
-                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, true)} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "更新中" : "更新"}</button>
+                          {#if component.status === "ok" && component.update_available}
+                            <button class="btn btn-primary" type="button" onclick={() => installComponent(component, "update")} disabled={componentAction !== null}><Icon name="refresh" size={14} />{componentAction === `install:${component.component}` ? "同步中" : "同步内置版本"}</button>
                           {/if}
                           <button class="btn btn-secondary" type="button" onclick={() => removeComponent(component)} disabled={componentAction !== null}><Icon name="trash" size={14} />{componentAction === `remove:${component.component}` ? "卸载中" : "卸载"}</button>
                         {:else if component.downloadable}
-                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component)} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
+                          <button class="btn btn-primary" type="button" onclick={() => installComponent(component, "install")} disabled={componentAction !== null}><Icon name="download" size={14} />{componentAction === `install:${component.component}` ? "安装中" : "安装"}</button>
                         {/if}
                       </div>
                     </article>
@@ -947,7 +996,7 @@
 
 <style>
 .settings-page { max-width: 1400px; padding-bottom: 80px; }
-  .unsaved-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 10px; border-radius: 9px; color: var(--warning-color); background: var(--warning-soft); font-size: 13px; font-weight: 650; }
+  .unsaved-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 6px 10px; border-radius: 9px; color: var(--warning-color); background: var(--warning-soft); font-size: 13px; font-weight: 650; }
   .unsaved-badge span { width: 6px; height: 6px; border-radius: 50%; background: var(--warning-color); }
   .settings-loading { min-height: 480px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
   .loading-ring { width: 34px; height: 34px; margin-bottom: 13px; border: 3px solid var(--bg-progress); border-top-color: var(--accent-color); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -967,6 +1016,7 @@
   .tab-copy { display: flex; min-width: 0; flex-direction: column; }
   .tab-copy strong { font-size: 14px; }
   .tab-copy small { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
+  .tab-chevron { display: grid; place-items: center; }
   .security-note { display: flex; align-items: flex-start; gap: 8px; margin: auto 3px 0; padding: 11px; border: 1px solid color-mix(in srgb, var(--success-color) 16%, var(--border-color)); border-radius: 11px; color: var(--success-color); background: var(--success-soft); }
   .security-note div { display: flex; flex-direction: column; }
   .security-note strong { font-size: 13px; }
@@ -985,7 +1035,7 @@
   .group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
   .group-head.with-action { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; }
   .group-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
-  .group-actions .btn { min-height: 36px; white-space: nowrap; }
+  .group-actions .btn { min-height: 40px; }
   .group-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
   .group-head > div:nth-child(2) { display: flex; flex-direction: column; }
   .group-head h3 { font-size: 14px; }
@@ -1032,7 +1082,7 @@
   .check-row p { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
   .diagnostic-placeholder { border: 1px dashed var(--border-strong); border-radius: 13px; }
 
-  .floating-save-bar { position: fixed; z-index: 50; right: 28px; bottom: 22px; display: flex; align-items: center; gap: 8px; padding: 9px 10px 9px 13px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-elevated); box-shadow: var(--shadow-md); }
+  .floating-save-bar { position: fixed; z-index: 50; right: 28px; bottom: 22px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; max-width: calc(100vw - 56px); padding: 9px 10px 9px 13px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-elevated); box-shadow: var(--shadow-md); }
   .floating-save-bar > div:first-child { display: flex; align-items: center; gap: 8px; margin-right: 5px; }
   .save-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning-color); }
   .floating-save-bar p { display: flex; flex-direction: column; }
@@ -1125,7 +1175,7 @@
   .plugin-warning { display: flex; align-items: center; gap: 6px; margin: 0 14px; padding: 7px 10px; border-radius: 8px; color: var(--warning-color); background: var(--warning-soft); font-size: 12px; }
   .plugin-note { color: var(--text-secondary); background: var(--bg-subtle); }
   .plugin-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); background: var(--bg-subtle); }
-  .plugin-actions .btn { min-height: 34px; padding: 6px 10px; font-size: 13px; }
+  .plugin-actions .btn { min-height: 40px; padding: 6px 10px; font-size: 13px; }
   .plugin-empty-state { display: flex; align-items: center; gap: 12px; min-height: 78px; margin-top: 14px; padding: 14px 15px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-secondary); background: var(--bg-subtle); }
   .plugin-empty-state > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
   .plugin-empty-state strong { color: var(--text-primary); font-size: 14px; }
@@ -1176,7 +1226,7 @@
   .storage-batch { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-color); }
   .storage-batch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
-  .btn-warning { padding: 6px 11px; border: 1px solid color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); border-radius: 9px; color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 8%, var(--bg-card)); cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; display: inline-flex; align-items: center; gap: 5px; transition: background .14s, border-color .14s; white-space: nowrap; }
+  .btn-warning { min-height: 40px; max-width: 100%; padding: 6px 11px; border: 1px solid color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); border-radius: 9px; color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 8%, var(--bg-card)); cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; display: inline-flex; align-items: center; justify-content: center; gap: 5px; transition: background .14s, border-color .14s, transform .14s; text-align: center; white-space: normal; overflow-wrap: anywhere; }
   .btn-warning:hover { background: color-mix(in srgb, var(--warning-color) 14%, var(--bg-subtle)); border-color: var(--warning-color); }
 
   /* Responsive: narrow settings */
@@ -1201,5 +1251,52 @@
     .diagnostic-actions { flex-wrap: wrap; }
     .group-head.with-action { grid-template-columns: 1fr; gap: 10px; }
     .group-actions { grid-column: 1; justify-content: flex-start; }
+  }
+
+  /* Use the content width left after the app sidebar, not the window width. */
+  @media (max-width: 1280px) {
+    .settings-shell { grid-template-columns: minmax(0, 1fr); min-height: auto; }
+    .settings-nav {
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 10px 12px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border-color);
+      overflow: visible;
+    }
+    .settings-nav-title, .security-note { display: none; }
+    .settings-nav > button {
+      grid-template-columns: 32px minmax(0, 1fr);
+      flex: 1 1 118px;
+      min-width: 118px;
+      min-height: 44px;
+      margin: 0;
+      padding: 6px 9px;
+      border-radius: 9px;
+    }
+    .tab-chevron { display: none; }
+    .tab-icon { width: 32px; height: 32px; border-radius: 8px; }
+    .tab-copy strong { font-size: 13px; }
+    .tab-copy small { display: none; }
+    .pane-head { flex-wrap: wrap; }
+    .actions-head > :last-child { display: flex !important; flex-wrap: wrap; gap: 8px; }
+    .group-head.with-action { grid-template-columns: 42px minmax(0, 1fr); }
+    .group-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; min-width: 0; }
+  }
+
+  @media (max-width: 1100px) {
+    .template-grid, .plugin-grid, .storage-cards { grid-template-columns: minmax(0, 1fr); }
+    .plugin-system-check { align-items: flex-start; flex-wrap: wrap; }
+    .plugin-system-check > .btn { margin-left: 46px; }
+    .storage-total-head { flex-wrap: wrap; }
+    .storage-total-count { width: 100%; margin-left: 0; }
+    .selected-template-banner { grid-template-columns: 54px minmax(0, 1fr); }
+    .selected-template-banner > :last-child { grid-column: 2; justify-self: start; }
+  }
+
+  @media (max-width: 960px) {
+    .floating-save-bar { right: 12px; bottom: 12px; left: 12px; max-width: none; }
+    .floating-save-bar > div:first-child { flex: 1 1 220px; min-width: 0; }
   }
 </style>

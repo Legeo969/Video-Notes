@@ -1,0 +1,48 @@
+{
+  "task_id": "VN-BUG-013",
+  "title": "Eliminate responsive desktop UI overlap",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-023"
+  ],
+  "allowed_paths": [
+    "desktop/src/**/*.svelte",
+    "desktop/src/**/*.css",
+    "desktop/src/**/*.ts",
+    "desktop/scripts/**",
+    "tasks/spec-v0.2/vn-bug-013.json",
+    "tasks/index.json",
+    "docs/reviews/agent-baseline-report.md",
+    "docs/task-reports/VN-BUG-013.md"
+  ],
+  "forbidden_changes": [
+    "Backend compiler, Provider, persistence, or public IR changes",
+    "Hiding required controls or status text to avoid overlap",
+    "Adding horizontal page scrolling as a layout workaround",
+    "Interactive hit areas smaller than 40 by 40 pixels",
+    "Removing visible failure or progress information"
+  ],
+  "deliverables": [
+    "Responsive application shell and navigation",
+    "Non-overlapping page headers, cards, tables, and action groups",
+    "Predictable long-text wrapping and truncation rules",
+    "Viewport regression evidence and task completion report"
+  ],
+  "acceptance_tests": [
+    "Tasks, Collections, Notes, Settings, and Process remain usable without horizontal overlap from 900 to 1920 CSS pixels",
+    "Long Chinese titles, paths, status messages, and button labels cannot cover adjacent controls",
+    "Primary actions remain visible and interactive at the minimum supported window size",
+    "Dynamic counters use stable numeric widths and do not shift surrounding layout",
+    "Svelte check and production frontend build complete with zero errors and zero warnings",
+    "Existing Rust and repository validation gates remain compatible"
+  ],
+  "security_requirements": [
+    "Responsive rendering must not introduce unsanitized HTML",
+    "Layout changes must not expose secrets or local path contents beyond existing views"
+  ],
+  "dependencies": [
+    "VN-BUG-012"
+  ],
+  "status": "done"
+}

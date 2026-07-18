@@ -1034,6 +1034,65 @@ fn components_list_reports_native_manifest_status() {
     assert_eq!(first["installed"], true);
     assert_eq!(first["status"], "ok");
     assert_eq!(first["missing_files"].as_array().unwrap().len(), 0);
+    assert_eq!(first["installed_version"], "1.5.7");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn components_check_updates_uses_bundled_manifest_version() {
+    let (engine, root) = temp_engine();
+    fs::create_dir_all(&engine.manifests_dir).unwrap();
+    let component_dir = engine.runtime_dir.join("components").join("download-tools");
+    fs::create_dir_all(&component_dir).unwrap();
+    let marker_path = component_marker_path(&component_dir);
+    write_json_atomic(
+        &engine.manifests_dir.join("download-tools.json"),
+        &json!({
+            "component": "download-tools",
+            "version": "2026.07.18",
+            "description": "yt-dlp standalone executable",
+            "download_url": "https://example.invalid/yt-dlp.exe",
+            "files": [if cfg!(target_os = "windows") { "yt-dlp.exe" } else { "yt-dlp" }]
+        }),
+    )
+    .unwrap();
+    write_json_atomic(
+        &marker_path,
+        &json!({
+            "component": "download-tools",
+            "manifest_version": "2026.06.09",
+            "installed_at": "2026-06-09T00:00:00Z"
+        }),
+    )
+    .unwrap();
+
+    let stale = engine
+        .call("components.check_updates", json!({}))
+        .expect("method handled")
+        .expect("check succeeds");
+    let stale = stale.as_array().unwrap().first().unwrap();
+    assert_eq!(stale["installed_version"], "2026.06.09");
+    assert_eq!(stale["latest_version"], "2026.07.18");
+    assert_eq!(stale["update_available"], true);
+
+    write_json_atomic(
+        &marker_path,
+        &json!({
+            "component": "download-tools",
+            "manifest_version": "2026.07.18",
+            "installed_at": "2026-07-18T00:00:00Z"
+        }),
+    )
+    .unwrap();
+    let current = engine
+        .call("components.check_updates", json!({}))
+        .expect("method handled")
+        .expect("check succeeds");
+    let current = current.as_array().unwrap().first().unwrap();
+    assert_eq!(current["installed_version"], "2026.07.18");
+    assert_eq!(current["latest_version"], "2026.07.18");
+    assert_eq!(current["update_available"], false);
 
     let _ = fs::remove_dir_all(root);
 }

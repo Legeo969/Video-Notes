@@ -935,6 +935,7 @@ impl NativeEngine {
             let verified = integrity.is_ok();
             let installed_version = if verified {
                 component_runtime_version(component, &component_path)
+                    .or_else(|| read_marker_version(&component_path))
                     .map(Value::String)
                     .unwrap_or(Value::Null)
             } else {
@@ -963,9 +964,9 @@ impl NativeEngine {
         Ok(json!(result))
     }
 
-    /// Check all installed downloadable components for updates via GitHub API.
-    /// Called manually by the frontend "检查更新" button — never auto-triggered.
-    /// Fails gracefully: if the GitHub API is unreachable, no update is shown.
+    /// Compare installed components with the digest-pinned manifests bundled with this app.
+    /// The installer can only install these trusted manifests, so a live repository tag is
+    /// neither an installable nor a meaningful update candidate.
     fn components_check_updates(&self) -> Result<Value, String> {
         let mut results = Vec::new();
         for manifest in self.component_manifests()? {
@@ -978,14 +979,12 @@ impl NativeEngine {
             };
             let component_path = self.runtime_dir.join("components").join(component);
             let installed = component_path.is_dir();
-            // Read the installed version from the marker file (manifest version at install time),
-            // and compare against the latest GitHub release tag.
             let installed_version = if installed {
                 read_marker_version(&component_path).unwrap_or_default()
             } else {
                 String::new()
             };
-            let latest_version = component_latest_version(&manifest).unwrap_or_default();
+            let latest_version = manifest_string(&manifest, "version").unwrap_or_default();
             let update_available = installed
                 && !installed_version.is_empty()
                 && !latest_version.is_empty()
@@ -4661,32 +4660,6 @@ fn mpv_playback_command(
         .arg("--")
         .arg(source_path);
     command
-}
-
-fn component_latest_version(manifest: &Value) -> Option<String> {
-    let url = manifest_string(manifest, "download_url")?;
-    let (owner, repo) = github_repo_from_url(&url)?;
-    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let response = client
-        .get(api_url)
-        .header("User-Agent", "Video-Notes-AI")
-        .send()
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let payload: Value = response.json().ok()?;
-    payload
-        .get("tag_name")
-        .or_else(|| payload.get("name"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 /// Resolve a GitHub release download URL dynamically.

@@ -113,6 +113,33 @@
       ]
     },
     {
+      "task_id": "VN-BUG-013",
+      "path": "tasks/spec-v0.2/vn-bug-013.json",
+      "status": "done",
+      "priority": "P0",
+      "dependencies": [
+        "VN-BUG-012"
+      ]
+    },
+    {
+      "task_id": "VN-BUG-014",
+      "path": "tasks/spec-v0.2/vn-bug-014.json",
+      "status": "done",
+      "priority": "P0",
+      "dependencies": [
+        "VN-BUG-013"
+      ]
+    },
+    {
+      "task_id": "VN-BUG-015",
+      "path": "tasks/spec-v0.2/vn-bug-015.json",
+      "status": "done",
+      "priority": "P0",
+      "dependencies": [
+        "VN-BUG-014"
+      ]
+    },
+    {
       "task_id": "VN-ARCH-001",
       "path": "tasks/spec-v0.1/vn-arch-001.json",
       "status": "done",
