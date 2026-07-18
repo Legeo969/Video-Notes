@@ -1,0 +1,73 @@
+{
+  "task_id": "VN-GOV-002",
+  "title": "Restore truthful deterministic release gates",
+  "phase": "v0.2-implementation",
+  "priority": "P1",
+  "spec_refs": [
+    "SPEC-COMPILER-033",
+    "SPEC-COMPILER-039"
+  ],
+  "allowed_paths": [
+    "README.md",
+    "spec/STATUS.yaml",
+    "docs/FOUNDATION-STATUS-v0.2.0-rc.3.md",
+    "docs/reviews/agent-baseline-report.md",
+    "scripts/check_repository_hygiene.py",
+    "scripts/create_source_archive.py",
+    "scripts/verify_source_release.py",
+    "scripts/verify_cross_language_interop.py",
+    "desktop/src/main.ts",
+    "desktop/src/styles/global.css",
+    "desktop/package.json",
+    "desktop/package-lock.json",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/src/compile/engine.rs",
+    "desktop/src-tauri/src/compile/prompt.rs",
+    "desktop/src-tauri/src/compile/repair.rs",
+    "desktop/src-tauri/src/compile/sampler.rs",
+    "desktop/src-tauri/src/compile_v3/canonical.rs",
+    "desktop/src-tauri/src/compile_v3/trust.rs",
+    "desktop/src-tauri/src/compile_v3/validate.rs",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/native_engine/tests.rs",
+    "desktop/src-tauri/src/study/knowledge/entity.rs",
+    "desktop/src-tauri/src/study/knowledge/mod.rs",
+    "desktop/src-tauri/src/study/knowledge/parser.rs",
+    "desktop/src-tauri/src/study/knowledge/relation.rs",
+    "desktop/src-tauri/tests/compiler_v3_conformance.rs",
+    "tasks/spec-v0.2/vn-gov-002.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-GOV-002.md"
+  ],
+  "forbidden_changes": [
+    "Ignoring tracked generated artifacts",
+    "Changing historical benchmark numbers without authoritative evidence",
+    "Claiming a validation command passed when it was not run",
+    "Lowering warning or validation severity to conceal defects"
+  ],
+  "deliverables": [
+    "Repository hygiene based on tracked source files",
+    "Accurate task and Foundation status metadata",
+    "MSRV-compatible implementation",
+    "Reduced packaged font payload",
+    "Zero-error formatting checking and test gates",
+    "Task completion report"
+  ],
+  "acceptance_tests": [
+    "Repository hygiene ignores untracked local build caches but rejects tracked generated output",
+    "Task counts and documented validation results match current authoritative outputs",
+    "Code builds with the declared MSRV",
+    "cargo fmt check and release verification pass",
+    "The full repository validation matrix passes"
+  ],
+  "security_requirements": [
+    "Hygiene checks must continue detecting committed secrets and generated artifacts",
+    "Status documents must not overstate test or security completion"
+  ],
+  "dependencies": [
+    "VN-GOV-001"
+  ],
+  "status": "done"
+}

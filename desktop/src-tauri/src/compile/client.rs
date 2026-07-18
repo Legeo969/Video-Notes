@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
+use reqwest::StatusCode;
 use serde_json::Value;
 
 use super::prompt;
@@ -15,10 +16,15 @@ use super::RawCompileOutput;
 const COMPILE_TIMEOUT_SEC: u64 = 420;
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 1_000;
+const XIAOMI_MAX_BASE64_BYTES: usize = 50 * 1024 * 1024;
+
+/// Valid event types the schema permits.
+const VALID_EVENT_TYPES: &[&str] = &["fact", "procedure", "concept", "failure", "verification"];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProviderKind {
     OpenAICompat,
+    XiaomiMiMo,
     OpenAIResponses,
     GoogleGemini,
     Anthropic,
@@ -27,11 +33,25 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn from_type_str(value: &str) -> Self {
         match value {
+            "mimo" | "xiaomi_mimo" => Self::XiaomiMiMo,
             "google_gemini" => Self::GoogleGemini,
             "anthropic_messages" => Self::Anthropic,
             "openai_responses" => Self::OpenAIResponses,
             _ => Self::OpenAICompat,
         }
+    }
+
+    pub fn from_profile(provider_type: &str, base_url: &str) -> Self {
+        let kind = Self::from_type_str(provider_type);
+        if kind == Self::OpenAICompat && base_url.to_ascii_lowercase().contains("xiaomimimo.com") {
+            Self::XiaomiMiMo
+        } else {
+            kind
+        }
+    }
+
+    fn is_xiaomi_mimo(self) -> bool {
+        self == Self::XiaomiMiMo
     }
 }
 
@@ -40,7 +60,6 @@ pub struct CompileClientConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    #[allow(dead_code)]
     pub provider_kind: ProviderKind,
     pub accepts_video: bool,
 }
@@ -77,10 +96,15 @@ pub fn compile_chunk_video(
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
     let system = prompt::system_prompt(prev_summary);
+    // Keep model-facing anchors local to this clip, then map them back to the
+    // immutable backend anchor IDs after validation.
+    let local_anchor_indices = (0..anchor_indices.len())
+        .map(|index| index as u32)
+        .collect::<Vec<_>>();
     let user_text = prompt::user_message(
         chunk_index,
         total_chunks,
-        anchor_indices,
+        &local_anchor_indices,
         true,
         Some("video clip with embedded audio"),
     );
@@ -94,71 +118,74 @@ pub fn compile_chunk_video(
         }
 
         let video_b64 = general_purpose::STANDARD.encode(video_mp4);
-        let body = serde_json::json!({
-            "model": config.model,
-            "messages": [
-                { "role": "system", "content": system },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video_url",
-                            "video_url": {
-                                "url": format!("data:video/mp4;base64,{}", video_b64)
-                            }
-                        },
-                        { "type": "text", "text": user_text }
-                    ]
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 4096
-        });
+        let body = build_video_request_body(config, &video_b64, &system, &user_text)?;
 
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-        let response =
-            match crate::native_engine::with_optional_bearer(client.post(&url), &config.api_key)
-                .json(&body)
-                .send()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    // Classify the error type for diagnostics
-                    let kind = if e.is_timeout() { "timeout" }
-                        else if e.is_connect() { "connect" }
-                        else if e.is_builder() { "builder" }
-                        else if e.is_redirect() { "redirect" }
-                        else if e.is_status() { "status" }
-                        else { "unknown" };
-                    // Get the full error chain
-                    let mut chain = String::new();
-                    let mut cause = e.source();
-                    while let Some(src) = cause {
-                        if !chain.is_empty() { chain.push_str(" → "); }
-                        chain.push_str(&format!("{}", src));
-                        cause = src.source();
-                    }
-                    last_error = format!("HTTP request failed (type={kind}): {e}{}",
-                        if chain.is_empty() { String::new() } else { format!(" | cause: {chain}") });
-                    continue;
-                }
-            };
-
-        let status = response.status();
-        let raw_text = response.text().unwrap_or_default();
-        let payload: serde_json::Value = match serde_json::from_str(&raw_text) {
-            Ok(v) => v,
+        let response = match apply_provider_auth(client.post(&url), config)
+            .json(&body)
+            .send()
+        {
+            Ok(r) => r,
             Err(e) => {
-                let preview = &raw_text[..raw_text.len().min(200)];
-                last_error = format!("Invalid JSON response (status {status}): {e} — preview: {preview:?}");
+                // Classify the error type for diagnostics
+                let kind = if e.is_timeout() {
+                    "timeout"
+                } else if e.is_connect() {
+                    "connect"
+                } else if e.is_builder() {
+                    "builder"
+                } else if e.is_redirect() {
+                    "redirect"
+                } else if e.is_status() {
+                    "status"
+                } else {
+                    "unknown"
+                };
+                // Get the full error chain
+                let mut chain = String::new();
+                let mut cause = e.source();
+                while let Some(src) = cause {
+                    if !chain.is_empty() {
+                        chain.push_str(" → ");
+                    }
+                    chain.push_str(&format!("{}", src));
+                    cause = src.source();
+                }
+                last_error = format!(
+                    "HTTP request failed (type={kind}): {e}{}",
+                    if chain.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" | cause: {chain}")
+                    }
+                );
                 continue;
             }
         };
 
+        let status = response.status();
+        let raw_text = response.text().unwrap_or_default();
+
         if !status.is_success() {
+            let payload = serde_json::from_str::<serde_json::Value>(&raw_text)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": preview_text(&raw_text) }));
             last_error = format!("provider returned {status}: {payload}");
+            if !is_retryable_status(status) {
+                return Err(format!("compile chunk rejected by provider: {last_error}"));
+            }
             continue;
         }
+
+        let payload: serde_json::Value = match serde_json::from_str(&raw_text) {
+            Ok(v) => v,
+            Err(e) => {
+                last_error = format!(
+                    "Invalid JSON response (status {status}): {e} — preview: {:?}",
+                    preview_text(&raw_text)
+                );
+                continue;
+            }
+        };
 
         let raw_text = payload
             .get("choices")
@@ -178,12 +205,10 @@ pub fn compile_chunk_video(
         match repair::repair_mllm_output(raw_text) {
             repair::RepairResult::Valid(value) | repair::RepairResult::Repaired(value) => {
                 let output = parse_compile_response(&value)?;
-                return validate_compile_output(output, anchor_indices);
+                let output = validate_compile_output(output, &local_anchor_indices)?;
+                return map_local_anchors(output, anchor_indices);
             }
-            repair::RepairResult::Broken {
-                snippet: _,
-                diagnosis,
-            } => {
+            repair::RepairResult::Broken { diagnosis } => {
                 last_error = format!("Unrecoverable parse error: {diagnosis}");
                 continue;
             }
@@ -193,6 +218,111 @@ pub fn compile_chunk_video(
     Err(format!(
         "compile chunk failed after {MAX_RETRIES} attempts: {last_error}"
     ))
+}
+
+fn build_video_request_body(
+    config: &CompileClientConfig,
+    video_b64: &str,
+    system: &str,
+    user_text: &str,
+) -> Result<Value, String> {
+    let data_url = format!("data:video/mp4;base64,{video_b64}");
+    validate_video_payload_size(config.provider_kind, data_url.len())?;
+
+    let mut video_part = serde_json::json!({
+        "type": "video_url",
+        "video_url": { "url": data_url }
+    });
+    if config.provider_kind.is_xiaomi_mimo() {
+        if let Some(object) = video_part.as_object_mut() {
+            object.insert("fps".to_string(), serde_json::json!(1));
+            object.insert("media_resolution".to_string(), serde_json::json!("default"));
+        }
+    }
+
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            { "role": "system", "content": system },
+            {
+                "role": "user",
+                "content": [
+                    video_part,
+                    { "type": "text", "text": user_text }
+                ]
+            }
+        ],
+        "temperature": 0.02,
+        "max_tokens": 4096
+    });
+    if config.provider_kind.is_xiaomi_mimo() {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("max_tokens");
+            object.insert("max_completion_tokens".to_string(), serde_json::json!(4096));
+        }
+    }
+    Ok(body)
+}
+
+fn apply_provider_auth(
+    request: reqwest::blocking::RequestBuilder,
+    config: &CompileClientConfig,
+) -> reqwest::blocking::RequestBuilder {
+    if config.provider_kind.is_xiaomi_mimo() {
+        let token = config.api_key.trim();
+        let token = token
+            .strip_prefix("Bearer ")
+            .or_else(|| token.strip_prefix("bearer "))
+            .unwrap_or(token);
+        if token.is_empty() {
+            request
+        } else {
+            request.header("api-key", token)
+        }
+    } else {
+        crate::native_engine::with_optional_bearer(request, &config.api_key)
+    }
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn preview_text(text: &str) -> String {
+    text.chars().take(200).collect()
+}
+
+fn validate_video_payload_size(
+    provider_kind: ProviderKind,
+    data_url_len: usize,
+) -> Result<(), String> {
+    if provider_kind.is_xiaomi_mimo() && data_url_len > XIAOMI_MAX_BASE64_BYTES {
+        return Err(format!(
+            "Xiaomi MiMo video payload exceeds the 50 MB Base64 limit ({data_url_len} bytes)"
+        ));
+    }
+    Ok(())
+}
+
+fn map_local_anchors(
+    mut output: RawCompileOutput,
+    backend_anchors: &[u32],
+) -> Result<RawCompileOutput, String> {
+    for event in &mut output.events {
+        for anchor in &mut event.event_frame_indexes {
+            let local_index = usize::try_from(*anchor)
+                .map_err(|_| format!("local anchor index is not representable: {anchor}"))?;
+            *anchor = backend_anchors.get(local_index).copied().ok_or_else(|| {
+                format!(
+                    "local anchor index {anchor} is outside backend anchor map of {} entries",
+                    backend_anchors.len()
+                )
+            })?;
+        }
+    }
+    Ok(output)
 }
 
 fn parse_compile_response(value: &Value) -> Result<RawCompileOutput, String> {
@@ -217,6 +347,19 @@ fn parse_compile_response(value: &Value) -> Result<RawCompileOutput, String> {
         if title.is_empty() && description.is_empty() {
             continue;
         }
+        // title is required as it becomes the visual_context/section header
+        if title.is_empty() {
+            continue;
+        }
+
+        // Validate event_type against the strictly allowed set
+        let raw_type = bounded_string(object.get("event_type"), 40).unwrap_or_default();
+        let event_type = if VALID_EVENT_TYPES.contains(&raw_type.as_str()) {
+            raw_type
+        } else {
+            "concept".to_string()
+        };
+
         let indexes = object
             .get("event_frame_indexes")
             .and_then(Value::as_array)
@@ -229,19 +372,34 @@ fn parse_compile_response(value: &Value) -> Result<RawCompileOutput, String> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+
+        // Validate anchor count — must be exactly 2
+        if indexes.len() != 2 {
+            continue;
+        }
+
+        // Validate anchor order — first must not be after second
+        if indexes[0] > indexes[1] {
+            continue;
+        }
+
+        let confidence = object
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .map(|c| c.clamp(0.0, 1.0) as f32)
+            .unwrap_or(0.5);
+
         events.push(super::RawEvent {
             title,
             event_frame_indexes: indexes,
             description,
-            event_type: bounded_string(object.get("event_type"), 40)
-                .unwrap_or_else(|| "concept".to_string()),
+            event_type,
             speaker: bounded_string(object.get("speaker"), 200),
-            confidence: object
-                .get("confidence")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.5)
-                .clamp(0.0, 1.0) as f32,
+            confidence,
         });
+    }
+    if events.is_empty() {
+        return Err("model returned zero valid events after schema validation".to_string());
     }
     let chunk_summary = bounded_string(root.get("chunk_summary"), 12_000).unwrap_or_default();
     Ok(RawCompileOutput {
@@ -273,9 +431,8 @@ fn validate_compile_output(
         .map(|e| format!("{:?}", e.event_frame_indexes))
         .collect();
     output.events.retain_mut(|event| {
-        if event.event_frame_indexes.len() != 2 {
-            return false;
-        }
+        // Anchor count and order already validated in parse_compile_response;
+        // here we only verify they reference known backbone anchors.
         event
             .event_frame_indexes
             .iter()
@@ -318,6 +475,95 @@ mod tests {
             ProviderKind::from_type_str("openai_responses"),
             ProviderKind::OpenAIResponses
         );
+        assert_eq!(
+            ProviderKind::from_profile("openai_compat", "https://api.xiaomimimo.com/v1"),
+            ProviderKind::XiaomiMiMo
+        );
+        assert_eq!(
+            ProviderKind::from_type_str("mimo"),
+            ProviderKind::XiaomiMiMo
+        );
+    }
+
+    #[test]
+    fn xiaomi_request_uses_documented_multimodal_fields() {
+        let mut config = CompileClientConfig::new(
+            "https://api.xiaomimimo.com/v1".to_string(),
+            "test-key".to_string(),
+            "mimo-v2.5".to_string(),
+            ProviderKind::XiaomiMiMo,
+        );
+        config.accepts_video = true;
+        let body = build_video_request_body(&config, "abc", "system", "user").unwrap();
+        let part = &body["messages"][1]["content"][0];
+        assert_eq!(part["type"], "video_url");
+        assert_eq!(part["fps"], 1);
+        assert_eq!(part["media_resolution"], "default");
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["max_completion_tokens"], 4096);
+
+        let request = apply_provider_auth(
+            reqwest::blocking::Client::new().post("https://example.test"),
+            &config,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(request.headers()["api-key"], "test-key");
+        assert!(request.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn deterministic_provider_errors_are_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn rejects_oversized_xiaomi_payload_before_request() {
+        assert!(
+            validate_video_payload_size(ProviderKind::XiaomiMiMo, XIAOMI_MAX_BASE64_BYTES + 1)
+                .is_err()
+        );
+        assert!(validate_video_payload_size(
+            ProviderKind::OpenAICompat,
+            XIAOMI_MAX_BASE64_BYTES + 1
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn maps_local_anchor_positions_to_backend_ids() {
+        let output = RawCompileOutput {
+            events: vec![super::super::RawEvent {
+                title: "valid".to_string(),
+                event_frame_indexes: vec![0, 2],
+                description: "mapped".to_string(),
+                event_type: "concept".to_string(),
+                speaker: None,
+                confidence: 0.9,
+            }],
+            chunk_summary: "summary".to_string(),
+        };
+        let mapped = map_local_anchors(output, &[94, 99, 105]).unwrap();
+        assert_eq!(mapped.events[0].event_frame_indexes, vec![94, 105]);
+    }
+
+    #[test]
+    fn rejects_local_anchor_positions_outside_backend_map() {
+        let output = RawCompileOutput {
+            events: vec![super::super::RawEvent {
+                title: "invalid".to_string(),
+                event_frame_indexes: vec![0, 3],
+                description: "not mapped".to_string(),
+                event_type: "concept".to_string(),
+                speaker: None,
+                confidence: 0.9,
+            }],
+            chunk_summary: "summary".to_string(),
+        };
+        assert!(map_local_anchors(output, &[94, 99, 105]).is_err());
     }
 
     #[test]

@@ -106,7 +106,8 @@ fn render_markdown(capsule: &VideoCapsule) -> Result<String, String> {
     }
 
     if !capsule.global_summary.trim().is_empty() {
-        let summary: Vec<&str> = capsule.global_summary
+        let summary: Vec<&str> = capsule
+            .global_summary
             .lines()
             .filter(|l| !l.trim().starts_with("[Chunk"))
             .collect();
@@ -121,7 +122,7 @@ fn render_markdown(capsule: &VideoCapsule) -> Result<String, String> {
         return Ok(md);
     }
 
-    md.push_str("## 笔记\n\n");
+    md.push_str("## 详细记录\n\n");
     for (topic, evidences) in &group_by_topic(capsule) {
         if !topic.is_empty() {
             md.push_str(&format!("### {}\n\n", topic));
@@ -143,7 +144,11 @@ fn render_markdown(capsule: &VideoCapsule) -> Result<String, String> {
         md.push('\n');
     }
 
-    let low_count = capsule.evidences.iter().filter(|e| e.confidence < 0.4).count();
+    let low_count = capsule
+        .evidences
+        .iter()
+        .filter(|e| e.confidence < 0.4)
+        .count();
     if low_count > 0 {
         md.push_str(&format!("> ⚠️ 共 {} 条低置信度笔记\n\n", low_count));
     }
@@ -163,7 +168,8 @@ fn render_lecture(capsule: &VideoCapsule) -> Result<String, String> {
 
     if !capsule.global_summary.trim().is_empty() {
         // Filter out [Chunk N] summary lines
-        let summary: Vec<&str> = capsule.global_summary
+        let summary: Vec<&str> = capsule
+            .global_summary
             .lines()
             .filter(|l| !l.trim().starts_with("[Chunk"))
             .collect();
@@ -176,7 +182,7 @@ fn render_lecture(capsule: &VideoCapsule) -> Result<String, String> {
         return Ok(md);
     }
 
-    md.push_str("## 时间线\n\n");
+    md.push_str("## 课堂时间线\n\n");
     for (_topic, evidences) in &group_by_topic(capsule) {
         for ev in evidences {
             let ts = ts_full(ev.timestamp_start_sec, ev.timestamp_end_sec);
@@ -214,7 +220,8 @@ fn render_summary(capsule: &VideoCapsule) -> Result<String, String> {
     ));
 
     if !capsule.global_summary.trim().is_empty() {
-        let summary: Vec<&str> = capsule.global_summary
+        let summary: Vec<&str> = capsule
+            .global_summary
             .lines()
             .filter(|l| !l.trim().starts_with("[Chunk"))
             .collect();
@@ -227,7 +234,7 @@ fn render_summary(capsule: &VideoCapsule) -> Result<String, String> {
         return Ok(md);
     }
 
-    md.push_str("## 要点\n\n");
+    md.push_str("## 关键要点\n\n");
     for (_topic, evidences) in &group_by_topic(capsule) {
         for ev in evidences {
             if ev.confidence < 0.3 {
@@ -240,7 +247,11 @@ fn render_summary(capsule: &VideoCapsule) -> Result<String, String> {
     }
     md.push('\n');
 
-    let low_conf = capsule.evidences.iter().filter(|e| e.confidence < 0.4).count();
+    let low_conf = capsule
+        .evidences
+        .iter()
+        .filter(|e| e.confidence < 0.4)
+        .count();
     if low_conf > 0 {
         md.push_str(&format!("> ⚠️ {} 条笔记置信度偏低\n\n", low_conf));
     }
@@ -267,7 +278,8 @@ fn render_concise(capsule: &VideoCapsule) -> Result<String, String> {
     ));
 
     // Global summary (filtered)
-    let summary_lines: Vec<&str> = capsule.global_summary
+    let summary_lines: Vec<&str> = capsule
+        .global_summary
         .lines()
         .filter(|l| !l.trim().starts_with("[Chunk"))
         .collect();
@@ -373,7 +385,10 @@ fn render_mindmap(capsule: &VideoCapsule) -> Result<String, String> {
             let icon = evidence_icon(ev.evidence_type);
             mm.push_str(&format!(
                 "  - {} {} | {} | conf: {:.0}%\n",
-                icon, ts, ev.content, ev.confidence * 100.0
+                icon,
+                ts,
+                ev.content,
+                ev.confidence * 100.0
             ));
         }
     }
@@ -389,9 +404,6 @@ fn mode_label(mode: CompileMode) -> &'static str {
     }
 }
 
-
-
-
 /// Formatted timestamp with brackets: [MM:SS] or [MM:SS–MM:SS]
 fn ts_full(start: f32, end: f32) -> String {
     let s = start as u64;
@@ -406,12 +418,12 @@ fn ts_full(start: f32, end: f32) -> String {
 /// Emoji icon for evidence type (concise template)
 fn evidence_icon(et: EvidenceType) -> &'static str {
     match et {
-        EvidenceType::Fact => "\u{1f4a1}",         // 💡
-        EvidenceType::Procedure => "\u{1f3af}",     // 🎯
-        EvidenceType::Concept => "\u{1f4d6}",       // 📖
-        EvidenceType::Failure => "\u{26a0}️",  // ⚠️
-        EvidenceType::Verification => "\u{2705}",   // ✅
-        EvidenceType::Draft => "\u{1f58a}️",   // 🖊️
+        EvidenceType::Fact => "\u{1f4a1}",        // 💡
+        EvidenceType::Procedure => "\u{1f3af}",   // 🎯
+        EvidenceType::Concept => "\u{1f4d6}",     // 📖
+        EvidenceType::Failure => "\u{26a0}️",      // ⚠️
+        EvidenceType::Verification => "\u{2705}", // ✅
+        EvidenceType::Draft => "\u{1f58a}️",       // 🖊️
     }
 }
 
@@ -495,7 +507,8 @@ mod tests {
     #[test]
     fn test_render_mindmap() {
         let mm = render(&sample_capsule(), "mindmap").unwrap();
-        assert!(mm.contains("切片 0"));
+        assert!(mm.contains("Introduction"));
+        assert!(mm.contains("Rust as a systems programming language"));
     }
 
     #[test]
@@ -513,8 +526,8 @@ mod tests {
 
     #[test]
     fn test_ts_full() {
-        assert_eq!(ts_full(0.0, 0.0), "00:00");
-        assert_eq!(ts_full(5.0, 10.0), "05:05–00:10");
-        assert_eq!(ts_full(65.0, 130.0), "01:05–02:10");
+        assert_eq!(ts_full(0.0, 0.0), "[00:00]");
+        assert_eq!(ts_full(5.0, 10.0), "[00:05–00:10]");
+        assert_eq!(ts_full(65.0, 130.0), "[01:05–02:10]");
     }
 }

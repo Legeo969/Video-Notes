@@ -1,12 +1,12 @@
 # 贡献指南
 
-感谢参与 Video Notes AI。项目采用 RFC 驱动的长期维护方式；代码实现、公开契约和迁移策略必须保持可追踪。
+感谢参与 Video Notes AI。项目采用规范、Task 与测试驱动的维护方式；代码实现、公开契约和迁移策略必须保持可追踪。
 
 ## 开始之前
 
-1. 阅读 [`README.md`](README.md)、[`AGENTS.md`](AGENTS.md)、[`spec/README.md`](spec/README.md) 和 [`rfcs/README.md`](rfcs/README.md)。
+1. 阅读 [`README.md`](README.md)、[`AGENTS.md`](AGENTS.md) 和 [`spec/README.md`](spec/README.md)。
 2. 选择或新增一个 [`tasks/`](tasks/index.json) 中的 Task JSON，明确允许路径、禁止变更和验收测试。
-3. 涉及公开数据格式、跨模块协议、安全边界、持久化兼容或发布策略的改动，必须先提交 RFC。
+3. 涉及公开数据格式、跨模块协议、安全边界、持久化兼容或发布策略的改动，必须先更新版本化规范，并在 Task 中记录影响和验收。
 4. 仅修复局部实现且不改变稳定契约的改动，可以直接提交 Pull Request，但应附测试和变更说明。
 
 ## 本地验证
@@ -41,7 +41,7 @@ npm run dev
 
 ## Pull Request
 
-Pull Request 应说明：Task ID、受影响的 `SPEC-*` 要求、问题、方案、兼容性影响、安全影响、测试证据、关联 RFC/Issue。一个 PR 尽量只完成一个可独立审查的目标。
+Pull Request 应说明：Task ID、受影响的 `SPEC-*` 要求、问题、方案、兼容性影响、安全影响、测试证据和关联 Issue。一个 PR 尽量只完成一个可独立审查的目标。
 
 ## Specification validation environment
 

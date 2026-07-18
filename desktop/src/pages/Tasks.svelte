@@ -10,6 +10,7 @@
 
   let filter = $state("all");
   let selectedJobId = $state<number | null>(null);
+  let selectedIds = $state<Set<number>>(new Set());
   let actionJobId = $state<number | null>(null);
   let localError = $state("");
   let searchQuery = $state("");
@@ -26,6 +27,21 @@
   });
 
   let selectedJob = $derived(selectedJobId === null ? undefined : $jobs.find((job) => job.id === selectedJobId));
+
+  let allFilteredSelected = $derived(
+    filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id))
+  );
+
+  let batchDeletable = $derived(
+    filteredJobs.filter((j) => selectedIds.has(j.id) && canDelete(j))
+  );
+  let batchCancellable = $derived(
+    filteredJobs.filter((j) => selectedIds.has(j.id) && ["pending", "running", "pausing"].includes(j.status))
+  );
+  let batchRetryable = $derived(
+    filteredJobs.filter((j) => selectedIds.has(j.id) && canRetry(j))
+  );
+
   let counts = $derived.by(() => ({
     all: $jobs.length,
     active: $jobs.filter(isActive).length,
@@ -113,7 +129,79 @@
   }
 
   function canRetry(job: JobInfo) {
-    return ["completed", "failed", "cancelled", "interrupted"].includes(job.status);
+    return ["failed", "cancelled", "interrupted"].includes(job.status);
+  }
+
+  function toggleSelection(id: number) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selectedIds = next;
+  }
+
+  function toggleSelectAll() {
+    if (allFilteredSelected) {
+      selectedIds = new Set();
+    } else {
+      selectedIds = new Set(filteredJobs.map((j) => j.id));
+    }
+  }
+
+  async function batchDeleteSelected() {
+    const items = batchDeletable;
+    if (items.length === 0) return;
+    if (!confirm(`确定删除选中的 ${items.length} 个任务记录吗？`)) return;
+    actionPending = true;
+    let failed = 0;
+    try {
+      for (const job of items) {
+        try {
+          const ok = await engineCall<boolean>("process.delete", { job_id: job.id });
+          if (ok && selectedJobId === job.id) selectedJobId = null;
+          if (!ok) failed += 1;
+        } catch { failed += 1; }
+      }
+      await refreshJobs();
+      if (failed > 0) localError = `${failed} 个任务记录未能删除。`;
+      selectedIds = new Set();
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  async function batchCancelSelected() {
+    const items = batchCancellable;
+    if (items.length === 0) return;
+    if (!confirm(`确定取消选中的 ${items.length} 个任务吗？`)) return;
+    actionPending = true;
+    let failed = 0;
+    try {
+      for (const job of items) {
+        try { await engineCall("process.cancel", { job_id: job.id }); } catch { failed += 1; }
+      }
+      await refreshJobs();
+      if (failed > 0) localError = `${failed} 个任务未能取消。`;
+      selectedIds = new Set();
+    } finally {
+      actionPending = false;
+    }
+  }
+
+  async function batchRetrySelected() {
+    const items = batchRetryable;
+    if (items.length === 0) return;
+    if (!confirm(`确定按原参数重试选中的 ${items.length} 个失败、取消或中断任务吗？已完成任务会跳过。`)) return;
+    actionPending = true;
+    let failed = 0;
+    try {
+      for (const job of items) {
+        try { await engineCall("process.retry", { job_id: job.id }); } catch { failed += 1; }
+      }
+      await refreshJobs();
+      if (failed > 0) localError = `${failed} 个任务未能重试；其余任务已按原参数提交。`;
+      selectedIds = new Set();
+    } finally {
+      actionPending = false;
+    }
   }
 
   async function action(method: "process.pause" | "process.cancel" | "process.resume" | "process.retry", job: JobInfo) {
@@ -241,9 +329,26 @@
       <div class="alert alert-error workspace-alert"><Icon name="alert" size={17} /><span>{localError || $jobsError}</span></div>
     {/if}
 
+    {#if selectedIds.size > 0}
+      <div class="batch-bar">
+        <span>已选 {selectedIds.size} 个</span>
+        {#if batchCancellable.length > 0}
+          <button class="btn btn-secondary btn-sm" onclick={batchCancelSelected} disabled={actionPending}><Icon name="stop" size={13} />取消 {batchCancellable.length}</button>
+        {/if}
+        {#if batchRetryable.length > 0}
+          <button class="btn btn-secondary btn-sm" onclick={batchRetrySelected} disabled={actionPending}><Icon name="rotate" size={13} />重试 {batchRetryable.length}</button>
+        {/if}
+        {#if batchDeletable.length > 0}
+          <button class="btn btn-danger btn-sm" onclick={batchDeleteSelected} disabled={actionPending}><Icon name="trash" size={13} />删除 {batchDeletable.length}</button>
+        {/if}
+        <button class="btn btn-secondary btn-sm" onclick={() => selectedIds = new Set()} disabled={actionPending}>取消选择</button>
+      </div>
+    {/if}
+
     <div class="task-layout" class:with-detail={Boolean(selectedJob)}>
       <div class="task-list-area">
         <div class="table-head" aria-hidden="true">
+          <label class="check-col header-check"><input type="checkbox" checked={allFilteredSelected} onchange={toggleSelectAll} aria-label="全选" /></label>
           <span>任务</span><span>阶段与进度</span><span>创建时间</span><span>状态</span><span>操作</span>
         </div>
 
@@ -258,7 +363,8 @@
             />
           {:else}
             {#each filteredJobs as job (job.id)}
-              <article class="task-row" class:selected={selectedJobId === job.id}>
+              <article class="task-row" class:selected={selectedJobId === job.id} class:checked={selectedIds.has(job.id)}>
+                <label class="check-col row-check"><input type="checkbox" checked={selectedIds.has(job.id)} onchange={() => toggleSelection(job.id)} aria-label={`选择 ${titleOf(job)}`} /></label>
                 <button class="task-main" onclick={() => toggleDetails(job)} aria-label={`查看任务 ${titleOf(job)}`}>
                   <span class="media-icon"><Icon name={sourceKind(job.input)} size={18} /></span>
                   <span class="task-identity"><strong>{titleOf(job)}</strong><small>#{job.id} · {job.input}</small></span>
@@ -289,6 +395,9 @@
                       <button class="btn btn-primary btn-sm" onclick={() => openNote(job)}><Icon name="note" size={13} />打开笔记</button>
                     {/if}
                   {:else}
+                    {#if job.status === "completed" && job.note_id}
+                      <button class="btn btn-primary btn-sm" onclick={() => openNote(job)}><Icon name="note" size={13} />打开笔记</button>
+                    {/if}
                     <button class="icon-btn" title={selectedJobId === job.id ? "收起详情" : "查看详情"} onclick={() => toggleDetails(job)}><Icon name={selectedJobId === job.id ? "chevron-down" : "chevron-right"} size={16} /></button>
                   {/if}
                   {#if canDelete(job)}
@@ -326,6 +435,8 @@
               {#if selectedJob.note_id}
                 <button class="btn btn-primary btn-sm" onclick={() => openNote(selectedJob)}><Icon name="note" size={13} />在笔记库中打开</button>
               {/if}
+            {:else if selectedJob.status === "completed" && selectedJob.note_id}
+              <button class="btn btn-primary btn-sm" onclick={() => openNote(selectedJob)}><Icon name="note" size={13} />在笔记库中打开</button>
             {/if}
             {#if canDelete(selectedJob)}
               <button class="btn btn-danger btn-sm" disabled={actionJobId === selectedJob.id || actionPending} onclick={() => removeJob(selectedJob)}><Icon name="trash" size={13} />删除任务</button>
@@ -375,7 +486,7 @@
 </div>
 
 <style>
-  .tasks-page { max-width: 1440px; }
+  .tasks-page { --task-actions-width: 340px; max-width: 1440px; }
   .metrics-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px; }
   .metric-card { display: flex; align-items: center; gap: 11px; padding: 14px; color: var(--text-primary); cursor: pointer; text-align: left; transition: transform .15s, border-color .15s, box-shadow .15s; }
   .metric-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
@@ -387,7 +498,7 @@
   .metric-icon.failed { color: var(--danger-color); background: var(--danger-soft); }
   .metric-icon.completed { color: var(--success-color); background: var(--success-soft); }
   .metric-card div { display: flex; flex-direction: column; }
-  .metric-card strong { font-size: 22px; line-height: 1.05; letter-spacing: -.03em; }
+  .metric-card strong { font-size: 22px; line-height: 1.05; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
   .metric-card span:not(.metric-icon) { margin-top: 2px; color: var(--text-tertiary); font-size: 13px; }
 
   .task-workspace { overflow: hidden; }
@@ -406,13 +517,13 @@
   .task-layout { display: grid; grid-template-columns: minmax(0,1fr); min-height: 420px; }
   .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 340px; }
   .task-list-area { min-width: 0; }
-  .table-head { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(220px, 1.2fr) 115px 90px 112px; gap: 12px; padding: 8px 18px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); background: color-mix(in srgb, var(--bg-subtle) 70%, transparent); font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .table-head { display: grid; grid-template-columns: 44px minmax(220px, 1.25fr) minmax(220px, 1.2fr) 115px 90px var(--task-actions-width); gap: 12px; padding: 8px 18px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); background: color-mix(in srgb, var(--bg-subtle) 70%, transparent); font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
   .task-list { min-height: 360px; padding: 4px 0; }
-  .task-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) 112px; margin: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent); border-radius: 10px; transition: background .14s; }
+  .task-row { position: relative; display: grid; grid-template-columns: 44px minmax(0,1fr) var(--task-actions-width); margin: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent); border-radius: 10px; transition: background .14s; }
   .task-row:last-child { border-bottom: 0; }
   .task-row:hover, .task-row.selected { background: var(--accent-faint); }
   .task-row.selected { box-shadow: inset 3px 0 0 var(--accent-color); border-color: transparent; }
-  .task-main { display: grid; grid-template-columns: 38px minmax(170px,1.25fr) minmax(210px,1.2fr) 115px 90px; align-items: center; gap: 12px; min-width: 0; padding: 12px 8px 12px 12px; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+  .task-main { display: grid; grid-template-columns: 38px minmax(170px,1.25fr) minmax(210px,1.2fr) 115px 90px; align-items: center; gap: 12px; min-width: 0; padding: 12px 8px 12px 0; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
   .media-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
   .task-identity { display: flex; min-width: 0; flex-direction: column; }
   .task-identity strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
@@ -420,14 +531,16 @@
   .stage-cell { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
   .stage-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .stage-label strong { overflow: hidden; color: var(--text-tertiary); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-  .stage-label em { color: var(--text-primary); font-size: 13px; font-style: normal; font-weight: 700; }
+  .stage-label em { color: var(--text-primary); font-size: 13px; font-style: normal; font-variant-numeric: tabular-nums; font-weight: 700; }
   .stage-cell .progress-track { height: 4px; }
   .inline-error { overflow: hidden; color: var(--danger-color); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-  .time-cell { display: flex; flex-direction: column; }
+  .time-cell { display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
   .time-cell strong { color: var(--text-tertiary); font-size: 12px; font-weight: 550; }
   .time-cell small { margin-top: 2px; color: var(--text-tertiary); font-size: 11px; }
   .status-cell { display: flex; align-items: center; }
-  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding-right: 10px; }
+  .row-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; min-width: 0; padding: 8px 10px 8px 4px; }
+  .row-actions .btn { min-height: 40px; flex: 0 0 auto; white-space: nowrap; }
+  .row-actions .icon-btn { width: 40px; height: 40px; flex: 0 0 40px; }
   .danger-action { color: var(--danger-color); }
 
   .loading-state { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); }
@@ -478,6 +591,22 @@
 
   .task-row:hover { background: var(--bg-subtle); }
   .task-row.selected { background: var(--accent-faint); }
+  .task-row.checked { background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-card)); }
+
+  .check-col { display: flex; align-items: center; justify-content: center; width: 44px; min-height: 40px; flex: 0 0 auto; cursor: pointer; }
+  .check-col input { width: 17px; height: 17px; cursor: pointer; accent-color: var(--accent-color); }
+  .row-check { align-self: stretch; }
+
+  .batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--accent-faint);
+    font-size: 13px;
+  }
+  .batch-bar > span { color: var(--accent-color); font-weight: 600; margin-right: 6px; }
 
 
   /* UI v7 — desktop-density and readability pass */
@@ -498,10 +627,10 @@
 
   .task-layout { min-height: 480px; }
   .task-layout.with-detail { grid-template-columns: minmax(0,1fr) 350px; }
-  .table-head { grid-template-columns: minmax(240px,1.25fr) minmax(230px,1.2fr) 125px 95px 115px; gap: 13px; padding: 10px 18px; font-size: 10px; }
+  .table-head { grid-template-columns: 44px minmax(240px,1.25fr) minmax(230px,1.2fr) 125px 95px var(--task-actions-width); gap: 13px; padding: 10px 18px; font-size: 10px; }
   .task-list { min-height: 400px; }
-  .task-row { grid-template-columns: minmax(0,1fr) 115px; }
-  .task-main { grid-template-columns: 42px minmax(190px,1.25fr) minmax(220px,1.2fr) 125px 95px; gap: 13px; padding: 14px 0 14px 16px; }
+  .task-row { grid-template-columns: 44px minmax(0,1fr) var(--task-actions-width); }
+  .task-main { grid-template-columns: 42px minmax(190px,1.25fr) minmax(220px,1.2fr) 125px 95px; gap: 13px; padding: 14px 0; }
   .media-icon { width: 40px; height: 40px; border-radius: 11px; }
   .task-identity strong { font-size: 13px; }
   .task-identity small { margin-top: 3px; font-size: 10px; }
@@ -527,7 +656,7 @@
 
   .task-layout.with-detail .table-head { display: none; }
   .task-layout.with-detail .task-list { min-height: 400px; }
-  .task-layout.with-detail .task-row { grid-template-columns: minmax(0,1fr); row-gap: 8px; padding: 13px 15px 13px 16px; }
+  .task-layout.with-detail .task-row { grid-template-columns: 44px minmax(0,1fr); row-gap: 8px; padding: 13px 15px 13px 4px; }
   .task-layout.with-detail .task-main {
     grid-template-columns: 40px minmax(0,1fr) auto;
     grid-template-areas:
@@ -546,7 +675,7 @@
   .task-layout.with-detail .inline-error { max-width: 100%; white-space: nowrap; }
   .task-layout.with-detail .time-cell { grid-area: time; display: flex; flex-direction: row; gap: 8px; }
   .task-layout.with-detail .status-cell { grid-area: status; justify-content: flex-end; }
-  .task-layout.with-detail .row-actions { justify-content: flex-start; flex-wrap: wrap; gap: 7px; padding: 0 0 0 54px; }
+  .task-layout.with-detail .row-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; gap: 7px; padding: 0; }
   .task-layout.with-detail .row-actions .btn { min-height: 34px; }
 
   @media (max-width: 1250px) {
@@ -569,7 +698,16 @@
     .task-search { width: 100%; }
     .task-layout.with-detail { grid-template-columns: 1fr; }
     .detail-panel { border-left: 0; border-top: 1px solid var(--border-color); }
-    .task-main { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 10px; padding: 12px 0 12px 14px; }
+    .task-main {
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      grid-template-areas: "icon identity status" "icon stage stage";
+      gap: 7px 10px;
+      padding: 12px 0;
+    }
+    .media-icon { grid-area: icon; }
+    .task-identity { grid-area: identity; }
+    .stage-cell { grid-area: stage; }
+    .status-cell { grid-area: status; justify-content: flex-end; }
     .table-head { display: none; }
     .time-cell { display: none; }
     .stage-cell { min-width: 0; }
@@ -586,7 +724,6 @@
     .detail-panel { padding: 14px; }
     .detail-actions .btn { min-height: 30px; padding: 5px 8px; font-size: 11px; }
     .task-layout.with-detail .task-main { grid-template-columns: 36px minmax(0,1fr) auto; }
-    .task-layout.with-detail .row-actions { padding: 0 0 0 48px; }
     .detail-section code { max-height: 80px; }
   }
 
@@ -594,6 +731,17 @@
     .metrics-row { grid-template-columns: repeat(2, 1fr); }
     .metric-card { min-height: 60px; padding: 10px; }
     .metric-card strong { font-size: 18px; }
+  }
+
+  @media (min-width: 961px) and (max-width: 1180px) {
+    .task-row { grid-template-columns: 44px minmax(0,1fr); padding-bottom: 10px; }
+    .task-layout:not(.with-detail) .task-main { grid-template-columns: 42px minmax(160px,1.25fr) minmax(180px,1.2fr) 95px; }
+    .row-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; padding: 0 12px 0 0; }
+  }
+
+  @media (max-width: 960px) {
+    .task-row { grid-template-columns: 44px minmax(0,1fr); padding-bottom: 10px; }
+    .row-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; padding: 0 12px 0 0; }
   }
 
 </style>

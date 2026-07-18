@@ -7,7 +7,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 use crate::compile::storage::CapsuleStore;
 
+mod study;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -23,8 +25,11 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const YTDLP_DOWNLOAD_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe";
+const YTDLP_DOWNLOAD_SHA256: &str =
+    "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
 const MAX_MEDIA_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_COMPONENT_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
     (
         "download-tools",
@@ -34,6 +39,10 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
         "ffmpeg-tools",
         include_str!("../../../../runtime/manifests/ffmpeg-tools.json"),
     ),
+    (
+        "mpv-tools",
+        include_str!("../../../../runtime/manifests/mpv-tools.json"),
+    ),
 ];
 
 /// Lock ordering (must never be acquired in reverse):
@@ -41,8 +50,9 @@ const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
 ///   2. job_controls
 ///   3. jobs
 ///   4. settings_lock
+///   5. collection_lock / retry_lock (never held while acquiring jobs)
 ///   ---
-///   5. current_child  (per-job)
+///   6. current_child  (per-job)
 ///
 /// Note: process_resume acquires #3 (jobs) then #2 (job_controls) in
 /// sequence, but never holds both simultaneously — the first lock is
@@ -57,10 +67,34 @@ pub struct NativeEngine {
     default_export_dir: PathBuf,
     jobs_state_path: PathBuf,
     jobs: Arc<Mutex<Vec<NativeJob>>>,
-    #[allow(dead_code)]
     next_job_id: Arc<Mutex<u64>>,
     job_controls: Arc<Mutex<HashMap<u64, Arc<JobControl>>>>,
     settings_lock: Arc<Mutex<()>>,
+    collection_lock: Arc<Mutex<()>>,
+    retry_lock: Arc<Mutex<()>>,
+    mpv_session: Arc<Mutex<MpvSession>>,
+}
+
+struct MpvSession {
+    child: Option<Child>,
+    source_path: Option<PathBuf>,
+    ipc_path: PathBuf,
+}
+
+impl MpvSession {
+    fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        let ipc_path = PathBuf::from(format!(r"\\.\pipe\video-notes-ai-mpv-{}", Uuid::new_v4()));
+        #[cfg(not(target_os = "windows"))]
+        let ipc_path =
+            std::env::temp_dir().join(format!("video-notes-ai-mpv-{}.sock", Uuid::new_v4()));
+
+        Self {
+            child: None,
+            source_path: None,
+            ipc_path,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -91,6 +125,10 @@ struct NativeJob {
     artifact_cleanup_policy: String,
     #[serde(default)]
     note_id: Option<u32>,
+    #[serde(default)]
+    collection_id: Option<u64>,
+    #[serde(default)]
+    collection_item_id: Option<u64>,
 }
 
 struct JobControl {
@@ -100,8 +138,9 @@ struct JobControl {
     condvar: Condvar,
 }
 
+type RetryContext = (u32, String, Option<(u64, u64)>);
+
 impl JobControl {
-    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             cancel_requested: AtomicBool::new(false),
@@ -162,6 +201,9 @@ impl NativeEngine {
     pub fn new(app_handle: &AppHandle) -> Self {
         let data_dir = local_app_data_dir(app_handle);
         let settings_path = persistent_settings_path(app_handle, &data_dir);
+        if let Err(error) = migrate_plaintext_provider_secrets(&settings_path) {
+            eprintln!("[warn] Could not migrate Provider credentials to the OS vault: {error}");
+        }
         let runtime_dir = data_dir.join("runtime");
         let jobs_state_path = jobs_state_path(&data_dir);
         let jobs = load_jobs(&jobs_state_path);
@@ -172,7 +214,7 @@ impl NativeEngine {
         let default_export_dir = default_export_dir(app_handle);
         // Clean up stale temp files from previous crashed runs.
         cleanup_stale_temp_files(&runtime_dir);
-        Self {
+        let engine = Self {
             app_handle: Some(app_handle.clone()),
             settings_path,
             data_dir,
@@ -184,7 +226,14 @@ impl NativeEngine {
             next_job_id: Arc::new(Mutex::new(next_job_id)),
             job_controls: Arc::new(Mutex::new(HashMap::new())),
             settings_lock: Arc::new(Mutex::new(())),
+            collection_lock: Arc::new(Mutex::new(())),
+            retry_lock: Arc::new(Mutex::new(())),
+            mpv_session: Arc::new(Mutex::new(MpvSession::new())),
+        };
+        if let Err(error) = engine.allow_configured_asset_roots() {
+            eprintln!("[warn] Could not configure local note asset scope: {error}");
         }
+        engine
     }
 
     /// Cancel all active jobs and kill their child processes.
@@ -201,6 +250,9 @@ impl NativeEngine {
                     }
                 }
             }
+        }
+        if let Ok(mut session) = self.mpv_session.lock() {
+            stop_mpv_session(&mut session);
         }
     }
 
@@ -234,6 +286,9 @@ impl NativeEngine {
             next_job_id: Arc::new(Mutex::new(next_job_id)),
             job_controls: Arc::new(Mutex::new(HashMap::new())),
             settings_lock: Arc::new(Mutex::new(())),
+            collection_lock: Arc::new(Mutex::new(())),
+            retry_lock: Arc::new(Mutex::new(())),
+            mpv_session: Arc::new(Mutex::new(MpvSession::new())),
         }
     }
 
@@ -241,10 +296,7 @@ impl NativeEngine {
         let result = match method {
             "system.ping" => Ok(json!("pong")),
             "system.info" => self.system_info(),
-            "system.snapshot" => self.system_snapshot(),
-            "system.capabilities" => self.system_capabilities(),
             "system.open_url" => self.system_open_url(params),
-            "system.shutdown" => Ok(json!(true)),
             "settings.get" => self.settings_get(),
             "settings.update" => self.settings_update(params),
             "settings.secret.set" => self.settings_secret_set(params),
@@ -272,6 +324,7 @@ impl NativeEngine {
             "storage.cleanup_orphans" => self.storage_cleanup_orphans(params),
             "storage.cleanup_completed" => self.storage_cleanup_completed(),
             "storage.cleanup_capsules" => self.storage_cleanup_capsules(),
+            "storage.cleanup_playback_cache" => self.storage_cleanup_playback_cache(),
             "process.list" => self.process_list(params),
             "process.delete" => self.process_delete(params),
             "process.open_output" => self.process_output_action(params, false),
@@ -283,19 +336,16 @@ impl NativeEngine {
             "notes.list" => self.notes_list(None),
             "notes.search" => self.notes_list(string_param(&params, "query")),
             "notes.get" => self.notes_get(params),
-            "notes.get_by_path" => self.notes_get_by_path(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
             "notes.answer" => self.notes_answer(params),
-            "notes.video_source" => self.notes_video_source(params),
+            "notes.video_playback" => self.notes_video_playback(params),
             "notes.open" => self.notes_open(params),
             "notes.reveal" => self.notes_reveal(params),
             "collection.list" => self.collection_list(),
             "collection.get" => self.collection_get(params),
             "collection.create" => self.collection_create(params),
-            "collection.update" => self.collection_update(params),
             "collection.delete" => self.collection_delete(params),
-            "collection.list_items" => self.collection_list_items(params),
             "collection.add_items" => self.collection_add_items(params),
             "collection.remove_items" => self.collection_remove_items(params),
             "collection.import_folder" => self.collection_import_folder(params),
@@ -306,8 +356,6 @@ impl NativeEngine {
             "collection.cancel_all" => self.collection_cancel_all(params),
             "study.knowledge" => self.study_knowledge(params),
             "study.quiz" => self.study_quiz(params),
-            "study.import" => self.study_import(params),
-            "study.import_web" => self.study_import_web(params),
             "compile.video" => self.compile_video(params),
             "compile.list_versions" => self.compile_list_versions(params),
             "compile.replay" => self.compile_replay(params),
@@ -337,23 +385,6 @@ impl NativeEngine {
         open_url(&url)
     }
 
-    fn system_snapshot(&self) -> Result<Value, String> {
-        Ok(json!({
-            "engine_version": env!("CARGO_PKG_VERSION"),
-            "protocol_version": 1,
-            "engine_kind": "rust-native",
-            "timestamp": Utc::now().to_rfc3339(),
-        }))
-    }
-
-    fn system_capabilities(&self) -> Result<Value, String> {
-        Ok(json!({
-            "has_ffmpeg": tool_exists("ffmpeg", &["ffmpeg-tools"], &self.runtime_dir),
-            "has_ytdlp": tool_exists("yt-dlp", &["download-tools"], &self.runtime_dir),
-            "has_gui": true,
-        }))
-    }
-
     fn settings_get(&self) -> Result<Value, String> {
         let settings = self.read_settings();
         let template = string_value(&settings, "template")
@@ -375,7 +406,6 @@ impl NativeEngine {
             "bilibili_cookie_file": string_value(&settings, "bilibili_cookie_file")
                 .or_else(|| string_value(&settings, "bilibili_cookies"))
                 .unwrap_or_default(),
-            "draft_model_path": string_value(&settings, "draft_model_path").unwrap_or_default(),
         }))
     }
 
@@ -396,7 +426,6 @@ impl NativeEngine {
             "base_url",
             "bilibili_cookie_file",
             "bilibili_cookies",
-            "draft_model_path",
         ];
         self.update_settings(|raw| {
             for key in allowed {
@@ -409,6 +438,7 @@ impl NativeEngine {
             }
             Ok(())
         })?;
+        self.allow_configured_asset_roots()?;
         Ok(json!(true))
     }
 
@@ -417,9 +447,11 @@ impl NativeEngine {
         let key = string_param(&params, "api_key")
             .or_else(|| string_param(&params, "key"))
             .ok_or_else(|| "api_key is required".to_string())?;
+        credential_store(&provider, &key)?;
         self.update_settings(|raw| {
             let profile = find_provider_mut(raw, &provider)?;
-            profile.insert("api_key".to_string(), json!(key));
+            profile.remove("api_key");
+            profile.insert("credential_vault".to_string(), json!(true));
             Ok(())
         })?;
         Ok(json!(true))
@@ -427,9 +459,11 @@ impl NativeEngine {
 
     fn settings_secret_delete(&self, params: Value) -> Result<Value, String> {
         let provider = required_string(&params, "provider")?;
+        credential_delete(&provider)?;
         self.update_settings(|raw| {
             let profile = find_provider_mut(raw, &provider)?;
             profile.remove("api_key");
+            profile.remove("credential_vault");
             Ok(())
         })?;
         Ok(json!(true))
@@ -443,6 +477,10 @@ impl NativeEngine {
 
     fn providers_create(&self, params: Value) -> Result<Value, String> {
         let name = required_string(&params, "name")?;
+        let api_key = string_param(&params, "api_key").filter(|value| !value.is_empty());
+        if let Some(key) = api_key.as_deref() {
+            credential_store(&name, key)?;
+        }
         let model = string_param(&params, "model").unwrap_or_default();
         let vision_model = string_param(&params, "vision_model").unwrap_or_default();
         let mut models = clean_models(vec![model.clone(), vision_model.clone()]);
@@ -473,19 +511,25 @@ impl NativeEngine {
             .and_then(Value::as_str)
             .unwrap_or("openai_compat")
             .to_string();
+        let base_url = entry.get("base_url").and_then(Value::as_str).unwrap_or("");
+        entry.insert(
+            "video_input".to_string(),
+            json!(params
+                .get("video_input")
+                .and_then(Value::as_bool)
+                .unwrap_or(provider_supports_video_input(&provider_type, base_url))),
+        );
         entry.insert(
             "audio_input".to_string(),
             json!(params
                 .get("audio_input")
                 .and_then(Value::as_bool)
-                .unwrap_or_else(|| matches!(provider_type.as_str(), "google_gemini"))),
+                .unwrap_or(matches!(provider_type.as_str(), "google_gemini"))),
         );
-        if let Some(api_key) = string_param(&params, "api_key") {
-            if !api_key.is_empty() {
-                entry.insert("api_key".to_string(), json!(api_key));
-            }
+        if api_key.is_some() {
+            entry.insert("credential_vault".to_string(), json!(true));
         }
-        self.update_settings(|raw| {
+        let result = self.update_settings(|raw| {
             if find_provider(raw, &name).is_some() {
                 return Err(format!("Provider '{name}' already exists"));
             }
@@ -506,7 +550,11 @@ impl NativeEngine {
                 );
             }
             Ok(())
-        })?;
+        });
+        if result.is_err() && api_key.is_some() {
+            let _ = credential_delete(&name);
+        }
+        result?;
         Ok(json!(true))
     }
 
@@ -546,6 +594,9 @@ impl NativeEngine {
             }
             if let Some(audio_input) = params.get("audio_input").and_then(Value::as_bool) {
                 profile.insert("audio_input".to_string(), json!(audio_input));
+            }
+            if let Some(video_input) = params.get("video_input").and_then(Value::as_bool) {
+                profile.insert("video_input".to_string(), json!(video_input));
             }
             let model = profile
                 .get("model")
@@ -606,6 +657,7 @@ impl NativeEngine {
             }
             Ok(())
         })?;
+        credential_delete(&name)?;
         Ok(json!(true))
     }
 
@@ -875,7 +927,13 @@ impl NativeEngine {
                 .unwrap_or_default();
             let missing = missing_files(&component_path, &files);
             let installed = component_path.is_dir();
-            let installed_version = if installed && missing.is_empty() {
+            let integrity = if installed && missing.is_empty() {
+                verify_component_payload(&component_path)
+            } else {
+                Err("component files are missing".to_string())
+            };
+            let verified = integrity.is_ok();
+            let installed_version = if verified {
                 component_runtime_version(component, &component_path)
                     .map(Value::String)
                     .unwrap_or(Value::Null)
@@ -893,7 +951,8 @@ impl NativeEngine {
                 "installed_version": installed_version,
                 "latest_version": Value::Null,
                 "update_available": false,
-                "status": if installed && missing.is_empty() { "ok" } else if installed { "missing_files" } else { "not_installed" },
+                "status": if verified { "ok" } else if installed && missing.is_empty() { "integrity_failed" } else if installed { "missing_files" } else { "not_installed" },
+                "integrity_error": integrity.err(),
                 "size_mb": manifest.get("size_mb").cloned().unwrap_or(Value::Null),
                 "component_path": component_path.to_string_lossy(),
                 "provides": manifest.get("provides").cloned().unwrap_or_else(|| json!([])),
@@ -919,11 +978,10 @@ impl NativeEngine {
             };
             let component_path = self.runtime_dir.join("components").join(component);
             let installed = component_path.is_dir();
-            // Compare the actual binary version against the latest upstream
-            // GitHub release tag. If either is unavailable (binary not found,
-            // network down, timeout), skip silently.
+            // Read the installed version from the marker file (manifest version at install time),
+            // and compare against the latest GitHub release tag.
             let installed_version = if installed {
-                component_runtime_version(component, &component_path).unwrap_or_default()
+                read_marker_version(&component_path).unwrap_or_default()
             } else {
                 String::new()
             };
@@ -954,14 +1012,20 @@ impl NativeEngine {
             .cloned()
             .unwrap_or_default();
         let missing = missing_files(&component_path, &files);
-        let ok = component_path.is_dir() && missing.is_empty();
+        let integrity = if component_path.is_dir() && missing.is_empty() {
+            verify_component_payload(&component_path)
+        } else {
+            Err("component files are missing".to_string())
+        };
+        let ok = integrity.is_ok();
         Ok(json!({
             "ok": ok,
             "components": [{
                 "component": component,
                 "ok": ok,
-                "status": if ok { "ok" } else { "missing_files" },
+                "status": if ok { "ok" } else if missing.is_empty() { "integrity_failed" } else { "missing_files" },
                 "missing_files": missing,
+                "integrity_error": integrity.err(),
             }]
         }))
     }
@@ -1034,11 +1098,23 @@ impl NativeEngine {
 
     fn components_remove(&self, params: Value) -> Result<Value, String> {
         let component = required_string(&params, "component")?;
-        let target = self.runtime_dir.join("components").join(&component);
+        let safe = sanitize_component_name(&component)?;
+        let components_root = self.runtime_dir.join("components");
+        fs::create_dir_all(&components_root).map_err(|error| error.to_string())?;
+        let root = components_root
+            .canonicalize()
+            .map_err(|error| format!("failed to resolve components root: {error}"))?;
+        let target = components_root.join(&safe);
         if target.exists() {
+            let resolved = target
+                .canonicalize()
+                .map_err(|error| format!("failed to resolve component target: {error}"))?;
+            if !resolved.starts_with(&root) || resolved.parent() != Some(root.as_path()) {
+                return Err("component target escapes the components directory".to_string());
+            }
             fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
         }
-        Ok(json!({ "ok": true, "component": component, "status": "removed" }))
+        Ok(json!({ "ok": true, "component": safe, "status": "removed" }))
     }
 
     fn storage_status(&self) -> Result<Value, String> {
@@ -1074,6 +1150,7 @@ impl NativeEngine {
             "downloads_root": self.data_dir.join(".downloads").to_string_lossy(),
             "capsule_root": capsule_root.to_string_lossy(),
             "vault_path": vault_path,
+            "playback_cache": self.data_dir.join(".playback_cache").to_string_lossy(),
             "sizes": {
                 "exports": dir_size(&export_dir),
                 "jobs": dir_size(&jobs_root),
@@ -1081,6 +1158,7 @@ impl NativeEngine {
                 "downloads": dir_size(&self.data_dir.join(".downloads")),
                 "capsules": dir_size(&capsule_root),
                 "runtime": dir_size(&self.runtime_dir),
+                "playback_cache": dir_size(&self.data_dir.join(".playback_cache")),
             },
             "counts": {
                 "exports": dir_counts(&export_dir),
@@ -1089,6 +1167,7 @@ impl NativeEngine {
                 "downloads": dir_counts(&self.data_dir.join(".downloads")),
                 "capsules": dir_counts(&capsule_root),
                 "runtime": dir_counts(&self.runtime_dir),
+                "playback_cache": dir_counts(&self.data_dir.join(".playback_cache")),
             },
             "tasks": {
                 "total": total_tasks,
@@ -1209,6 +1288,19 @@ impl NativeEngine {
         Ok(json!({ "removed": count }))
     }
 
+    /// Delete the playback cache directory.
+    fn storage_cleanup_playback_cache(&self) -> Result<Value, String> {
+        let cache_root = self.data_dir.join(".playback_cache");
+        if !cache_root.is_dir() {
+            return Ok(json!({ "removed": false, "size": 0 }));
+        }
+        let size = dir_size(&cache_root);
+        let count = dir_counts(&cache_root);
+        fs::remove_dir_all(&cache_root)
+            .map_err(|e| format!("failed to remove playback cache: {e}"))?;
+        Ok(json!({ "removed": count, "size": size }))
+    }
+
     fn process_list(&self, params: Value) -> Result<Value, String> {
         let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
         let jobs = self
@@ -1297,7 +1389,11 @@ impl NativeEngine {
 
     fn process_retry(&self, params: Value) -> Result<Value, String> {
         let id = job_id_param(&params)?;
-        let input = {
+        let _retry_guard = self
+            .retry_lock
+            .lock()
+            .map_err(|_| "retry lock poisoned".to_string())?;
+        let (retry_params, retry_context) = {
             let jobs = self
                 .jobs
                 .lock()
@@ -1306,13 +1402,29 @@ impl NativeEngine {
                 .iter()
                 .find(|job| job.id == id)
                 .ok_or_else(|| format!("Job {id} not found"))?;
-            if !is_terminal_status(&job.status) {
+            if !is_retryable_status(&job.status) {
                 return Err(format!("Job {id} cannot be retried from {}", job.status));
             }
-            job.input.clone()
+            if let Some(existing) = jobs.iter().rev().find(|candidate| {
+                candidate.parent_run_id.as_deref() == Some(job.job_id.as_str())
+                    && is_active_status(&candidate.status)
+            }) {
+                return Ok(json!({
+                    "job_id": existing.id,
+                    "stable_job_id": existing.job_id,
+                    "deduplicated": true,
+                }));
+            }
+            (
+                retry_params_for_job(job),
+                (
+                    job.attempt.saturating_add(1),
+                    job.job_id.clone(),
+                    job.collection_id.zip(job.collection_item_id),
+                ),
+            )
         };
-        // Route to compile pipeline
-        self.compile_video(json!({ "input": input }))
+        self.compile_video_with_collection(retry_params, None, Some(retry_context))
     }
 
     fn job_control(&self, id: u64) -> Result<Arc<JobControl>, String> {
@@ -1421,8 +1533,11 @@ impl NativeEngine {
 
     fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
         let query = query.unwrap_or_default().to_lowercase();
-        let notes = self
-            .note_entries()?
+        let entries = self.note_entries()?;
+        for note in &entries {
+            self.allow_note_asset_root(&note.path)?;
+        }
+        let notes = entries
             .into_iter()
             .map(|note| {
                 if query.is_empty() {
@@ -1478,33 +1593,8 @@ impl NativeEngine {
             .into_iter()
             .find(|note| note.id == id)
             .ok_or_else(|| format!("Note {id} not found"))?;
+        self.allow_note_asset_root(&note.path)?;
         note_detail(note)
-    }
-
-    fn notes_get_by_path(&self, params: Value) -> Result<Value, String> {
-        let path = required_string(&params, "path")?;
-        let path = PathBuf::from(path);
-        if !path.is_file() {
-            return Err(format!("Note not found: {}", path.display()));
-        }
-        // Constrain reads to known note output directories to prevent
-        // arbitrary file access via crafted paths.
-        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-        let allowed_roots = [
-            self.default_export_dir
-                .canonicalize()
-                .unwrap_or_else(|_| self.default_export_dir.to_path_buf()),
-            effective_note_output_dir(&self.read_settings(), &self.default_export_dir)
-                .canonicalize()
-                .unwrap_or_else(|_| self.default_export_dir.to_path_buf()),
-        ];
-        let is_allowed = allowed_roots.iter().any(|root| canonical.starts_with(root));
-        if !is_allowed {
-            return Err(format!(
-                "Access denied: path is outside note output directories"
-            ));
-        }
-        note_detail(note_entry_from_path(path)?)
     }
 
     fn notes_update(&self, params: Value) -> Result<Value, String> {
@@ -1552,18 +1642,11 @@ impl NativeEngine {
         reveal_path(&note.path)
     }
 
-    /// Resolve the source video file path for a note.
-    /// Returns the input path and whether it's a local file.
-    fn notes_video_source(&self, params: Value) -> Result<Value, String> {
-        let note_id = params
-            .get("note_id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "note_id is required".to_string())?;
-
+    fn resolve_note_video_source(&self, note_id: u32) -> Result<Value, String> {
         // First try: look up the job that produced this note
         {
             if let Ok(jobs) = self.jobs.lock() {
-                if let Some(job) = jobs.iter().find(|j| j.note_id == Some(note_id as u32)) {
+                if let Some(job) = jobs.iter().find(|j| j.note_id == Some(note_id)) {
                     if let Ok(path) = self.resolve_video_path(job) {
                         return Ok(json!({ "path": path, "is_local": true }));
                     }
@@ -1573,7 +1656,7 @@ impl NativeEngine {
 
         // Fallback: read video_notes_source_input from note file frontmatter
         if let Ok(notes) = self.note_entries() {
-            if let Some(note) = notes.iter().find(|n| n.id == note_id as u32) {
+            if let Some(note) = notes.iter().find(|n| n.id == note_id) {
                 if let Ok(content) = std::fs::read_to_string(&note.path) {
                     if let Some(input) =
                         parse_frontmatter_value(&content, "video_notes_source_input")
@@ -1591,6 +1674,92 @@ impl NativeEngine {
         }
 
         Err(format!("no video source found for note {note_id}"))
+    }
+
+    /// Open a note's original local video in mpv without playback transcoding.
+    fn notes_video_playback(&self, params: Value) -> Result<Value, String> {
+        let (source_path, start_seconds) = self.resolve_note_playback_request(&params)?;
+        let mpv = resolve_tool_path("mpv", &["mpv-tools"], &self.runtime_dir)
+            .ok_or_else(|| "缺少 mpv 播放组件，请在设置的运行组件中安装 mpv-tools".to_string())?;
+
+        let mut session = self
+            .mpv_session
+            .lock()
+            .map_err(|_| "mpv 播放器状态锁定失败".to_string())?;
+
+        let player_running = match session.child.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .map(|status| status.is_none())
+                .unwrap_or(false),
+            None => false,
+        };
+        if player_running && session.source_path.as_deref() == Some(source_path.as_path()) {
+            let commands = mpv_seek_commands(start_seconds);
+            if send_mpv_ipc(&session.ipc_path, &commands).is_ok() {
+                return Ok(json!({
+                    "path": source_path.to_string_lossy(),
+                    "is_local": true,
+                    "playable": true,
+                    "player": "mpv",
+                    "start_seconds": start_seconds,
+                    "launched": false,
+                    "reused": true
+                }));
+            }
+        }
+
+        stop_mpv_session(&mut session);
+        let child = mpv_playback_command(&mpv, &source_path, start_seconds, &session.ipc_path)
+            .spawn()
+            .map_err(|error| format!("mpv 启动失败: {error}"))?;
+        session.child = Some(child);
+        session.source_path = Some(source_path.clone());
+
+        Ok(json!({
+            "path": source_path.to_string_lossy(),
+            "is_local": true,
+            "playable": true,
+            "player": "mpv",
+            "start_seconds": start_seconds,
+            "launched": true,
+            "reused": false
+        }))
+    }
+
+    fn resolve_note_playback_request(&self, params: &Value) -> Result<(PathBuf, f64), String> {
+        let note_id = params
+            .get("note_id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "note_id is required".to_string())?;
+        let start_seconds = params
+            .get("start_seconds")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if !start_seconds.is_finite() || start_seconds < 0.0 {
+            return Err("start_seconds must be a non-negative finite number".to_string());
+        }
+
+        let source = self.resolve_note_video_source(note_id as u32)?;
+        let source_path = source
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "no path in source".to_string())?
+            .to_string();
+        let is_local = source
+            .get("is_local")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if !is_local {
+            return Err("mpv 笔记播放仅支持已下载的本地视频".to_string());
+        }
+
+        let src = PathBuf::from(&source_path);
+        if !src.is_file() {
+            return Err(format!("source file not found: {}", src.display()));
+        }
+        Ok((src, start_seconds))
     }
 
     /// Resolve the actual video file path from a job record.
@@ -1848,12 +2017,17 @@ impl NativeEngine {
         &self,
         collection_id: Option<u64>,
     ) -> Result<Map<String, Value>, String> {
-        let mut store = self.read_collection_store();
         let jobs = self
             .jobs
             .lock()
-            .map(|jobs| jobs.clone())
-            .unwrap_or_default();
+            .map_err(|_| "jobs lock poisoned".to_string())?
+            .clone();
+        let _guard = self
+            .collection_lock
+            .lock()
+            .map_err(|_| "collection lock poisoned".to_string())?;
+        let mut store = self.read_collection_store_unlocked()?;
+        let original = store.clone();
         if let Some(collections) = store.get_mut("collections").and_then(Value::as_array_mut) {
             for collection in collections {
                 let id = collection.get("id").and_then(Value::as_u64).unwrap_or(0);
@@ -1863,7 +2037,9 @@ impl NativeEngine {
                 sync_collection_value_from_jobs(collection, &jobs);
             }
         }
-        self.write_collection_store(store.clone())?;
+        if store != original {
+            write_json_atomic(&self.collection_store_path(), &Value::Object(store.clone()))?;
+        }
         Ok(store)
     }
 
@@ -1871,8 +2047,6 @@ impl NativeEngine {
         let name = string_param(&params, "name")
             .or_else(|| string_param(&params, "title"))
             .ok_or_else(|| "name is required".to_string())?;
-        let mut store = self.read_collection_store();
-        let id = next_store_id(&mut store, "next_collection_id");
         let items = params
             .get("items")
             .and_then(Value::as_array)
@@ -1884,53 +2058,37 @@ impl NativeEngine {
             .enumerate()
             .map(|(index, input)| collection_item((index + 1) as u64, &input))
             .collect::<Vec<_>>();
-        store
-            .entry("collections".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "collections must be an array".to_string())?
-            .push(json!({
-                "id": id,
-                "name": name,
-                "status": "active",
-                "created_at": Utc::now().to_rfc3339(),
-                "items": items,
-            }));
-        self.write_collection_store(store)?;
-        Ok(json!({ "id": id, "name": name }))
-    }
-
-    fn collection_update(&self, params: Value) -> Result<Value, String> {
-        let id = required_u64(&params, "id")?;
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, id)
-            .ok_or_else(|| format!("Collection {id} not found"))?;
-        if let Some(name) = string_param(&params, "name").or_else(|| string_param(&params, "title"))
-        {
-            collection["name"] = json!(name);
-        }
-        self.write_collection_store(store)?;
-        Ok(json!(true))
+        self.update_collection_store(|store| {
+            let id = next_store_id(store, "next_collection_id");
+            store
+                .entry("collections".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "collections must be an array".to_string())?
+                .push(json!({
+                    "id": id,
+                    "name": name,
+                    "status": "active",
+                    "created_at": Utc::now().to_rfc3339(),
+                    "items": items,
+                }));
+            Ok(json!({ "id": id, "name": name }))
+        })
     }
 
     fn collection_delete(&self, params: Value) -> Result<Value, String> {
         let id = required_u64(&params, "id")?;
-        let mut store = self.read_collection_store();
-        let collections = store
-            .entry("collections".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "collections must be an array".to_string())?;
-        let old_len = collections.len();
-        collections.retain(|collection| collection.get("id").and_then(Value::as_u64) != Some(id));
-        let removed = collections.len() != old_len;
-        self.write_collection_store(store)?;
-        Ok(json!(removed))
-    }
-
-    fn collection_list_items(&self, params: Value) -> Result<Value, String> {
-        let detail = self.collection_get(params)?;
-        Ok(detail.get("items").cloned().unwrap_or_else(|| json!([])))
+        self.update_collection_store(|store| {
+            let collections = store
+                .entry("collections".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "collections must be an array".to_string())?;
+            let old_len = collections.len();
+            collections
+                .retain(|collection| collection.get("id").and_then(Value::as_u64) != Some(id));
+            Ok(json!(collections.len() != old_len))
+        })
     }
 
     fn collection_add_items(&self, params: Value) -> Result<Value, String> {
@@ -1945,30 +2103,28 @@ impl NativeEngine {
             .filter(|item| !item.is_empty())
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, id)
-            .ok_or_else(|| format!("Collection {id} not found"))?;
-        let collection = collection
-            .as_object_mut()
-            .ok_or_else(|| "collection must be an object".to_string())?;
-        let items = collection
-            .entry("items".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "items must be an array".to_string())?;
-        let mut next_id = items
-            .iter()
-            .filter_map(|item| item.get("id").and_then(Value::as_u64))
-            .max()
-            .unwrap_or(0)
-            + 1;
-        for input in new_inputs {
-            items.push(collection_item(next_id, &input));
-            next_id += 1;
-        }
-        let result = json!(items.clone());
-        self.write_collection_store(store)?;
-        Ok(result)
+        self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            let collection = collection
+                .as_object_mut()
+                .ok_or_else(|| "collection must be an object".to_string())?;
+            let items = collection
+                .entry("items".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "items must be an array".to_string())?;
+            let next_id = items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_u64))
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for (offset, input) in new_inputs.into_iter().enumerate() {
+                items.push(collection_item(next_id + offset as u64, &input));
+            }
+            Ok(json!(items.clone()))
+        })
     }
 
     fn collection_remove_items(&self, params: Value) -> Result<Value, String> {
@@ -1980,22 +2136,22 @@ impl NativeEngine {
             .iter()
             .filter_map(Value::as_u64)
             .collect::<Vec<_>>();
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, id)
-            .ok_or_else(|| format!("Collection {id} not found"))?;
-        let collection = collection
-            .as_object_mut()
-            .ok_or_else(|| "collection must be an object".to_string())?;
-        let items = collection
-            .entry("items".to_string())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| "items must be an array".to_string())?;
-        items.retain(|item| {
-            !item_ids.contains(&item.get("id").and_then(Value::as_u64).unwrap_or(0))
-        });
-        self.write_collection_store(store)?;
-        Ok(json!(true))
+        self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            let collection = collection
+                .as_object_mut()
+                .ok_or_else(|| "collection must be an object".to_string())?;
+            let items = collection
+                .entry("items".to_string())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| "items must be an array".to_string())?;
+            items.retain(|item| {
+                !item_ids.contains(&item.get("id").and_then(Value::as_u64).unwrap_or(0))
+            });
+            Ok(json!(true))
+        })
     }
 
     fn collection_import_folder(&self, params: Value) -> Result<Value, String> {
@@ -2095,69 +2251,106 @@ impl NativeEngine {
 
     fn collection_batch_process(&self, params: Value) -> Result<Value, String> {
         let id = required_u64(&params, "id")?;
-        let detail = self.collection_get(json!({ "id": id }))?;
+        let scope = string_param(&params, "scope").unwrap_or_else(|| "pending".to_string());
+        if !matches!(scope.as_str(), "pending" | "failed") {
+            return Err("scope must be 'pending' or 'failed'".to_string());
+        }
         let mode = params
             .get("opts")
             .and_then(|opts| opts.get("compile_mode"))
             .and_then(Value::as_str)
             .unwrap_or("precision")
             .to_string();
-        let items = detail
-            .get("items")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let items = items
-            .into_iter()
-            .filter_map(|item| {
-                let item_id = item.get("id")?.as_u64()?;
-                let input = item.get("input")?.as_str()?.trim().to_string();
-                if input.is_empty() {
-                    return None;
-                }
-                // Skip items that already have a non-terminal running job
-                let run_id = item.get("run_id").and_then(Value::as_u64);
-                let status = item.get("status").and_then(Value::as_str).unwrap_or("");
-                if run_id.is_some() && !is_terminal_status(status) {
-                    return None;
-                }
-                let title = item
-                    .get("title")
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?
+            .clone();
+        let batch_job_id = format!("batch-{id}-{}", Uuid::new_v4());
+        let (collection_name, items) = self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            sync_collection_value_from_jobs(collection, &jobs);
+            let collection_name = collection
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("collection")
+                .to_string();
+            let collection_items = collection
+                .get_mut("items")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| "items must be an array".to_string())?;
+            let mut claimed = Vec::new();
+            for item in collection_items {
+                let Some(item_id) = item.get("id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let input = item
+                    .get("input")
                     .and_then(Value::as_str)
                     .unwrap_or("")
+                    .trim()
                     .to_string();
-                Some(CollectionBatchItem {
+                if input.is_empty() {
+                    continue;
+                }
+                let run_id = item.get("run_id").and_then(Value::as_u64);
+                let status = item.get("status").and_then(Value::as_str).unwrap_or("");
+                if !collection_item_matches_batch_scope(status, run_id, &scope) {
+                    continue;
+                }
+                claimed.push(CollectionBatchItem {
                     id: item_id,
                     input,
-                    title,
+                    title: item
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     compile_mode: mode.clone(),
-                })
-            })
-            .collect::<Vec<_>>();
-        if items.is_empty() {
-            return Err("collection has no processable items".to_string());
-        }
+                });
+                item["status"] = json!("queued");
+                item["progress"] = json!(0);
+                item["batch_id"] = json!(batch_job_id.clone());
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("run_id");
+                    object.remove("job_id");
+                    object.remove("error_message");
+                    object.remove("output_path");
+                }
+            }
+            if claimed.is_empty() {
+                return Err(format!(
+                    "collection has no processable items for scope '{scope}'"
+                ));
+            }
+            collection["status"] = json!("processing");
+            Ok((collection_name, claimed))
+        })?;
         let max_concurrency = 1; // force serial execution
-        let collection_name = detail
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("collection");
         let output_dir = collection_output_dir(
             &self.read_settings(),
             &self.default_export_dir,
-            collection_name,
+            &collection_name,
             id,
         );
         let count = items.len();
-        let batch_job_id = format!("batch-{id}-{}", Utc::now().timestamp());
         let runner = self.clone();
-        let _ = self.set_collection_status(id, "processing");
         let batch_output_dir = output_dir.clone();
+        let thread_batch_id = batch_job_id.clone();
         std::thread::spawn(move || {
-            if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                runner.run_collection_batch(id, items, max_concurrency, batch_output_dir);
-            })) {
-                let _ = panic;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runner.run_collection_batch(
+                    id,
+                    &thread_batch_id,
+                    items,
+                    max_concurrency,
+                    batch_output_dir,
+                );
+            }))
+            .is_err()
+            {
+                let _ = runner.fail_collection_batch(id, &thread_batch_id, "批量处理线程异常退出");
             }
         });
         Ok(json!({
@@ -2183,10 +2376,10 @@ impl NativeEngine {
             let run_id = item.get("run_id").and_then(Value::as_u64);
             let status = item.get("status").and_then(Value::as_str).unwrap_or("");
             if let Some(run_id) = run_id {
-                if matches!(status, "pending" | "running") {
-                    if self.process_pause(json!({ "job_id": run_id })).is_ok() {
-                        paused += 1;
-                    }
+                if matches!(status, "pending" | "running")
+                    && self.process_pause(json!({ "job_id": run_id })).is_ok()
+                {
+                    paused += 1;
                 }
             }
         }
@@ -2206,10 +2399,10 @@ impl NativeEngine {
             let run_id = item.get("run_id").and_then(Value::as_u64);
             let status = item.get("status").and_then(Value::as_str).unwrap_or("");
             if let Some(run_id) = run_id {
-                if matches!(status, "pausing" | "paused") {
-                    if self.process_resume(json!({ "job_id": run_id })).is_ok() {
-                        resumed += 1;
-                    }
+                if matches!(status, "pausing" | "paused")
+                    && self.process_resume(json!({ "job_id": run_id })).is_ok()
+                {
+                    resumed += 1;
                 }
             }
         }
@@ -2232,19 +2425,39 @@ impl NativeEngine {
                 if matches!(
                     status,
                     "pending" | "running" | "pausing" | "paused" | "cancelling"
-                ) {
-                    if self.process_cancel(json!({ "job_id": run_id })).is_ok() {
-                        cancelled += 1;
-                    }
+                ) && self.process_cancel(json!({ "job_id": run_id })).is_ok()
+                {
+                    cancelled += 1;
                 }
             }
         }
-        Ok(json!({ "cancelled": cancelled }))
+        let queued_cancelled = self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            let mut count = 0u32;
+            if let Some(items) = collection.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    if item.get("status").and_then(Value::as_str) == Some("queued") {
+                        item["status"] = json!("cancelled");
+                        item["progress"] = json!(100);
+                        item["error_message"] = json!("用户取消了批量处理");
+                        if let Some(object) = item.as_object_mut() {
+                            object.remove("batch_id");
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            collection["status"] = json!(aggregate_collection_status(collection));
+            Ok(count)
+        })?;
+        Ok(json!({ "cancelled": cancelled + queued_cancelled }))
     }
 
     fn run_collection_batch(
         &self,
         id: u64,
+        batch_id: &str,
         items: Vec<CollectionBatchItem>,
         _max_concurrency: usize,
         _output_dir: PathBuf,
@@ -2252,29 +2465,49 @@ impl NativeEngine {
         for item in &items {
             // Check if collection was deleted mid-batch
             {
-                let store = self.read_collection_store();
-                if find_collection(&store, id).is_none() {
+                let Ok(store) = self.read_collection_store() else {
                     break;
+                };
+                let Some(collection) = find_collection(&store, id) else {
+                    break;
+                };
+                let is_claimed = collection
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .and_then(|collection_items| {
+                        collection_items
+                            .iter()
+                            .find(|value| value.get("id").and_then(Value::as_u64) == Some(item.id))
+                    })
+                    .and_then(|value| value.get("batch_id"))
+                    .and_then(Value::as_str)
+                    == Some(batch_id);
+                if !is_claimed {
+                    continue;
                 }
             }
-            let _ = self.update_collection_item_start(id, item.id, 0);
-            let result = self.compile_video(json!({
-                "input": item.input.clone(),
-                "title": item.title.clone(),
-                "mode": item.compile_mode.clone(),
-                "sync": true,
-            }));
+            let result = self.compile_video_with_collection(
+                json!({
+                    "input": item.input.clone(),
+                    "title": item.title.clone(),
+                    "mode": item.compile_mode.clone(),
+                    "sync": true,
+                }),
+                Some((id, item.id)),
+                None,
+            );
             match result {
                 Ok(value) => {
-                    let capsule_id = value.get("capsule_id").and_then(Value::as_str).unwrap_or("");
-                    let _ = self.update_collection_item(id, item.id, |entry| {
-                        entry["status"] = json!("completed");
-                        entry["progress"] = json!(100);
-                        entry["capsule_id"] = json!(capsule_id);
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.remove("error_message");
-                        }
-                    });
+                    let outcome = value
+                        .get("job_id")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "batch compile did not return a job_id".to_string())
+                        .and_then(|job_id| {
+                            self.update_collection_item_from_job(id, item.id, job_id)
+                        });
+                    if let Err(error) = outcome {
+                        let _ = self.update_collection_item_failed(id, item.id, &error);
+                    }
                 }
                 Err(error) => {
                     let _ = self.update_collection_item_failed(id, item.id, &error);
@@ -2282,6 +2515,27 @@ impl NativeEngine {
             }
         }
         let _ = self.refresh_collection_status(id);
+    }
+
+    fn fail_collection_batch(&self, id: u64, batch_id: &str, error: &str) -> Result<(), String> {
+        self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            if let Some(items) = collection.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    let matches_batch =
+                        item.get("batch_id").and_then(Value::as_str) == Some(batch_id);
+                    let status = item.get("status").and_then(Value::as_str).unwrap_or("");
+                    if matches_batch && !is_terminal_status(status) {
+                        item["status"] = json!("failed");
+                        item["progress"] = json!(100);
+                        item["error_message"] = json!(error);
+                    }
+                }
+            }
+            collection["status"] = json!(aggregate_collection_status(collection));
+            Ok(())
+        })
     }
 
     fn update_collection_item_start(
@@ -2295,9 +2549,29 @@ impl NativeEngine {
             item["status"] = json!("pending");
             item["progress"] = json!(0);
             if let Some(object) = item.as_object_mut() {
+                object.remove("batch_id");
                 object.remove("error_message");
                 object.remove("output_path");
             }
+        })
+    }
+
+    fn update_collection_item_from_job(
+        &self,
+        collection_id: u64,
+        item_id: u64,
+        job_id: u64,
+    ) -> Result<(), String> {
+        let job = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs lock poisoned".to_string())?
+            .iter()
+            .find(|job| job.id == job_id)
+            .cloned()
+            .ok_or_else(|| format!("Job {job_id} not found"))?;
+        self.update_collection_item(collection_id, item_id, |item| {
+            sync_collection_item_from_job(item, &job);
         })
     }
 
@@ -2323,52 +2597,70 @@ impl NativeEngine {
     where
         F: FnOnce(&mut Value),
     {
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, collection_id)
-            .ok_or_else(|| format!("Collection {collection_id} not found"))?;
-        let items = collection
-            .get_mut("items")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| "items must be an array".to_string())?;
-        let item = items
-            .iter_mut()
-            .find(|item| item.get("id").and_then(Value::as_u64) == Some(item_id))
-            .ok_or_else(|| format!("Collection item {item_id} not found"))?;
-        update(item);
-        collection["status"] = json!(aggregate_collection_status(collection));
-        self.write_collection_store(store)
-    }
-
-    fn set_collection_status(&self, id: u64, status: &str) -> Result<(), String> {
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, id)
-            .ok_or_else(|| format!("Collection {id} not found"))?;
-        collection["status"] = json!(status);
-        self.write_collection_store(store)
+        self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, collection_id)
+                .ok_or_else(|| format!("Collection {collection_id} not found"))?;
+            let items = collection
+                .get_mut("items")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| "items must be an array".to_string())?;
+            let item = items
+                .iter_mut()
+                .find(|item| item.get("id").and_then(Value::as_u64) == Some(item_id))
+                .ok_or_else(|| format!("Collection item {item_id} not found"))?;
+            update(item);
+            collection["status"] = json!(aggregate_collection_status(collection));
+            Ok(())
+        })
     }
 
     fn refresh_collection_status(&self, id: u64) -> Result<(), String> {
-        let mut store = self.read_collection_store();
-        let collection = find_collection_mut(&mut store, id)
-            .ok_or_else(|| format!("Collection {id} not found"))?;
-        collection["status"] = json!(aggregate_collection_status(collection));
-        self.write_collection_store(store)
+        self.update_collection_store(|store| {
+            let collection = find_collection_mut(store, id)
+                .ok_or_else(|| format!("Collection {id} not found"))?;
+            collection["status"] = json!(aggregate_collection_status(collection));
+            Ok(())
+        })
     }
 
-    fn read_collection_store(&self) -> Map<String, Value> {
-        read_json_file(&self.collection_store_path())
-            .ok()
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_else(|| {
-                let mut store = Map::new();
-                store.insert("next_collection_id".to_string(), json!(1));
-                store.insert("collections".to_string(), json!([]));
-                store
-            })
+    fn read_collection_store(&self) -> Result<Map<String, Value>, String> {
+        let _guard = self
+            .collection_lock
+            .lock()
+            .map_err(|_| "collection lock poisoned".to_string())?;
+        self.read_collection_store_unlocked()
     }
 
-    fn write_collection_store(&self, store: Map<String, Value>) -> Result<(), String> {
-        write_json_atomic(&self.collection_store_path(), &Value::Object(store))
+    fn read_collection_store_unlocked(&self) -> Result<Map<String, Value>, String> {
+        let path = self.collection_store_path();
+        if !path.exists() {
+            let mut store = Map::new();
+            store.insert("next_collection_id".to_string(), json!(1));
+            store.insert("collections".to_string(), json!([]));
+            return Ok(store);
+        }
+        let store = read_json_file(&path)?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "collection store root must be an object".to_string())?;
+        if !store.get("collections").is_some_and(Value::is_array) {
+            return Err("collection store collections must be an array".to_string());
+        }
+        Ok(store)
+    }
+
+    fn update_collection_store<T, F>(&self, update: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut Map<String, Value>) -> Result<T, String>,
+    {
+        let _guard = self
+            .collection_lock
+            .lock()
+            .map_err(|_| "collection lock poisoned".to_string())?;
+        let mut store = self.read_collection_store_unlocked()?;
+        let result = update(&mut store)?;
+        write_json_atomic(&self.collection_store_path(), &Value::Object(store))?;
+        Ok(result)
     }
 
     fn collection_store_path(&self) -> PathBuf {
@@ -2423,14 +2715,21 @@ impl NativeEngine {
         Ok(manifests)
     }
 
-    fn read_settings(&self) -> Map<String, Value> {
+    fn read_settings_raw(&self) -> Map<String, Value> {
         read_json_file(&self.settings_path)
             .ok()
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
     }
 
-    fn write_settings(&self, raw: Map<String, Value>) -> Result<(), String> {
+    fn read_settings(&self) -> Map<String, Value> {
+        let mut raw = self.read_settings_raw();
+        hydrate_provider_secrets(&mut raw);
+        raw
+    }
+
+    fn write_settings(&self, mut raw: Map<String, Value>) -> Result<(), String> {
+        strip_plaintext_provider_secrets(&mut raw);
         write_json_atomic(&self.settings_path, &Value::Object(raw))
     }
 
@@ -2442,91 +2741,57 @@ impl NativeEngine {
             .settings_lock
             .lock()
             .map_err(|_| "settings lock poisoned".to_string())?;
-        let mut raw = self.read_settings();
+        let mut raw = self.read_settings_raw();
         let result = update(&mut raw)?;
         self.write_settings(raw)?;
         Ok(result)
     }
 
-    fn study_knowledge(&self, params: Value) -> Result<Value, String> {
-        let id = params
-            .get("note_id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "note_id is required".to_string())? as u32;
-        let note = self
-            .note_entries()?
-            .into_iter()
-            .find(|n| n.id == id)
-            .ok_or_else(|| format!("Note {id} not found"))?;
-        let content =
-            std::fs::read_to_string(&note.path).map_err(|e| format!("Failed to read note: {e}"))?;
+    fn allow_note_asset_root(&self, note_path: &Path) -> Result<(), String> {
+        let Some(handle) = self.app_handle.as_ref() else {
+            return Ok(());
+        };
+        let directory = note_path
+            .parent()
+            .ok_or_else(|| "note path has no parent directory".to_string())?;
+        handle
+            .asset_protocol_scope()
+            .allow_directory(directory, true)
+            .map_err(|error| error.to_string())
+    }
 
-        // Try AI-powered knowledge graph first
-        let settings = self.read_settings();
-        if let Ok(profile) = active_provider_profile(&settings) {
-            match crate::study::knowledge::build_knowledge_graph_ai(&profile, &content) {
-                Ok(kg) if kg.is_populated() => {
-                    return Ok(serde_json::to_value(kg).unwrap_or_default());
-                }
-                _ => {}
-            }
+    fn allow_configured_asset_roots(&self) -> Result<(), String> {
+        let Some(handle) = self.app_handle.as_ref() else {
+            return Ok(());
+        };
+        let settings = self.read_settings_raw();
+        let mut roots = vec![self.default_export_dir.clone()];
+        if let Some(path) = string_value(&settings, "output_dir") {
+            roots.push(PathBuf::from(path));
         }
-
-        // Fallback: heading-based parsing → KnowledgeGraph
-        let kg = crate::study::knowledge::build_knowledge_graph(&content);
-        Ok(serde_json::to_value(kg).unwrap_or_default())
-    }
-
-    fn study_quiz(&self, params: Value) -> Result<Value, String> {
-        let id = params
-            .get("note_id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "note_id is required".to_string())? as u32;
-        let note = self
-            .note_entries()?
-            .into_iter()
-            .find(|n| n.id == id)
-            .ok_or_else(|| format!("Note {id} not found"))?;
-        let content =
-            std::fs::read_to_string(&note.path).map_err(|e| format!("Failed to read note: {e}"))?;
-        let settings = self.read_settings();
-        let profile =
-            active_provider_profile(&settings).map_err(|e| format!("No active provider: {e}"))?;
-        crate::study::quiz::generate_quiz(&profile, &content)
-    }
-
-    /// Import a text-based document (TXT, Markdown, or raw text) into
-    /// the study pipeline. Returns parsed document chunks that can be
-    /// fed into knowledge graph or quiz generation.
-    ///
-    /// Params:
-    ///   - source_type: "text" | "markdown"
-    ///   - content: the raw text content
-    fn study_import(&self, params: Value) -> Result<Value, String> {
-        let source_type = crate::native_engine::string_param(&params, "source_type")
-            .unwrap_or_else(|| "text".to_string());
-        let content = crate::native_engine::required_string(&params, "content")?;
-
-        let doc =
-            crate::study::knowledge::adapters::text_adapter::parse_text(&content, &source_type);
-        Ok(serde_json::to_value(doc).unwrap_or_default())
-    }
-
-    /// Import a web page by URL. Fetches the page, extracts text,
-    /// and returns structured content.
-    ///
-    /// Params:
-    ///   - url: the web page URL
-    fn study_import_web(&self, params: Value) -> Result<Value, String> {
-        let url = crate::native_engine::required_string(&params, "url")?;
-
-        let page = crate::study::knowledge::adapters::web_adapter::fetch_web_content(&url, None)
-            .map_err(|e| format!("Failed to fetch web content: {e}"))?;
-        Ok(serde_json::to_value(page).unwrap_or_default())
+        if let Some(path) = string_value(&settings, "vault_path") {
+            roots.push(PathBuf::from(path).join("video-notes"));
+        }
+        for root in roots {
+            handle
+                .asset_protocol_scope()
+                .allow_directory(root, true)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// Start a multimodal compile pipeline on a video file.
     fn compile_video(&self, params: Value) -> Result<Value, String> {
+        self.compile_video_with_collection(params, None, None)
+    }
+
+    fn compile_video_with_collection(
+        &self,
+        params: Value,
+        collection_binding: Option<(u64, u64)>,
+        retry_context: Option<RetryContext>,
+    ) -> Result<Value, String> {
         let input = crate::native_engine::required_string(&params, "input")?;
         let title = crate::native_engine::string_param(&params, "title")
             .or_else(|| {
@@ -2560,7 +2825,10 @@ impl NativeEngine {
                 profile.base_url.clone(),
                 profile.api_key.clone(),
                 profile.vision_model.clone(),
-                crate::compile::client::ProviderKind::from_type_str(&profile.provider_type),
+                crate::compile::client::ProviderKind::from_profile(
+                    &profile.provider_type,
+                    &profile.base_url,
+                ),
             );
             config.accepts_video = profile.accepts_video;
             config
@@ -2602,8 +2870,16 @@ impl NativeEngine {
         let prefer_draft = crate::native_engine::string_param(&params, "mode")
             .map(|m| m == "draft")
             .unwrap_or(false);
-        let gguf_model_path = crate::native_engine::string_value(&settings, "draft_model_path")
-            .map(std::path::PathBuf::from);
+        let request_snapshot = json!({
+            "input": input.clone(),
+            "title": title.clone(),
+            "template": template.clone(),
+            "mode": if prefer_draft { "draft" } else { "precision" },
+        });
+        let (attempt, parent_run_id, inherited_collection_binding) = retry_context
+            .map(|(attempt, parent_run_id, binding)| (attempt, Some(parent_run_id), binding))
+            .unwrap_or((1, None, None));
+        let collection_binding = collection_binding.or(inherited_collection_binding);
         let bilibili_cookie_file =
             if input_is_url && input.to_ascii_lowercase().contains("bilibili.com") {
                 crate::native_engine::string_value(&settings, "bilibili_cookie_file")
@@ -2647,12 +2923,14 @@ impl NativeEngine {
             output_path: None,
             transcript_path: None,
             can_resume: false,
-            settings_snapshot: None,
+            settings_snapshot: Some(request_snapshot),
             workspace_dir: None,
-            attempt: 1,
-            parent_run_id: None,
+            attempt,
+            parent_run_id,
             artifact_cleanup_policy: "keep_all".to_string(),
             note_id: None,
+            collection_id: collection_binding.map(|(collection_id, _)| collection_id),
+            collection_item_id: collection_binding.map(|(_, item_id)| item_id),
         };
         {
             let mut jobs = self
@@ -2662,6 +2940,17 @@ impl NativeEngine {
             jobs.push(job);
             if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
                 jobs.retain(|j| j.id != id);
+                return Err(error);
+            }
+        }
+        if let Some((collection_id, collection_item_id)) = collection_binding {
+            if let Err(error) =
+                self.update_collection_item_start(collection_id, collection_item_id, id)
+            {
+                if let Ok(mut jobs) = self.jobs.lock() {
+                    jobs.retain(|job| job.id != id);
+                    let _ = save_jobs(&self.jobs_state_path, &jobs);
+                }
                 return Err(error);
             }
         }
@@ -2867,6 +3156,24 @@ impl NativeEngine {
             };
 
             let storage_dir_for_render = storage_dir.clone();
+            let process_started_cb = {
+                let control = thread_control.clone();
+                move |pid: u32| {
+                    if let Ok(mut current_child) = control.current_child.lock() {
+                        *current_child = Some(pid);
+                    }
+                }
+            };
+            let process_finished_cb = {
+                let control = thread_control.clone();
+                move |pid: u32| {
+                    if let Ok(mut current_child) = control.current_child.lock() {
+                        if *current_child == Some(pid) {
+                            *current_child = None;
+                        }
+                    }
+                }
+            };
             let opts = crate::compile::engine::CompileOptions {
                 ffmpeg_path: ffmpeg,
                 ffprobe_path: ffprobe,
@@ -2876,7 +3183,8 @@ impl NativeEngine {
                 prefer_draft,
                 on_progress: Some(Box::new(progress_cb)),
                 checkpoint: Some(Box::new(checkpoint_cb)),
-                gguf_model_path,
+                on_process_started: Some(Box::new(process_started_cb)),
+                on_process_finished: Some(Box::new(process_finished_cb)),
             };
 
             let result = crate::compile::engine::compile_video(
@@ -2901,27 +3209,6 @@ impl NativeEngine {
                     {
                         // Record the original source path in capsule for frontmatter
                         capsule.source_input = thread_input.clone();
-                        // Persist v0.2 exchange bundle when feature is enabled
-                        #[cfg(feature = "compiler_v3")]
-                        if let Err(e) = (|| -> Result<(), String> {
-                            use crate::compile_v3::convert;
-                            use crate::compile_v3::validate::write_bundle;
-                            let v02_storage_dir = storage_dir_for_render;
-                            let v02_bundle = convert(&capsule);
-                            let bytes = write_bundle(&v02_bundle)
-                                .map_err(|e| format!("v0.2 write_bundle failed: {e}"))?;
-                            let capsule_dir = v02_storage_dir.join(&compile_result.source_hash);
-                            std::fs::create_dir_all(&capsule_dir)
-                                .map_err(|e| format!("failed to create v0.2 dir: {e}"))?;
-                            let v02_path =
-                                capsule_dir.join(format!("v{}.v02.json", compile_result.version));
-                            std::fs::write(&v02_path, &bytes)
-                                .map_err(|e| format!("failed to write v0.2: {e}"))?;
-                            Ok(())
-                        })() {
-                            eprintln!("warning: v0.2 bundle not persisted: {e}");
-                        }
-
                         match crate::compile::renderer::render(&capsule, &template) {
                             Ok(markdown) => {
                                 let _ = std::fs::create_dir_all(&export_dir);
@@ -3053,6 +3340,8 @@ impl NativeJob {
             "output_path": self.output_path,
             "transcript_path": self.transcript_path,
             "note_id": self.note_id,
+            "collection_id": self.collection_id,
+            "collection_item_id": self.collection_item_id,
             "settings_snapshot": self.settings_snapshot,
             "workspace_dir": self.workspace_dir,
             "attempt": self.attempt,
@@ -3069,24 +3358,38 @@ fn jobs_state_path(data_dir: &Path) -> PathBuf {
 }
 
 fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
-    // Guard against unbounded memory: if jobs.json exceeds 16 MB, something
-    // is wrong (likely thousands of stale jobs). Read anyway but log a warning.
-    let mut jobs = fs::metadata(jobs_state_path)
-        .ok()
-        .filter(|m| m.len() <= 16 * 1024 * 1024)
-        .and_then(|_| fs::read_to_string(jobs_state_path).ok())
-        .or_else(|| {
-            // Large file fallback: try reading anyway but warn
-            match fs::read_to_string(jobs_state_path) {
-                Ok(raw) => {
-                    eprintln!("[warn] jobs.json is large (>16MB), consider cleaning old jobs");
-                    Some(raw)
-                }
-                Err(_) => None,
-            }
-        })
-        .and_then(|contents| serde_json::from_str::<Vec<NativeJob>>(&contents).ok())
-        .unwrap_or_default();
+    if !jobs_state_path.exists() {
+        return Vec::new();
+    }
+    const MAX_JOBS_STATE_BYTES: u64 = 16 * 1024 * 1024;
+    let metadata = match fs::metadata(jobs_state_path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("[error] Could not inspect jobs state: {error}");
+            return Vec::new();
+        }
+    };
+    if metadata.len() > MAX_JOBS_STATE_BYTES {
+        quarantine_corrupt_jobs_state(
+            jobs_state_path,
+            &format!("state exceeds {MAX_JOBS_STATE_BYTES} bytes"),
+        );
+        return Vec::new();
+    }
+    let contents = match fs::read_to_string(jobs_state_path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            eprintln!("[error] Could not read jobs state: {error}");
+            return Vec::new();
+        }
+    };
+    let mut jobs = match serde_json::from_str::<Vec<NativeJob>>(&contents) {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            quarantine_corrupt_jobs_state(jobs_state_path, &error.to_string());
+            return Vec::new();
+        }
+    };
     let now = Utc::now().to_rfc3339();
     let mut changed = false;
     for job in &mut jobs {
@@ -3118,29 +3421,65 @@ fn load_jobs(jobs_state_path: &Path) -> Vec<NativeJob> {
     jobs
 }
 
-static JOBS_SAVE_TIMES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, std::time::Instant>>,
+fn quarantine_corrupt_jobs_state(path: &Path, reason: &str) {
+    let backup = path.with_file_name(format!(
+        "jobs.corrupt-{}-{}.json",
+        Utc::now().timestamp_millis(),
+        Uuid::new_v4()
+    ));
+    match fs::rename(path, &backup) {
+        Ok(()) => eprintln!(
+            "[error] Quarantined invalid jobs state to {}: {reason}",
+            backup.display()
+        ),
+        Err(error) => eprintln!(
+            "[error] Jobs state is invalid ({reason}) and could not be quarantined: {error}"
+        ),
+    }
+}
+
+static JOBS_SAVE_STATE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::Instant, u64)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 fn save_jobs(jobs_state_path: &Path, jobs: &[NativeJob]) -> Result<(), String> {
-    // Rate-limit non-terminal saves to at most once per 2 seconds
-    let has_terminal = jobs.iter().any(|j| is_terminal_status(&j.status));
-    if !has_terminal {
-        if let Ok(guard) = JOBS_SAVE_TIMES.lock() {
-            if let Some(last) = guard.get(jobs_state_path) {
-                if last.elapsed() < Duration::from_secs(2) {
-                    return Ok(());
-                }
+    let signature = jobs_persistence_signature(jobs);
+    if let Ok(guard) = JOBS_SAVE_STATE.lock() {
+        if let Some((last, previous_signature)) = guard.get(jobs_state_path) {
+            if *previous_signature == signature && last.elapsed() < Duration::from_secs(2) {
+                return Ok(());
             }
         }
     }
     let result = write_json_atomic(jobs_state_path, &json!(jobs));
     if result.is_ok() {
-        if let Ok(mut guard) = JOBS_SAVE_TIMES.lock() {
-            guard.insert(jobs_state_path.to_path_buf(), std::time::Instant::now());
+        if let Ok(mut guard) = JOBS_SAVE_STATE.lock() {
+            guard.insert(
+                jobs_state_path.to_path_buf(),
+                (std::time::Instant::now(), signature),
+            );
         }
     }
     result
+}
+
+fn jobs_persistence_signature(jobs: &[NativeJob]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    jobs.len().hash(&mut hasher);
+    for job in jobs {
+        job.id.hash(&mut hasher);
+        job.job_id.hash(&mut hasher);
+        job.status.hash(&mut hasher);
+        job.stage.hash(&mut hasher);
+        job.completed_at.hash(&mut hasher);
+        job.error_message.hash(&mut hasher);
+        job.output_path.hash(&mut hasher);
+        job.transcript_path.hash(&mut hasher);
+        job.note_id.hash(&mut hasher);
+        job.collection_id.hash(&mut hasher);
+        job.collection_item_id.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn default_job_attempt() -> u32 {
@@ -3227,6 +3566,18 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
 }
 
+fn is_retryable_status(status: &str) -> bool {
+    matches!(status, "failed" | "cancelled" | "interrupted")
+}
+
+fn collection_item_matches_batch_scope(status: &str, run_id: Option<u64>, scope: &str) -> bool {
+    match scope {
+        "pending" => status == "pending" && run_id.is_none(),
+        "failed" => is_retryable_status(status),
+        _ => false,
+    }
+}
+
 fn next_job_id(jobs: &[NativeJob]) -> u64 {
     jobs.iter().map(|job| job.id).max().unwrap_or(0) + 1
 }
@@ -3255,6 +3606,14 @@ fn job_progress_event(
         "stage": stage,
         "progress": progress,
         "message": message,
+        "completed_at": job.completed_at,
+        "error_message": job.error_message,
+        "output_path": job.output_path,
+        "transcript_path": job.transcript_path,
+        "note_id": job.note_id,
+        "can_resume": job.can_resume,
+        "collection_id": job.collection_id,
+        "collection_item_id": job.collection_item_id,
         "timestamp": Utc::now().to_rfc3339(),
     })
 }
@@ -3422,7 +3781,7 @@ fn required_u64(params: &Value, key: &str) -> Result<u64, String> {
 fn provider_type_supports_audio(value: &str) -> bool {
     matches!(
         value,
-        "openai_compat" | "openai" | "mimo" | "dashscope" | "google_gemini"
+        "openai_compat" | "openai" | "mimo" | "xiaomi_mimo" | "dashscope" | "google_gemini"
     )
 }
 
@@ -3461,6 +3820,168 @@ fn clean_models(values: Vec<String>) -> Vec<String> {
     result
 }
 
+fn provider_supports_video_input(provider_type: &str, base_url: &str) -> bool {
+    let endpoint = base_url.to_ascii_lowercase();
+    matches!(provider_type, "mimo" | "xiaomi_mimo" | "dashscope")
+        || endpoint.contains("xiaomimimo.com")
+        || endpoint.contains("dashscope.aliyuncs.com")
+}
+
+const PROVIDER_CREDENTIAL_SERVICE: &str = "com.videonotesai.desktop.provider";
+
+fn credential_account(provider: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "provider-{:x}",
+        Sha256::digest(provider.trim().to_lowercase().as_bytes())
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn credential_entry(provider: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(PROVIDER_CREDENTIAL_SERVICE, &credential_account(provider))
+        .map_err(|error| format!("credential vault unavailable: {error}"))
+}
+
+fn credential_store(provider: &str, secret: &str) -> Result<(), String> {
+    if secret.trim().is_empty() {
+        return Err("credential must not be empty".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        credential_entry(provider)?
+            .set_password(secret)
+            .map_err(|error| format!("failed to store credential in OS vault: {error}"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = provider;
+        Err("OS credential vault is not available on this platform build".to_string())
+    }
+}
+
+fn credential_load(provider: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        match credential_entry(provider)?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(format!("failed to read credential from OS vault: {error}")),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = provider;
+        Ok(None)
+    }
+}
+
+fn credential_delete(provider: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        match credential_entry(provider)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!(
+                "failed to delete credential from OS vault: {error}"
+            )),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = provider;
+        Ok(())
+    }
+}
+
+fn strip_plaintext_provider_secrets(raw: &mut Map<String, Value>) {
+    let Some(providers) = raw.get_mut("providers").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for provider in providers {
+        if let Some(object) = provider.as_object_mut() {
+            object.remove("api_key");
+        }
+    }
+}
+
+fn hydrate_provider_secrets(raw: &mut Map<String, Value>) {
+    let Some(providers) = raw.get_mut("providers").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for provider in providers {
+        let Some(object) = provider.as_object_mut() else {
+            continue;
+        };
+        if object.get("api_key").and_then(Value::as_str).is_some() {
+            continue;
+        }
+        let Some(name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        match credential_load(name) {
+            Ok(Some(secret)) => {
+                object.insert("api_key".to_string(), json!(secret));
+                object.insert("credential_vault".to_string(), json!(true));
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("[warn] {error}"),
+        }
+    }
+}
+
+fn migrate_plaintext_provider_secrets(settings_path: &Path) -> Result<(), String> {
+    if !settings_path.is_file() {
+        return Ok(());
+    }
+    let mut raw = read_json_file(settings_path)?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "settings root must be an object".to_string())?;
+    let Some(providers) = raw.get_mut("providers").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for provider in providers {
+        let Some(object) = provider.as_object_mut() else {
+            continue;
+        };
+        let Some(name) = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let Some(secret) = object
+            .get("api_key")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+        else {
+            object.remove("api_key");
+            continue;
+        };
+        credential_store(&name, &secret)?;
+        object.remove("api_key");
+        object.insert("credential_vault".to_string(), json!(true));
+        changed = true;
+    }
+    if changed {
+        write_json_atomic(settings_path, &Value::Object(raw))?;
+    }
+    Ok(())
+}
+
+fn api_key_preview(api_key: &str) -> String {
+    let chars = api_key.chars().collect::<Vec<_>>();
+    if chars.len() <= 8 {
+        return String::new();
+    }
+    let prefix = chars.iter().take(4).collect::<String>();
+    let suffix = chars.iter().rev().take(4).rev().collect::<String>();
+    format!("{prefix}…{suffix}")
+}
+
 fn provider_profiles(raw: &Map<String, Value>, active: &str) -> Vec<Value> {
     raw.get("providers")
         .and_then(Value::as_array)
@@ -3483,14 +4004,26 @@ fn provider_profiles(raw: &Map<String, Value>, active: &str) -> Vec<Value> {
                     let audio_input_value = {
                         let provider_type = object.get("type").and_then(Value::as_str).unwrap_or("openai_compat");
                         let requested = object.get("audio_input").and_then(Value::as_bool)
-                            .unwrap_or_else(|| matches!(provider_type, "google_gemini" | "mimo"));
+                            .unwrap_or(matches!(provider_type, "google_gemini" | "mimo"));
                         requested && provider_type_supports_audio(provider_type)
                     };
+                    let provider_type = object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("openai_compat");
+                    let base_url = object
+                        .get("base_url")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let video_input_value = object
+                        .get("video_input")
+                        .and_then(Value::as_bool)
+                        .unwrap_or_else(|| provider_supports_video_input(provider_type, base_url));
                     Some(json!({
                         "name": name,
                         "provider": object.get("type").and_then(Value::as_str).unwrap_or("openai_compat"),
                         "api_key_configured": !api_key.trim().is_empty(),
-                        "api_key_preview": if api_key.len() > 8 { format!("{}…{}", &api_key[..4], &api_key[api_key.len() - 4..]) } else { "".to_string() },
+                        "api_key_preview": api_key_preview(api_key),
                         "base_url": object.get("base_url").and_then(Value::as_str).unwrap_or(""),
                         "model": model,
                         "vision_model": object.get("vision_model").and_then(Value::as_str).unwrap_or(model),
@@ -3498,6 +4031,7 @@ fn provider_profiles(raw: &Map<String, Value>, active: &str) -> Vec<Value> {
                         "active": name.eq_ignore_ascii_case(active),
                         "capabilities": object.get("capabilities").cloned().unwrap_or_else(|| json!({})),
                         "audio_input": audio_input_value,
+                        "video_input": video_input_value,
                         "max_frames_per_request": object.get("max_frames_per_request").and_then(Value::as_u64).unwrap_or(8),
                     }))
                 })
@@ -3524,6 +4058,7 @@ fn provider_profile_for_request(
         "vision_model",
         "api_key",
         "audio_input",
+        "video_input",
         "max_frames_per_request",
     ] {
         if let Some(value) = params.get(key) {
@@ -3577,6 +4112,7 @@ fn provider_from_value(
         "vision_model",
         "api_key",
         "audio_input",
+        "video_input",
         "max_frames_per_request",
     ] {
         if let Some(value) = override_params.get(key) {
@@ -3649,16 +4185,18 @@ fn provider_from_map(profile: &Map<String, Value>) -> Result<NativeProviderProfi
             | "anthropic_messages"
             | "dashscope"
             | "mimo"
+            | "xiaomi_mimo"
             | "llama_cpp"
     ) {
         return Err(format!("Unsupported provider type '{provider_type}'"));
     }
-    // Detect video capability: providers that accept video input
-    // get full video segments (MP4) instead of frame images + audio.
-    let accepts_video = matches!(
-        provider_type.as_str(),
-        "openai_compat" | "openai" | "dashscope" | "mimo"
-    );
+    // Generic OpenAI-compatible endpoints do not guarantee `video_url`.
+    // Require an explicit capability flag, with a conservative default only
+    // for endpoints whose video contract is known.
+    let accepts_video = profile
+        .get("video_input")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| provider_supports_video_input(&provider_type, &base_url));
     Ok(NativeProviderProfile {
         provider_type,
         base_url: if base_url.is_empty() {
@@ -3771,7 +4309,7 @@ fn next_store_id(store: &mut Map<String, Value>, key: &str) -> u64 {
     next
 }
 
-fn find_collection<'a>(store: &'a Map<String, Value>, id: u64) -> Option<&'a Value> {
+fn find_collection(store: &Map<String, Value>, id: u64) -> Option<&Value> {
     store
         .get("collections")?
         .as_array()?
@@ -3788,13 +4326,15 @@ fn find_collection_mut(store: &mut Map<String, Value>, id: u64) -> Option<&mut V
 }
 
 fn sync_collection_value_from_jobs(collection: &mut Value, jobs: &[NativeJob]) {
+    let collection_id = collection.get("id").and_then(Value::as_u64);
     if let Some(items) = collection.get_mut("items").and_then(Value::as_array_mut) {
         for item in items {
-            let Some(run_id) = item.get("run_id").and_then(Value::as_u64) else {
-                continue;
-            };
-            let Some(job) = jobs.iter().find(|job| job.id == run_id) else {
-                // Job was deleted (e.g. via process.delete); clear stale reference
+            let run_id = item.get("run_id").and_then(Value::as_u64);
+            let Some(job) = latest_collection_item_job(collection_id, item, jobs) else {
+                if run_id.is_none() {
+                    continue;
+                }
+                // The bound job was deleted and no exact-input replacement exists.
                 if let Some(obj) = item.as_object_mut() {
                     obj.remove("run_id");
                 }
@@ -3806,21 +4346,97 @@ fn sync_collection_value_from_jobs(collection: &mut Value, jobs: &[NativeJob]) {
                 }
                 continue;
             };
-            item["run_id"] = json!(job.id);
-            item["job_id"] = json!(job.job_id.clone());
-            item["status"] = json!(job.status.clone());
-            item["progress"] = json!(job.progress);
-            if let Some(output_path) = &job.output_path {
-                item["output_path"] = json!(output_path);
-            }
-            if let Some(error_message) = &job.error_message {
-                item["error_message"] = json!(error_message);
-            } else if let Some(object) = item.as_object_mut() {
-                object.remove("error_message");
-            }
+            sync_collection_item_from_job(item, job);
         }
     }
     collection["status"] = json!(aggregate_collection_status(collection));
+}
+
+fn latest_collection_item_job<'a>(
+    collection_id: Option<u64>,
+    item: &Value,
+    jobs: &'a [NativeJob],
+) -> Option<&'a NativeJob> {
+    let item_id = item.get("id").and_then(Value::as_u64);
+    let bound = item
+        .get("run_id")
+        .and_then(Value::as_u64)
+        .and_then(|run_id| jobs.iter().find(|job| job.id == run_id));
+    let latest_explicit = collection_id
+        .zip(item_id)
+        .and_then(|(collection_id, item_id)| {
+            jobs.iter()
+                .filter(|job| {
+                    job.collection_id == Some(collection_id)
+                        && job.collection_item_id == Some(item_id)
+                })
+                .max_by_key(|job| job.id)
+        });
+    let latest_descendant = bound.and_then(|ancestor| {
+        jobs.iter()
+            .filter(|candidate| job_descends_from(candidate, ancestor, jobs))
+            .max_by_key(|job| job.id)
+    });
+
+    [bound, latest_explicit, latest_descendant]
+        .into_iter()
+        .flatten()
+        .max_by_key(|job| job.id)
+}
+
+fn job_descends_from(candidate: &NativeJob, ancestor: &NativeJob, jobs: &[NativeJob]) -> bool {
+    let mut parent_id = candidate.parent_run_id.as_deref();
+    for _ in 0..jobs.len().min(64) {
+        let Some(parent) = parent_id else {
+            return false;
+        };
+        if parent == ancestor.job_id {
+            return true;
+        }
+        parent_id = jobs
+            .iter()
+            .find(|job| job.job_id == parent)
+            .and_then(|job| job.parent_run_id.as_deref());
+    }
+    false
+}
+
+fn sync_collection_item_from_job(item: &mut Value, job: &NativeJob) {
+    item["run_id"] = json!(job.id);
+    item["job_id"] = json!(job.job_id.clone());
+    item["status"] = json!(job.status.clone());
+    item["progress"] = json!(job.progress);
+    if let Some(output_path) = &job.output_path {
+        item["output_path"] = json!(output_path);
+    }
+    if let Some(error_message) = &job.error_message {
+        item["error_message"] = json!(error_message);
+    } else if let Some(object) = item.as_object_mut() {
+        object.remove("error_message");
+    }
+    if let Some(object) = item.as_object_mut() {
+        object.remove("batch_id");
+    }
+}
+
+fn retry_params_for_job(job: &NativeJob) -> Value {
+    let mut params = Map::new();
+    params.insert("input".to_string(), json!(job.input.clone()));
+    if let Some(title) = job
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
+        params.insert("title".to_string(), json!(title));
+    }
+    if let Some(snapshot) = job.settings_snapshot.as_ref().and_then(Value::as_object) {
+        for key in ["template", "mode"] {
+            if let Some(value) = snapshot.get(key).and_then(Value::as_str) {
+                params.insert(key.to_string(), json!(value));
+            }
+        }
+    }
+    Value::Object(params)
 }
 
 fn aggregate_collection_status(collection: &Value) -> &'static str {
@@ -3840,19 +4456,26 @@ fn aggregate_collection_status(collection: &Value) -> &'static str {
                 .unwrap_or("pending")
         })
         .collect::<Vec<_>>();
-    if statuses.iter().any(|status| *status == "cancelling") {
+    if statuses.contains(&"cancelling") {
         "cancelling"
-    } else if statuses.iter().any(|status| *status == "pausing") {
+    } else if statuses.contains(&"pausing") {
         "pausing"
-    } else if statuses
-        .iter()
-        .any(|status| matches!(*status, "pending" | "running"))
-    {
+    } else if items.iter().any(|item| {
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        status == "queued"
+            || status == "running"
+            || (status == "pending" && item.get("run_id").and_then(Value::as_u64).is_some())
+    }) {
         "processing"
-    } else if statuses.iter().any(|status| *status == "paused") {
+    } else if statuses.contains(&"paused") {
         "paused"
     } else if statuses.iter().all(|status| *status == "completed") {
         "completed"
+    } else if statuses.contains(&"pending") {
+        "active"
     } else if statuses
         .iter()
         .any(|status| matches!(*status, "failed" | "cancelled" | "interrupted"))
@@ -3898,25 +4521,10 @@ fn source_title(input: &str) -> String {
 }
 
 fn tool_exists(name: &str, components: &[&str], runtime_dir: &Path) -> bool {
-    let exe = executable_name(name);
-    for component in components {
-        if runtime_dir
-            .join("components")
-            .join(component)
-            .join(&exe)
-            .is_file()
-        {
-            return true;
-        }
-    }
-    hidden_command(&exe)
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    resolve_tool_path(name, components, runtime_dir).is_some()
 }
 
-fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     #[cfg(target_os = "windows")]
     {
@@ -3959,6 +4567,7 @@ fn component_runtime_version(component: &str, component_path: &Path) -> Option<S
     let (exe, args): (&str, &[&str]) = match component {
         "download-tools" => ("yt-dlp", &["--version"]),
         "ffmpeg-tools" => ("ffmpeg", &["-version"]),
+        "mpv-tools" => ("mpv", &["--version"]),
         _ => return None,
     };
     let path = component_path.join(executable_name(exe));
@@ -3982,6 +4591,76 @@ fn first_non_empty_line(output: &Output) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn stop_mpv_session(session: &mut MpvSession) {
+    if let Some(mut child) = session.child.take() {
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    session.source_path = None;
+}
+
+fn mpv_seek_commands(start_seconds: f64) -> [Value; 2] {
+    [
+        json!({ "command": ["seek", start_seconds, "absolute+exact"] }),
+        json!({ "command": ["set", "pause", "no"] }),
+    ]
+}
+
+fn send_mpv_ipc(ipc_path: &Path, commands: &[Value]) -> Result<(), String> {
+    let mut last_error = None;
+    for _ in 0..50 {
+        match fs::OpenOptions::new().write(true).open(ipc_path) {
+            Ok(mut pipe) => {
+                for command in commands {
+                    serde_json::to_writer(&mut pipe, command)
+                        .map_err(|error| format!("mpv IPC 命令编码失败: {error}"))?;
+                    pipe.write_all(b"\n")
+                        .map_err(|error| format!("mpv IPC 写入失败: {error}"))?;
+                }
+                return pipe
+                    .flush()
+                    .map_err(|error| format!("mpv IPC 刷新失败: {error}"));
+            }
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    Err(format!(
+        "mpv IPC 连接失败: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn mpv_playback_command(
+    mpv_path: &Path,
+    source_path: &Path,
+    start_seconds: f64,
+    ipc_path: &Path,
+) -> Command {
+    let mut command = Command::new(mpv_path);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .args([
+            "--no-config",
+            "--no-terminal",
+            "--force-window=yes",
+            "--hwdec=auto-safe",
+        ])
+        .arg(format!("--start={start_seconds:.3}"))
+        .arg(format!("--input-ipc-server={}", ipc_path.to_string_lossy()))
+        .arg("--")
+        .arg(source_path);
+    command
 }
 
 fn component_latest_version(manifest: &Value) -> Option<String> {
@@ -4010,6 +4689,78 @@ fn component_latest_version(manifest: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Resolve a GitHub release download URL dynamically.
+///
+/// If the URL still works (200), returns `None` (no resolution needed).
+/// If the URL returns a client error (404/410), fetches the latest release
+/// from the GitHub API and finds a matching asset by extension and prefix.
+fn resolve_github_release_url(url: &str) -> Option<String> {
+    let (owner, repo) = github_repo_from_url(url)?;
+
+    // Fast path: try the hardcoded URL first
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    if let Ok(response) = client.head(url).send() {
+        if response.status().is_success() {
+            return None; // URL still works, no resolution needed
+        }
+    }
+
+    // Only resolve /releases/download/ URLs
+    if !url.contains("/releases/download/") {
+        return None;
+    }
+
+    // Extract filename pattern from the original URL
+    let original_filename = url.split('/').next_back()?;
+    let ext = original_filename.rsplit('.').next()?;
+
+    // Fetch latest release assets from GitHub API
+    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
+    let response = client
+        .get(&api_url)
+        .header("User-Agent", "Video-Notes-AI")
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload: Value = response.json().ok()?;
+    let assets = payload.get("assets")?.as_array()?;
+
+    // Find best-matching asset: same extension, closest prefix match
+    // Strategy: match by extension, then pick the simplest name
+    // (exclude "dev", "debug", "lgpl" suffixes)
+    let exclude_keywords = ["dev", "debug", "lgpl", "v3"];
+    let mut best: Option<String> = None;
+    for asset in assets {
+        let name = asset.get("name")?.as_str()?;
+        if !name.ends_with(&format!(".{}", ext)) {
+            continue;
+        }
+        if exclude_keywords.iter().any(|k| name.contains(k)) {
+            continue;
+        }
+        // Prefer the asset name that starts with the same prefix as the original
+        let original_prefix = original_filename.split('-').next()?;
+        if name.starts_with(original_prefix) {
+            return asset
+                .get("browser_download_url")?
+                .as_str()
+                .map(|s| s.to_string());
+        }
+        best = best.or_else(|| {
+            asset
+                .get("browser_download_url")?
+                .as_str()
+                .map(|s| s.to_string())
+        });
+    }
+    best
+}
+
 fn github_repo_from_url(url: &str) -> Option<(String, String)> {
     let marker = "github.com/";
     let rest = url.split(marker).nth(1)?;
@@ -4024,11 +4775,16 @@ fn github_repo_from_url(url: &str) -> Option<(String, String)> {
     }
 }
 
-fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_tool_path(
+    name: &str,
+    components: &[&str],
+    runtime_dir: &Path,
+) -> Option<PathBuf> {
     let exe = executable_name(name);
     for component in components {
-        let path = runtime_dir.join("components").join(component).join(&exe);
-        if path.is_file() {
+        let component_path = runtime_dir.join("components").join(component);
+        let path = component_path.join(&exe);
+        if path.is_file() && verify_component_payload(&component_path).is_ok() {
             return Some(path);
         }
     }
@@ -4039,46 +4795,6 @@ fn resolve_tool_path(name: &str, components: &[&str], runtime_dir: &Path) -> Opt
             .map(|output| output.status.success())
             .unwrap_or(false)
     })
-}
-
-#[allow(dead_code)]
-fn simple_pdf_bytes(text: &str) -> Vec<u8> {
-    let content = format!("BT /F1 24 Tf 20 40 Td ({}) Tj ET", escape_pdf_text(text));
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 90] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
-        format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-    ];
-    let mut bytes = b"%PDF-1.4\n".to_vec();
-    let mut offsets = vec![0usize];
-    for (index, object) in objects.iter().enumerate() {
-        offsets.push(bytes.len());
-        bytes.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", index + 1, object).as_bytes());
-    }
-    let xref_offset = bytes.len();
-    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
-    bytes.extend_from_slice(b"0000000000 65535 f \n");
-    for offset in offsets.iter().skip(1) {
-        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
-    }
-    bytes.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-            offsets.len(),
-            xref_offset
-        )
-        .as_bytes(),
-    );
-    bytes
-}
-
-#[allow(dead_code)]
-fn escape_pdf_text(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
 }
 
 fn collect_markdown_notes(
@@ -4251,9 +4967,7 @@ pub(crate) fn note_id(path: &Path) -> u32 {
 
 fn open_path(path: &Path) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
-    let result = hidden_command("cmd")
-        .args(["/C", "start", "", &path.to_string_lossy()])
-        .spawn();
+    open_with_shell_execute(path.as_os_str())?;
 
     #[cfg(target_os = "macos")]
     let result = hidden_command("open").arg(path).spawn();
@@ -4261,6 +4975,7 @@ fn open_path(path: &Path) -> Result<Value, String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = hidden_command("xdg-open").arg(path).spawn();
 
+    #[cfg(not(target_os = "windows"))]
     result.map_err(|error| error.to_string())?;
     Ok(json!(true))
 }
@@ -4272,9 +4987,7 @@ fn open_url(url: &str) -> Result<Value, String> {
     }
 
     #[cfg(target_os = "windows")]
-    let result = hidden_command("cmd")
-        .args(["/C", "start", "", trimmed])
-        .spawn();
+    open_with_shell_execute(OsStr::new(trimmed))?;
 
     #[cfg(target_os = "macos")]
     let result = hidden_command("open").arg(trimmed).spawn();
@@ -4282,8 +4995,19 @@ fn open_url(url: &str) -> Result<Value, String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = hidden_command("xdg-open").arg(trimmed).spawn();
 
+    #[cfg(not(target_os = "windows"))]
     result.map_err(|error| error.to_string())?;
     Ok(json!(true))
+}
+
+#[cfg(target_os = "windows")]
+fn open_with_shell_execute(target: &OsStr) -> Result<(), String> {
+    hidden_command("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to open target: {error}"))
 }
 
 fn reveal_path(path: &Path) -> Result<Value, String> {
@@ -4499,10 +5223,10 @@ fn sanitize_component_name(component: &str) -> Result<String, String> {
     if component.is_empty() {
         return Err("component name cannot be empty".to_string());
     }
-    if component.contains('/')
-        || component.contains('\\')
-        || component.contains("..")
-        || component.starts_with('.')
+    if component.len() > 64
+        || !component
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'))
     {
         return Err(format!("invalid component name: '{component}'"));
     }
@@ -4556,19 +5280,19 @@ fn install_component_from_download(
     let stage = temp.join("stage");
     fs::create_dir_all(&stage).map_err(|error| error.to_string())?;
     let result = (|| -> Result<(), String> {
-        let package_path = temp.join(download_filename(&url));
-        download_file_with_fallback(&url, &package_path, component, handle)?;
+        // Resolve GitHub release URLs dynamically: if the hardcoded URL 404s,
+        // fetch the latest release from GitHub API
+        let resolved_url = resolve_github_release_url(&url);
+        let final_url = resolved_url.as_deref().unwrap_or(&url);
+        let package_path = temp.join(download_filename(final_url));
+        download_file_with_fallback(final_url, &package_path, component, handle)?;
         ensure_non_empty_file(&package_path, "component package")?;
-        // Verify SHA256 hash if the manifest specifies one.
-        if let Some(expected_hash) = manifest_string(manifest, "sha256") {
-            if !expected_hash.is_empty() {
-                verify_sha256(&package_path, &expected_hash)?;
-            } else {
-                eprintln!("[warn] component package has empty sha256 in manifest, skipping integrity check");
-            }
-        }
-        let archive_type =
-            manifest_string(manifest, "archive_type").unwrap_or_else(|| infer_archive_type(&url));
+        let expected_hash = manifest_string(manifest, "sha256")
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "component manifest must pin a non-empty sha256".to_string())?;
+        verify_sha256(&package_path, &expected_hash)?;
+        let archive_type = manifest_string(manifest, "archive_type")
+            .unwrap_or_else(|| infer_archive_type(final_url));
         match archive_type.as_str() {
             "exe" => {
                 let first = files
@@ -4582,6 +5306,20 @@ fn install_component_from_download(
                 let extracted = temp.join("extracted");
                 fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
                 extract_zip_archive(&package_path, &extracted)?;
+                if manifest
+                    .get("copy_payload_dir")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    stage_component_payload_dir(&extracted, &stage, &files)?;
+                } else {
+                    stage_component_files(&extracted, &stage, &files)?;
+                }
+            }
+            "7z" => {
+                let extracted = temp.join("extracted");
+                fs::create_dir_all(&extracted).map_err(|error| error.to_string())?;
+                extract_7z_archive(&package_path, &extracted)?;
                 if manifest
                     .get("copy_payload_dir")
                     .and_then(Value::as_bool)
@@ -4622,6 +5360,7 @@ fn install_download_tools(target: &Path) -> Result<(), String> {
         let exe = temp.join("yt-dlp.exe");
         download_file(YTDLP_DOWNLOAD_URL, &exe)?;
         ensure_non_empty_file(&exe, "yt-dlp.exe")?;
+        verify_sha256(&exe, YTDLP_DOWNLOAD_SHA256)?;
         if target.exists() {
             fs::remove_dir_all(target).map_err(|error| error.to_string())?;
         }
@@ -4688,6 +5427,12 @@ fn download_file_with_reqwest(
         return Err(format!("HTTP {}", response.status()));
     }
     let total = response.content_length().unwrap_or(0);
+    if total > MAX_COMPONENT_DOWNLOAD_BYTES {
+        return Err(format!(
+            "download is too large: {total} bytes exceeds the {} byte limit",
+            MAX_COMPONENT_DOWNLOAD_BYTES
+        ));
+    }
     let mut file =
         fs::File::create(target).map_err(|error| format!("failed to create file: {error}"))?;
     let mut downloaded = 0u64;
@@ -4700,9 +5445,19 @@ fn download_file_with_reqwest(
         if n == 0 {
             break;
         }
+        downloaded = downloaded
+            .checked_add(n as u64)
+            .ok_or_else(|| "download size overflow".to_string())?;
+        if downloaded > MAX_COMPONENT_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = fs::remove_file(target);
+            return Err(format!(
+                "download exceeded the {} byte limit",
+                MAX_COMPONENT_DOWNLOAD_BYTES
+            ));
+        }
         file.write_all(&buffer[..n])
             .map_err(|error| format!("failed to write download: {error}"))?;
-        downloaded += n as u64;
         if total > 0 {
             let _ = handle.emit(
                 "component:download-progress",
@@ -4731,11 +5486,37 @@ fn download_file_with_reqwest_no_progress(url: &str, target: &Path) -> Result<()
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
+    if response.content_length().unwrap_or(0) > MAX_COMPONENT_DOWNLOAD_BYTES {
+        return Err(format!(
+            "download exceeds the {} byte limit",
+            MAX_COMPONENT_DOWNLOAD_BYTES
+        ));
+    }
     let mut file =
         fs::File::create(target).map_err(|error| format!("failed to create file: {error}"))?;
-    response
-        .copy_to(&mut file)
-        .map_err(|error| format!("failed to write download: {error}"))?;
+    let mut downloaded = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = response
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read download stream: {error}"))?;
+        if n == 0 {
+            break;
+        }
+        downloaded = downloaded
+            .checked_add(n as u64)
+            .ok_or_else(|| "download size overflow".to_string())?;
+        if downloaded > MAX_COMPONENT_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = fs::remove_file(target);
+            return Err(format!(
+                "download exceeded the {} byte limit",
+                MAX_COMPONENT_DOWNLOAD_BYTES
+            ));
+        }
+        file.write_all(&buffer[..n])
+            .map_err(|error| format!("failed to write download: {error}"))?;
+    }
     Ok(())
 }
 
@@ -4745,14 +5526,17 @@ fn download_file_with_curl(url: &str, target: &Path) -> Result<(), String> {
         "--fail".to_string(),
         "--retry".to_string(),
         "2".to_string(),
+        "--max-filesize".to_string(),
+        MAX_COMPONENT_DOWNLOAD_BYTES.to_string(),
         "--output".to_string(),
         target.to_string_lossy().to_string(),
         url.to_string(),
     ];
     let output = command_output("curl.exe", &args)?;
     if output.status.success() {
-        Ok(())
+        validate_download_size(target)
     } else {
+        let _ = fs::remove_file(target);
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
@@ -4772,10 +5556,25 @@ fn download_file_with_powershell(url: &str, target: &Path) -> Result<(), String>
     ];
     let output = command_output("powershell.exe", &args)?;
     if output.status.success() {
-        Ok(())
+        validate_download_size(target)
     } else {
+        let _ = fs::remove_file(target);
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
+}
+
+fn validate_download_size(path: &Path) -> Result<(), String> {
+    let size = fs::metadata(path)
+        .map_err(|error| format!("downloaded file metadata is unavailable: {error}"))?
+        .len();
+    if size <= MAX_COMPONENT_DOWNLOAD_BYTES {
+        return Ok(());
+    }
+    let _ = fs::remove_file(path);
+    Err(format!(
+        "download is too large: {size} bytes exceeds the {} byte limit",
+        MAX_COMPONENT_DOWNLOAD_BYTES
+    ))
 }
 
 fn ensure_non_empty_file(path: &Path, label: &str) -> Result<(), String> {
@@ -4802,14 +5601,97 @@ fn component_marker_path(target: &Path) -> PathBuf {
     target.join(".runtime-component.json")
 }
 
+/// Read the manifest version from a component's marker file.
+/// Returns `None` if the component is not installed or the marker is missing.
+fn read_marker_version(component_path: &Path) -> Option<String> {
+    let marker_path = component_marker_path(component_path);
+    let content = fs::read_to_string(marker_path).ok()?;
+    let marker: Value = serde_json::from_str(&content).ok()?;
+    marker
+        .get("manifest_version")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn write_component_marker(manifest: &Value, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    let file_sha256 = component_payload_hashes(target)?;
+    if file_sha256.is_empty() {
+        return Err("component payload contains no files".to_string());
+    }
     let marker = json!({
         "component": manifest_string(manifest, "component").unwrap_or_default(),
         "manifest_version": manifest_string(manifest, "version").unwrap_or_default(),
         "installed_at": Utc::now().to_rfc3339(),
+        "file_sha256": file_sha256,
     });
     write_json_atomic(&component_marker_path(target), &marker)
+}
+
+fn component_payload_hashes(target: &Path) -> Result<Map<String, Value>, String> {
+    if !target.is_dir() {
+        return Err("component directory does not exist".to_string());
+    }
+    let mut stack = vec![target.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = stack.pop() {
+        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "component payload contains a symbolic link: {}",
+                    path.display()
+                ));
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() && path != component_marker_path(target) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut hashes = Map::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(target)
+            .map_err(|_| "component file escapes payload root".to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        hashes.insert(relative, json!(sha256_file(&path)?));
+    }
+    Ok(hashes)
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn verify_component_payload(target: &Path) -> Result<(), String> {
+    let marker = read_json_file(&component_marker_path(target))?;
+    let expected = marker
+        .get("file_sha256")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "component marker has no file digests; reinstall required".to_string())?;
+    let actual = component_payload_hashes(target)?;
+    if expected != &actual {
+        return Err("component payload digest mismatch; reinstall required".to_string());
+    }
+    Ok(())
 }
 
 fn download_filename(url: &str) -> String {
@@ -4875,6 +5757,34 @@ fn extract_zip_archive(archive: &Path, target: &Path) -> Result<(), String> {
     };
     Err(format!(
         "PowerShell unzip failed: {powershell_error}; tar fallback failed: {tar_error}"
+    ))
+}
+
+/// Extract a `.7z` archive. Tries `7z`, then `7zr`, then auto-downloads portable 7zr.exe.
+fn extract_7z_archive(archive: &Path, target: &Path) -> Result<(), String> {
+    let args = vec![
+        "x".to_string(),
+        archive.to_string_lossy().to_string(),
+        format!("-o{}", target.to_string_lossy()),
+        "-y".to_string(),
+    ];
+
+    // Try locally-installed 7z first (full 7-Zip or portable 7za/7zr)
+    let seven_z = command_output("7z", &args)
+        .or_else(|_| command_output("7zr", &args))
+        .or_else(|_| command_output("7za", &args));
+    if let Ok(output) = &seven_z {
+        if output.status.success() {
+            return Ok(());
+        }
+    }
+
+    let error_msg = match seven_z {
+        Ok(output) => String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        Err(error) => error,
+    };
+    Err(format!(
+        "解压 7z 文件失败。请从 https://7-zip.org 安装 7-Zip 后重试：{error_msg}"
     ))
 }
 
@@ -4990,10 +5900,11 @@ fn validate_public_media_url(value: &str) -> Result<(), String> {
                     || ip.is_documentation()
             }
             std::net::IpAddr::V6(ip) => {
+                let first_segment = ip.segments()[0];
                 ip.is_loopback()
                     || ip.is_unspecified()
-                    || ip.is_unique_local()
-                    || ip.is_unicast_link_local()
+                    || first_segment & 0xfe00 == 0xfc00
+                    || first_segment & 0xffc0 == 0xfe80
             }
         };
         if forbidden {

@@ -18,7 +18,7 @@
 
 ## 安全边界
 
-视频、URL、模型输出、Markdown、运行时组件和诊断包均视为不可信输入。安全相关变更必须符合 [`rfcs/0400-security-privacy-supply-chain.md`](rfcs/0400-security-privacy-supply-chain.md)。
+视频、URL、模型输出、Markdown、运行时组件和诊断包均视为不可信输入。安全相关变更必须符合 [`spec/security-model.md`](spec/security-model.md)。
 
 ## Exchange bundle trust
 

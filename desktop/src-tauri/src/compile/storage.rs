@@ -20,19 +20,6 @@ pub trait CapsuleStore: Send + Sync {
     fn insert(&mut self, capsule: VideoCapsule) -> Result<String, String>;
     fn get(&self, source_hash: &str, version: u32) -> Result<VideoCapsule, String>;
     fn list_versions(&self, source_hash: &str) -> Result<Vec<VersionInfo>, String>;
-
-    #[allow(dead_code)]
-    fn latest(&self, source_hash: &str) -> Result<VideoCapsule, String> {
-        let version = self
-            .list_versions(source_hash)?
-            .last()
-            .map(|item| item.version)
-            .ok_or_else(|| format!("no versions found for source {source_hash}"))?;
-        self.get(source_hash, version)
-    }
-
-    #[allow(dead_code)]
-    fn exists(&self, source_hash: &str, version: u32) -> bool;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -235,12 +222,6 @@ impl CapsuleStore for FileCapsuleStore {
     fn list_versions(&self, source_hash: &str) -> Result<Vec<VersionInfo>, String> {
         self.scan_versions(source_hash)
     }
-
-    fn exists(&self, source_hash: &str, version: u32) -> bool {
-        self.version_path(source_hash, version)
-            .map(|path| path.is_file())
-            .unwrap_or(false)
-    }
 }
 
 struct SourceLock {
@@ -261,7 +242,6 @@ pub struct CapsuleBuilder {
     compilation_mode: CompileMode,
     evidences: Vec<Evidence>,
     chunk_summaries: Vec<(u32, String)>,
-    warnings: Vec<String>,
 }
 
 impl CapsuleBuilder {
@@ -280,25 +260,6 @@ impl CapsuleBuilder {
             compilation_mode: mode,
             evidences: Vec::new(),
             chunk_summaries: Vec::new(),
-            warnings: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_mode(&mut self, mode: CompileMode) {
-        self.compilation_mode = mode;
-    }
-
-    #[allow(dead_code)]
-    pub fn set_model_used(&mut self, model: impl Into<String>) {
-        self.model_used = model.into();
-    }
-
-    #[allow(dead_code)]
-    pub fn add_warning(&mut self, warning: impl Into<String>) {
-        let warning = warning.into();
-        if !self.warnings.contains(&warning) {
-            self.warnings.push(warning);
         }
     }
 
@@ -323,7 +284,12 @@ impl CapsuleBuilder {
                 .copied();
             let mut review_reasons = Vec::new();
             let (start_sec, end_sec) = match (start, end) {
-                (Some(start), Some(end)) => (start.min(end) as f32, start.max(end) as f32),
+                (Some(start), Some(end)) => {
+                    if start > end {
+                        review_reasons.push("reversed_anchors".to_string());
+                    }
+                    (start.min(end) as f32, start.max(end) as f32)
+                }
                 _ => {
                     review_reasons.push("missing_backend_time_anchor".to_string());
                     (0.0, 0.0)
@@ -349,13 +315,13 @@ impl CapsuleBuilder {
                 source_hash: self.source_hash.clone(),
                 version: 0,
                 chunk_sequence,
-                content: event.description,
+                content: strip_segment_header(&event.description),
                 timestamp_start_sec: start_sec,
                 timestamp_end_sec: end_sec,
                 evidence_type,
                 speaker: event.speaker,
                 confidence,
-                visual_context: event.title,
+                visual_context: strip_segment_header(&event.title),
                 prev_chunk_summary_hash: prev_chunk_summary_hash.clone(),
                 is_redundant: false,
                 needs_review: !review_reasons.is_empty(),
@@ -378,9 +344,9 @@ impl CapsuleBuilder {
             .chunk_summaries
             .iter()
             .filter(|(_, summary)| !summary.is_empty())
-            .map(|(_, summary)| summary.trim())
+            .map(|(_, summary)| strip_segment_header(summary.trim()))
             .collect::<Vec<_>>()
-            .join(" ");
+            .join("\n\n");
         VideoCapsule {
             ir_schema_version: IR_SCHEMA_VERSION,
             capsule_id: format!("{}_{}", self.source_hash, version),
@@ -393,10 +359,85 @@ impl CapsuleBuilder {
             evidences: self.evidences,
             global_summary,
             compilation_mode: self.compilation_mode,
-            warnings: self.warnings,
+            warnings: Vec::new(),
             source_input: String::new(),
         }
     }
+}
+
+/// Remove segment-numbering lead-ins ("本片段", "此片段", ...) and
+/// speaker prefixes ("讲师", "用户", "演示者") from the start of a
+/// summary string so that merged summaries read as factual descriptions
+/// without repetitive subject openings.
+fn strip_segment_header(text: &str) -> String {
+    let text = text.trim();
+    let mut result = text.to_string();
+
+    // Phase 1: strip known lead-in prefixes from the start
+    const PREFIXES: &[&str] = &[
+        "本片段作为",
+        "本片段展示了",
+        "本片段演示了",
+        "本片段重点在于",
+        "本片段聚焦于",
+        "本片段继续",
+        "本片段是",
+        "本片段从",
+        "本片段通过",
+        "本片段首先",
+        "本片段为",
+        "本片段中",
+        "本片段",
+        "此片段是",
+        "此片段",
+        "该片段",
+        "本段",
+        // Speaker prefixes — strip so descriptions read factually
+        "讲师",
+        "用户",
+        "演示者",
+        "操作者",
+    ];
+    for prefix in PREFIXES {
+        if let Some(rest) = result.strip_prefix(prefix) {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                result = rest.to_string();
+            }
+            break;
+        }
+    }
+
+    // Phase 2: replace mid-sentence speaker references that escaped
+    // the prefix pass (e.g. "构建完成后，用户打开文件夹").
+    const SUBJECT_PATTERNS: &[&str] = &[
+        "用户在",
+        "用户指出",
+        "用户选择",
+        "用户创建",
+        "用户添加",
+        "用户进入",
+        "用户点击",
+        "用户打开",
+        "用户解释",
+        "用户将",
+        "用户说明",
+        "用户展示",
+        "用户调整",
+        "用户设置",
+    ];
+    for pattern in SUBJECT_PATTERNS {
+        result = result.replace(pattern, "");
+    }
+
+    // Clean up doubled whitespace/punctuation from replacements
+    let result = result
+        .replace("，，", "，")
+        .replace("。。", "。")
+        .replace("，。", "。")
+        .replace("  ", " ");
+
+    result.trim().to_string()
 }
 
 fn parse_evidence_type(value: &str) -> EvidenceType {
@@ -516,18 +557,22 @@ mod tests {
     #[test]
     fn immutable_insert_and_replay() {
         let (mut store, dir) = temp_store();
-        let version = store.reserve_next_version("abc").unwrap();
-        let capsule = CapsuleBuilder::new(
-            "abc".to_string(),
+        let source_hash = "a".repeat(64);
+        let version = store.reserve_next_version(&source_hash).unwrap();
+        let mut capsule = CapsuleBuilder::new(
+            source_hash.clone(),
             "Test source".to_string(),
             "model".to_string(),
             10.0,
             CompileMode::LocalDraft,
         )
         .build(version);
+        capsule
+            .warnings
+            .push("test capsule has no evidence".to_string());
         store.insert(capsule).unwrap();
-        assert_eq!(store.get("abc", version).unwrap().version, version);
-        assert_eq!(store.list_versions("abc").unwrap().len(), 1);
+        assert_eq!(store.get(&source_hash, version).unwrap().version, version);
+        assert_eq!(store.list_versions(&source_hash).unwrap().len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 }

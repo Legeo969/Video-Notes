@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { VideoCapsule, Evidence } from "../../types";
+  import { engineCall } from "../../api";
 
   let {
     bundle = null,
@@ -55,6 +56,7 @@
   function handleSeek(evidence: Evidence) {
     onSeek?.(evidence.timestamp_start_sec * 1_000_000);
   }
+
 
   function handleKeydown(e: KeyboardEvent, evidence: Evidence) {
     if (e.key === "Enter" || e.key === " ") {

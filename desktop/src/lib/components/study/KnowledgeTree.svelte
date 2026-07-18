@@ -48,7 +48,7 @@
   // ── Build SVG graph entirely via DOM ─────────────────────
   function buildGraphDOM() {
     stopSim();  // stop any running simulation before clearing DOM
-    graphContent.innerHTML = '';
+    graphContent.replaceChildren();
 
     const entities = graph.entities as any[];
     const relations = graph.relations as any[];

@@ -1,0 +1,70 @@
+{
+  "task_id": "VN-BUG-012",
+  "title": "Make task collection and media execution deterministic",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-004",
+    "SPEC-ARCH-006",
+    "SPEC-COMPILER-008",
+    "SPEC-COMPILER-028",
+    "SPEC-COMPILER-033"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile/mod.rs",
+    "desktop/src-tauri/src/compile/engine.rs",
+    "desktop/src-tauri/src/compile/sampler.rs",
+    "desktop/src-tauri/src/compile/client.rs",
+    "desktop/src-tauri/src/compile/calibrate.rs",
+    "desktop/src-tauri/src/compile/prompt.rs",
+    "desktop/src-tauri/src/compile/renderer.rs",
+    "desktop/src-tauri/src/compile/storage.rs",
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/native_engine/tests.rs",
+    "desktop/src/App.svelte",
+    "desktop/src/lib/components/settings/ProviderFormDialog.svelte",
+    "desktop/src/lib/stores/jobs.ts",
+    "desktop/src/lib/types/index.ts",
+    "desktop/src/pages/Collections.svelte",
+    "desktop/src/pages/Settings.svelte",
+    "desktop/src/pages/Tasks.svelte",
+    "tasks/spec-v0.2/vn-bug-012.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-BUG-012.md"
+  ],
+  "forbidden_changes": [
+    "Reprocessing completed collection items",
+    "Discarding failed or interrupted state",
+    "Removing media resource limits",
+    "Weakening evidence or anchor validation",
+    "Deleting failing tests instead of fixing behavior"
+  ],
+  "deliverables": [
+    "Serialized collection-store updates and atomic batch claims",
+    "Idempotent task retries and complete terminal events",
+    "Bounded and recoverable task persistence",
+    "Cancellable FFmpeg process trees without redundant audio extraction",
+    "Accurate audio and Provider capability contracts",
+    "Responsive non-overlapping Task Center layout",
+    "Regression tests and task report"
+  ],
+  "acceptance_tests": [
+    "Concurrent collection updates do not lose item state",
+    "Duplicate batch and retry requests create at most one active job",
+    "Terminal events expose note output and error details without manual refresh",
+    "Cancelling a task terminates its active FFmpeg process tree",
+    "Audio metrics use the declared sample rate",
+    "Task Center controls remain visible at the minimum supported window size",
+    "All default Rust tests and npm check pass"
+  ],
+  "security_requirements": [
+    "Task and collection corruption must remain visible",
+    "Media processes must be bounded and cancellable",
+    "Provider failures must not be converted to success",
+    "No source content or credentials may be added to progress events"
+  ],
+  "dependencies": [
+    "VN-BUG-011"
+  ],
+  "status": "done"
+}

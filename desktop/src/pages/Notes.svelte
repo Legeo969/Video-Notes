@@ -110,13 +110,8 @@
   let capsuleData = $state<VideoCapsule | null>(null);
   let capsuleLoading = $state(false);
 
-  // Video player
-  let videoSource = $state<string | null>(null);
+  // External mpv playback
   let videoLoading = $state(false);
-  let videoEl: HTMLVideoElement | undefined = $state();
-  let currentSeekTime = $state<number | null>(null);
-  let showVideo = $state(false);
-  let pendingSeekTime = $state<number | null>(null);
 
   let qaQuestion = $state("");
   let qaAnswer = $state<{ answer: string; citations: number[]; confidence: string } | null>(null);
@@ -136,14 +131,20 @@
     return notes.filter((n) => n.title.toLowerCase().includes(q) || n.path.toLowerCase().includes(q));
   });
 
-  /** Wrap matching text in <mark> tags for highlight. */
-  function highlightText(text: string, query: string): string {
-    if (!query.trim()) return text;
+  type HighlightSegment = { text: string; matched: boolean };
+
+  function highlightSegments(text: string, query: string): HighlightSegment[] {
+    if (!query.trim()) return [{ text, matched: false }];
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     try {
-      return text.replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+      const matcher = new RegExp(`(${escaped})`, 'gi');
+      const exactMatch = new RegExp(`^${escaped}$`, 'i');
+      return text
+        .split(matcher)
+        .filter(Boolean)
+        .map((part) => ({ text: part, matched: exactMatch.test(part) }));
     } catch {
-      return text;
+      return [{ text, matched: false }];
     }
   }
 
@@ -171,20 +172,26 @@
     catch { return path; }
   }
 
-  function resolveImageSrc(src: string, notePath: string): string {
-    if (!src || /^(https?:|data:|blob:|asset:|file:)/i.test(src) || src.startsWith("#")) return src;
+  function resolveImageSrc(src: string, notePath: string): string | null {
+    if (!src) return null;
+    if (/^data:image\//i.test(src) || src.startsWith("#")) return src;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return null;
     const decoded = decodeImagePath(src);
-    // Strip angle brackets added by decode_markdown_image_paths for Obsidian compat
     const cleaned = decoded.replace(/^<|>$/g, '');
+    if (WINDOWS_ABSOLUTE_PATH.test(cleaned) || cleaned.startsWith("/") || cleaned.startsWith("\\")) return null;
     const noteDir = noteDirectory(notePath);
-    const absolute = WINDOWS_ABSOLUTE_PATH.test(cleaned) || cleaned.startsWith("/")
-      ? cleaned
-      : `${noteDir}\\${cleaned}`;
-    // Path traversal guard
-    if (absolute.includes("..") && !absolute.startsWith(noteDir.replace(/[\\/]$/, ''))) {
-      return src;
+    const baseParts = noteDir.split(/[\\/]/).filter(Boolean);
+    const parts = [...baseParts];
+    for (const segment of cleaned.split(/[\\/]/)) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        if (parts.length === baseParts.length) return null;
+        parts.pop();
+      } else {
+        parts.push(segment);
+      }
     }
-    return convertFileSrc(absolute);
+    return convertFileSrc(parts.join("\\"));
   }
 
   function renderMarkdown(content: string, notePath: string): string {
@@ -193,18 +200,40 @@
       const sanitized = DOMPurify.sanitize(raw);
       const doc = new DOMParser().parseFromString(sanitized, "text/html");
       for (const img of Array.from(doc.querySelectorAll("img"))) {
-        img.setAttribute("src", resolveImageSrc(img.getAttribute("src") || "", notePath));
+        const resolved = resolveImageSrc(img.getAttribute("src") || "", notePath);
+        if (!resolved) {
+          img.remove();
+          continue;
+        }
+        img.setAttribute("src", resolved);
         img.setAttribute("loading", "lazy");
       }
-      // Clickable timestamps → seek in video player
-      for (const el of Array.from(doc.querySelectorAll("p, li, td, th, div"))) {
-        el.innerHTML = el.innerHTML.replace(
-          /\[(\d+):(\d+)–(\d+):(\d+)\]/g,
-          (_match: string, sh: string, ss: string, eh: string, es: string) => {
-            const startUs = (Number(sh) * 60 + Number(ss));
-            return `<a class="citation-link" href="#" data-seek="${startUs}">[${sh}:${ss}–${eh}:${es}]</a>`;
-          }
-        );
+      // Clickable timestamps → seek in video player. Build links from text
+      // nodes so sanitized content is never reparsed through innerHTML.
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      const textNodes: Text[] = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        textNodes.push(node as Text);
+      }
+      for (const node of textNodes) {
+        if (node.parentElement?.closest("a, code, pre")) continue;
+        const matches = Array.from(node.data.matchAll(/\[(\d+):(\d+)–(\d+):(\d+)\]/g));
+        if (matches.length === 0) continue;
+        const fragment = doc.createDocumentFragment();
+        let offset = 0;
+        for (const match of matches) {
+          const index = match.index ?? 0;
+          fragment.append(doc.createTextNode(node.data.slice(offset, index)));
+          const link = doc.createElement("a");
+          link.className = "citation-link";
+          link.href = "#";
+          link.dataset.seek = String(Number(match[1]) * 60 + Number(match[2]));
+          link.textContent = match[0];
+          fragment.append(link);
+          offset = index + match[0].length;
+        }
+        fragment.append(doc.createTextNode(node.data.slice(offset)));
+        node.replaceWith(fragment);
       }
       return doc.body.innerHTML;
     } catch {
@@ -233,7 +262,7 @@
 
   async function selectNote(id: number) {
     if (selectedNoteId === id) return;
-    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; evidenceMode = false; capsuleData = null; graphData = null; error = null; loadingDetail = true; compileVersions = []; selectedCompileVersion = null; selectedSourceHash = null; videoSource = null; showVideo = false;
+    selectedNoteId = id; selectedNote = null; sourceView = false; studyMode = false; evidenceMode = false; capsuleData = null; graphData = null; error = null; loadingDetail = true; compileVersions = []; selectedCompileVersion = null; selectedSourceHash = null;
     // Restore cached Q&A history for this note.
     const cached = loadQACache().get(id);
     qaHistory = cached ?? [];
@@ -242,8 +271,6 @@
       editContent = selectedNote.content;
       // Load compile versions for this note
       loadVersions();
-      // Try to resolve the source video file
-      await loadVideoSource(id);
     } catch (e) {
       error = String(e); selectedNoteId = null;
     } finally { loadingDetail = false; }
@@ -312,39 +339,36 @@
     }
   }
 
-  async function loadVideoSource(id: number) {
+  async function openVideoInMpv(startSeconds = 0) {
+    if (videoLoading) return;
+    const noteId = selectedNoteId;
+    if (noteId === null) return;
     videoLoading = true;
+    error = null;
     try {
-      const result = await engineCall<{ path: string }>("notes.video_source", { note_id: id });
-      videoSource = result.path;
+      await engineCall("notes.video_playback", {
+        note_id: noteId,
+        start_seconds: Math.max(0, startSeconds),
+      });
     } catch (e) {
-      videoSource = null;
-      error = `视频源加载失败：${e}`;
+      if (selectedNoteId === noteId) error = `打开视频失败：${String(e)}`;
     } finally {
       videoLoading = false;
     }
   }
 
+  function playVideo() {
+    void openVideoInMpv(0);
+  }
+
   function seekTo(seconds: number) {
-    showVideo = true;
-    pendingSeekTime = seconds;
+    void openVideoInMpv(seconds);
   }
 
   function seekFromNote(startUs: number) {
     const sec = startUs / 1_000_000;
     seekTo(sec);
   }
-
-  $effect(() => {
-    if (videoEl && pendingSeekTime !== null) {
-      videoEl.currentTime = pendingSeekTime;
-      videoEl.play().catch(() => {});
-      pendingSeekTime = null;
-    }
-  });
-
-  // Expose for inline onclick in rendered markdown.
-  (window as any).__seekNote = seekFromNote;
 
   // Delegated click handler for timestamp links (avoids inline onclick issues in WebView2)
   function handlePreviewClick(e: Event) {
@@ -354,6 +378,16 @@
     const sec = link.getAttribute('data-seek');
     if (sec) seekTo(Number(sec));
   }
+
+  onMount(() => {
+    loadNotes();
+    // Check if navigated from another page with a specific note ID
+    const pendingNoteId = $selectedNoteIdStore;
+    if (pendingNoteId !== null) {
+      selectedNoteIdStore.set(null);
+      selectNote(pendingNoteId);
+    }
+  });
 
   async function loadGraph() {
     if (!selectedNote) return;
@@ -465,8 +499,10 @@
   async function deleteNote() {
     if (!selectedNote || !confirm(`确定删除「${selectedNote.title}」？对应 assets 图片目录也会一起删除，此操作不可恢复。`)) return;
     deleting = true; error = null;
+    const noteId = selectedNote.id;
     try {
-      await engineCall("notes.delete", { id: selectedNote.id });
+      await engineCall("notes.delete", { id: noteId });
+      clearQACache(noteId);
       showSuccess("笔记已删除"); selectedNoteId = null; selectedNote = null; sourceView = false; await loadNotes();
     } catch (e) { error = String(e); }
     finally { deleting = false; }
@@ -516,16 +552,6 @@
     noteRefreshTimer = setTimeout(() => {
       if (!searchQuery.trim()) loadNotes();
     }, 1000);
-  });
-
-  onMount(() => {
-    loadNotes();
-    // Check if navigated from another page with a specific note ID
-    const pendingNoteId = $selectedNoteIdStore;
-    if (pendingNoteId !== null) {
-      selectedNoteIdStore.set(null);
-      selectNote(pendingNoteId);
-    }
   });
 
   onDestroy(() => {
@@ -591,7 +617,11 @@
             <span class="note-file-icon"><Icon name="file-text" size={16} /></span>
             <span class="note-item-copy">
               {#if searchQuery.trim()}
-                <strong>{@html highlightText(note.title, searchQuery)}</strong>
+                <strong>
+                  {#each highlightSegments(note.title, searchQuery) as segment}
+                    {#if segment.matched}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
+                  {/each}
+                </strong>
               {:else}
                 <strong>{note.title}</strong>
               {/if}
@@ -615,14 +645,12 @@
         <div class="reader-breadcrumb"><span>笔记库</span><Icon name="chevron-right" size={12} /><strong>{selectedNote.title}</strong></div>
         <div class="reader-actions">
           <div class="view-toggle">
-            <button class:active={!sourceView && !studyMode && !showVideo} onclick={() => { sourceView = false; studyMode = false; showVideo = false; evidenceMode = false; }}><Icon name="eye" size={14} />阅读</button>
-            <button class:active={sourceView} onclick={() => { sourceView = true; studyMode = false; showVideo = false; evidenceMode = false; }}><Icon name="edit" size={14} />源码</button>
+            <button class:active={!sourceView && !studyMode} onclick={() => { sourceView = false; studyMode = false; evidenceMode = false; }}><Icon name="eye" size={14} />阅读</button>
+            <button class:active={sourceView} onclick={() => { sourceView = true; studyMode = false; evidenceMode = false; }}><Icon name="edit" size={14} />源码</button>
             <button class:active={studyMode} onclick={toggleStudyMode} disabled={!selectedNote}><Icon name="brain" size={14} />学习</button>
             <button class:active={qaMode} onclick={toggleQaMode} disabled={!selectedNote || !selectedSourceHash}><Icon name="search" size={14} />问答</button>
             <button class:active={evidenceMode} onclick={toggleEvidenceMode} disabled={!selectedNote || !selectedSourceHash}><Icon name="list" size={14} />证据</button>
-            {#if videoSource}
-              <button class:active={showVideo} onclick={() => showVideo = !showVideo}><Icon name="play" size={14} />视频</button>
-            {/if}
+            <button onclick={playVideo} disabled={videoLoading} title={videoLoading ? "正在打开 mpv" : "使用 mpv 播放本地视频"}><Icon name="play" size={14} />{videoLoading ? "打开中" : "视频"}</button>
           </div>
           {#if sourceView}<button class="btn btn-primary btn-sm" onclick={saveNote} disabled={saving}><Icon name="save" size={14} />{saving ? "保存中" : "保存"}</button>{/if}
           <button class="icon-btn" onclick={copyContent} title="复制内容"><Icon name="copy" size={15} /></button>
@@ -634,18 +662,6 @@
 
       {#if error}<div class="reader-feedback error"><Icon name="alert" size={15} /><span>{error}</span></div>{/if}
       {#if successMsg}<div class="reader-feedback success"><Icon name="check" size={15} /><span>{successMsg}</span></div>{/if}
-
-      {#if showVideo && videoSource}
-        <div class="video-bar">
-          <video
-            bind:this={videoEl}
-            src={convertFileSrc(videoSource)}
-            controls
-            preload="metadata"
-            class="note-video"
-          ><track kind="captions" /></video>
-        </div>
-      {/if}
 
       <div class="reader-scroll">
         {#if qaMode}
@@ -820,7 +836,7 @@
   .library-footer { display: flex; align-items: flex-start; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 
   .reader-panel { display: flex; min-width: 0; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
-  .reader-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 11px 18px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-card) 94%, transparent); backdrop-filter: blur(10px); }
+  .reader-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px; padding: 10px 18px; border-bottom: 1px solid var(--border-color); background: var(--bg-appbar); }
   .reader-breadcrumb { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--text-tertiary); font-size: 12px; }
   .reader-breadcrumb strong { overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
   .reader-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
@@ -831,14 +847,12 @@
   .reader-feedback { display: flex; align-items: center; gap: 7px; padding: 7px 18px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
   .reader-feedback.error { color: var(--danger-color); background: var(--danger-soft); }
   .reader-feedback.success { color: var(--success-color); background: var(--success-soft); }
-  .video-bar { border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); padding: 8px; }
-  .note-video { display: block; width: 100%; max-height: 360px; border-radius: 8px; background: #000; }
   .citation-link { color: var(--accent-color); cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
   .citation-link:hover { color: var(--accent-hover); }
-  .reader-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 36px 48px; }
-  .document-shell { width: min(840px, 100%); min-height: calc(100vh - 140px); margin: 0 auto; overflow: hidden; border: 1px solid var(--border-color); border-radius: 16px; background: var(--bg-card); box-shadow: var(--shadow-sm); }
-  .document-head { padding: 30px 40px 24px; border-bottom: 1px solid var(--border-color); background: linear-gradient(145deg, var(--accent-faint), var(--bg-card) 72%); }
-  .document-kicker { color: var(--accent-color); font-size: 11px; font-weight: 780; letter-spacing: .14em; }
+  .reader-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 36px 48px; background: var(--bg-app); }
+  .document-shell { width: min(820px, 100%); min-height: calc(100vh - 140px); margin: 0 auto; overflow: hidden; border: 1px solid var(--border-color); border-radius: 16px; background: var(--bg-card); box-shadow: var(--shadow-xs); }
+  .document-head { padding: 32px 42px 26px; border-bottom: 1px solid var(--border-color); }
+  .document-kicker { color: var(--accent-color); font-size: 11px; font-weight: 780; letter-spacing: .14em; text-transform: uppercase; }
   .document-head h1 { max-width: 700px; margin-top: 9px; font-size: 25px; line-height: 1.3; font-weight: 750; letter-spacing: -.035em; }
   .document-meta { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 15px; color: var(--text-secondary); }
   .document-meta span, .document-path { display: flex; align-items: center; gap: 5px; font-size: 12px; }
@@ -847,27 +861,24 @@
   .compile-versions { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); color: var(--text-tertiary); font-size: 12px; }
   .version-loading { color: var(--accent-color); font-size: 11px; }
   .compile-versions select { min-height: 28px; padding: 0 24px 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-primary); background: var(--bg-input); font-size: 11px; cursor: pointer; }
-  .source-editor { width: 100%; min-height: 600px; padding: 30px 40px; border: 0; border-radius: 0; background: var(--bg-card); font-family: var(--font-mono); font-size: 13px; line-height: 1.75; resize: none; }
+  .source-editor { width: 100%; min-height: 600px; padding: 32px 42px; border: 0; border-radius: 0; background: var(--bg-card); font-family: var(--font-mono); font-size: 13px; line-height: 1.75; resize: none; }
   .source-editor:focus { box-shadow: inset 0 0 0 2px var(--accent-glow); }
 
-  .preview-area { padding: 30px 40px 56px; color: var(--text-primary); font-size: 15px; line-height: 1.85; }
-  .preview-area :global(h1) { margin: 34px 0 16px; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); font-size: 24px; }
-  .preview-area :global(h2) { margin: 30px 0 13px; font-size: 23px; }
-  .preview-area :global(h3) { margin: 24px 0 10px; font-size: 20px; }
+  .preview-area { padding: 32px 42px 56px; color: var(--text-primary); font-size: 15px; line-height: 1.82; }
+  .preview-area :global(h1) { margin: 36px 0 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); font-size: 26px; font-weight: 750; letter-spacing: -.025em; line-height: 1.25; }
+  .preview-area :global(h2) { margin: 32px 0 14px; font-size: 22px; font-weight: 720; letter-spacing: -.02em; line-height: 1.3; }
+  .preview-area :global(h3) { margin: 26px 0 10px; font-size: 18px; font-weight: 700; line-height: 1.35; }
   .preview-area :global(h1:first-child), .preview-area :global(h2:first-child), .preview-area :global(h3:first-child) { margin-top: 0; }
-  .preview-area :global(p) { margin: 10px 0; }
-  .preview-area :global(ul), .preview-area :global(ol) { margin: 11px 0; padding-left: 23px; }
+  .preview-area :global(p) { margin: 12px 0; }
+  .preview-area :global(ul), .preview-area :global(ol) { margin: 12px 0; padding-left: 24px; }
   .preview-area :global(li) { margin: 5px 0; }
-  .preview-area :global(blockquote) { margin: 16px 0; padding: 12px 16px; border-left: 3px solid var(--accent-color); border-radius: 0 9px 9px 0; color: var(--text-secondary); background: var(--accent-faint); }
-  .preview-area :global(code) { padding: 2px 5px; border-radius: 5px; color: var(--accent-strong); background: var(--accent-soft); font-family: var(--font-mono); font-size: .9em; }
-  .preview-area :global(pre) { margin: 16px 0; padding: 15px; overflow-x: auto; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-subtle); }
+  .preview-area :global(blockquote) { margin: 18px 0; padding: 14px 18px; border-left: 3px solid var(--accent-color); border-radius: 0 10px 10px 0; color: var(--text-secondary); background: var(--accent-faint); font-size: 14.5px; }
+  .preview-area :global(code) { padding: 2px 6px; border-radius: 5px; color: var(--accent-strong); background: var(--accent-soft); font-family: var(--font-mono); font-size: .875em; }
+  .preview-area :global(pre) { margin: 18px 0; padding: 16px; overflow-x: auto; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-subtle); }
   .preview-area :global(pre code) { padding: 0; color: var(--text-primary); background: transparent; }
-  .preview-area :global(table) { width: 100%; margin: 17px 0; border-collapse: collapse; }
-  .preview-area :global(th), .preview-area :global(td) { padding: 9px 11px; border: 1px solid var(--border-color); text-align: left; }
-  .preview-area :global(th) { background: var(--bg-subtle); }
-  .preview-area :global(a) { color: var(--accent-color); }
-  .preview-area :global(img) { display: block; max-width: 100%; height: auto; margin: 14px 0; border-radius: 11px; outline: 1px solid rgba(0, 0, 0, 0.1); }
-  :global(.dark) .preview-area :global(img) { outline-color: rgba(255, 255, 255, 0.1); }
+  .preview-area :global(a) { color: var(--accent-color); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+  .preview-area :global(img) { display: block; max-width: 100%; height: auto; margin: 18px 0; border-radius: 12px; outline: 1px solid rgba(0, 0, 0, 0.08); }
+  :global(.dark) .preview-area :global(img) { outline-color: rgba(255, 255, 255, 0.08); }
 
   .reader-loading, .welcome-reader { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
   .reader-loading h2, .welcome-reader h2 { font-size: 21px; }
@@ -889,23 +900,6 @@
     .reader-scroll { padding: 24px; }
     .document-head, .preview-area, .source-editor { padding-left: 30px; padding-right: 30px; }
   }
-
-  .notes-workspace { grid-template-columns: minmax(260px, 304px) minmax(0, 1fr); background: var(--bg-app); }
-  .library-panel { background: var(--bg-sidebar); }
-  .library-header { padding: 17px 15px 13px; }
-  .library-title span { color: var(--text-tertiary); }
-  .library-tools { padding: 0 12px 12px; }
-  .notes-list { padding: 4px 7px 10px; }
-  .note-item { margin-bottom: 2px; padding: 9px; border-radius: 10px; }
-  .note-item.selected { box-shadow: none; }
-  .reader-header { min-height: 58px; padding: 10px 17px; background: var(--bg-appbar); }
-  .reader-scroll { padding: 24px 30px 48px; background: var(--bg-app); }
-  .document-shell { width: min(820px, 100%); border-radius: 16px; box-shadow: var(--shadow-xs); }
-  .document-head { padding: 29px 38px 23px; background: var(--bg-card); }
-  .document-head h1 { font-size: 30px; }
-  .preview-area { padding: 30px 38px 54px; }
-  .source-editor { padding: 30px 38px; }
-  @media (max-width: 1100px) { .notes-workspace { grid-template-columns: 270px minmax(0,1fr); } }
 
 
   /* UI v7 — readable library and document workspace */

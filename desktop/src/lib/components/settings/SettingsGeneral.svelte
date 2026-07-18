@@ -8,7 +8,6 @@
     template: string;
     active_provider: string;
     bilibili_cookie_file: string;
-    draft_model_path: string;
   }
 
   let {

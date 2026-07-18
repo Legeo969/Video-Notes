@@ -28,6 +28,8 @@ export interface JobInfo {
   output_path?: string | null;
   transcript_path?: string | null;
   note_id?: number | null;
+  collection_id?: number | null;
+  collection_item_id?: number | null;
   attempt?: number;
   parent_run_id?: string | null;
   settings_snapshot?: Record<string, unknown> | null;
@@ -45,6 +47,14 @@ export interface JobProgressEvent {
   stage: string;
   progress: number;
   message: string;
+  completed_at?: string | null;
+  error_message?: string | null;
+  output_path?: string | null;
+  transcript_path?: string | null;
+  note_id?: number | null;
+  can_resume?: boolean;
+  collection_id?: number | null;
+  collection_item_id?: number | null;
   timestamp?: string | null;
 }
 
@@ -103,6 +113,7 @@ export interface ProviderProfile {
   base_url: string;
   model: string;
   vision_model?: string;
+  video_input?: boolean;
   models?: string[];
   active?: boolean;
   capabilities?: Record<

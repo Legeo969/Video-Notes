@@ -1,0 +1,61 @@
+{
+  "task_id": "VN-SEC-002",
+  "title": "Harden desktop native execution and local resource boundaries",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-ARCH-013",
+    "SPEC-COMPILER-010",
+    "SPEC-COMPILER-039"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/tauri.conf.json",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/native_engine/tests.rs",
+    "desktop/src/pages/Notes.svelte",
+    "desktop/src/lib/components/study/KnowledgeTree.svelte",
+    "desktop/src-tauri/capabilities/default.json",
+    "runtime/manifests/**",
+    "tasks/spec-v0.2/vn-sec-002.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-SEC-002.md"
+  ],
+  "forbidden_changes": [
+    "Weakening URL, path, archive, or component validation",
+    "Allowing WebView-rendered content to invoke native commands",
+    "Persisting new plaintext credentials",
+    "Changing public IR or schema contracts",
+    "Committing generated build artifacts"
+  ],
+  "deliverables": [
+    "Traversal-safe component removal",
+    "Text-only note-title highlighting",
+    "Shell-free local path and URL opening",
+    "Pinned and verified executable downloads",
+    "Restricted asset protocol scope and production devtools",
+    "Credential-vault-backed Provider secrets with legacy migration",
+    "Security regression tests and task report"
+  ],
+  "acceptance_tests": [
+    "Component removal rejects separators, dot segments, and containment escapes",
+    "Malicious Markdown titles are rendered as text during search highlighting",
+    "URLs and paths are opened without cmd.exe",
+    "Downloaded executable helpers require a pinned SHA-256 digest",
+    "Provider API keys are absent from the persisted settings JSON after migration",
+    "Focused Rust tests and npm check pass"
+  ],
+  "security_requirements": [
+    "All recursive deletion targets must remain below their configured root",
+    "Untrusted Markdown must not create executable WebView markup",
+    "No untrusted value may be interpreted by a command shell",
+    "Executable downloads and installed components must be integrity checked before execution",
+    "Secrets must use the OS credential vault"
+  ],
+  "dependencies": [
+    "VN-SEC-001"
+  ],
+  "status": "done"
+}

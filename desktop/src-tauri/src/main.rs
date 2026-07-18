@@ -1,16 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod compile;
-mod native_engine;
 mod startup_diagnostics;
-mod study;
 
-#[cfg(feature = "compiler_v3")]
-mod compile_v3;
-
-use native_engine::NativeEngine;
 use tauri::{Emitter, Manager};
+use video_notes_ai::native_engine::NativeEngine;
 
 #[cfg(feature = "compiler_v3")]
 use video_notes_ai::AppState;
@@ -65,9 +59,9 @@ async fn get_engine_status() -> Result<serde_json::Value, String> {
 fn list_v02_versions(
     source_hash: String,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<crate::compile_v3::StoredBundle>, String> {
-    use crate::compile_v3::BundleStore;
-    let store = crate::compile_v3::FileBundleStore::new(state.storage_dir.clone());
+) -> Result<Vec<video_notes_ai::compile_v3::StoredBundle>, String> {
+    use video_notes_ai::compile_v3::BundleStore;
+    let store = video_notes_ai::compile_v3::FileBundleStore::new(state.storage_dir.clone());
     store.list_versions(&source_hash)
 }
 
@@ -75,7 +69,6 @@ fn build_app() -> Result<tauri::App<tauri::Wry>, tauri::Error> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = app.get_webview_window("main").map(|window| {
                 let _ = window.show();

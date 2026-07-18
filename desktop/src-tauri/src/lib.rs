@@ -22,16 +22,15 @@ pub fn persist_v02_after_compile(
     storage_dir: &std::path::Path,
 ) -> Result<(), String> {
     use compile_v3::convert;
-    use compile_v3::validate::write_bundle;
-    use std::fs;
+    use compile_v3::{BundleStore, FileBundleStore};
 
-    let v02_bundle = convert(capsule);
-    let bytes = write_bundle(&v02_bundle).map_err(|e| format!("v0.2 write_bundle failed: {e}"))?;
+    if capsule.source_hash != source_hash || capsule.version != version {
+        return Err("v0.2 persistence identity does not match the legacy capsule".to_string());
+    }
 
-    let capsule_dir = storage_dir.join(source_hash);
-    fs::create_dir_all(&capsule_dir).map_err(|e| format!("failed to create v0.2 dir: {e}"))?;
-    let v02_path = capsule_dir.join(format!("v{version}.v02.json"));
-    fs::write(&v02_path, &bytes).map_err(|e| format!("failed to write v0.2 bundle: {e}"))?;
+    let v02_bundle = convert(capsule)?;
+    let mut store = FileBundleStore::new(storage_dir.to_path_buf());
+    store.insert(&v02_bundle)?;
     Ok(())
 }
 

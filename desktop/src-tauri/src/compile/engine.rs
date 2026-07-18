@@ -15,6 +15,8 @@ use crate::compile::{CompileMode, Frame, RawCompileOutput, SamplerOptions};
 
 pub type ProgressFn = Box<dyn Fn(&str, u8, &str) + Send + Sync>;
 pub type CheckpointFn = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
+pub type ProcessStartedFn = Box<dyn Fn(u32) + Send + Sync>;
+pub type ProcessFinishedFn = Box<dyn Fn(u32) + Send + Sync>;
 pub const COMPILE_CANCELLED_ERROR: &str = "compile cancelled by user";
 
 pub struct CompileOptions {
@@ -26,8 +28,8 @@ pub struct CompileOptions {
     pub prefer_draft: bool,
     pub on_progress: Option<ProgressFn>,
     pub checkpoint: Option<CheckpointFn>,
-    #[allow(dead_code)]
-    pub gguf_model_path: Option<std::path::PathBuf>,
+    pub on_process_started: Option<ProcessStartedFn>,
+    pub on_process_finished: Option<ProcessFinishedFn>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,7 +47,6 @@ pub struct CompileResult {
 #[derive(Debug, Clone)]
 struct CompileChunk {
     sequence: u32,
-    frames: Vec<Frame>,
     anchor_indices: Vec<u32>,
     start_sec: f64,
     end_sec: f64,
@@ -78,9 +79,11 @@ pub fn compile_video(
 
     let requested_mode = match &opts.client_config {
         Some(config) => draft::resolve_compile_mode(&config.base_url, opts.prefer_draft),
-        None => return Err(
-            "未配置 API Provider。请在设置中添加 Provider 和 API Key 后再编译。".to_string()
-        ),
+        None => {
+            return Err(
+                "未配置 API Provider。请在设置中添加 Provider 和 API Key 后再编译。".to_string(),
+            )
+        }
     };
     progress(
         "sampling",
@@ -93,12 +96,17 @@ pub fn compile_video(
 
     checkpoint()?;
 
-    progress("sampling", 8, "提取受预算约束的帧与音频");
+    progress("sampling", 8, "读取媒体元数据与时间锚点");
+    let process_control = sampler::ProcessControl {
+        checkpoint: opts.checkpoint.as_deref(),
+        on_started: opts.on_process_started.as_deref(),
+        on_finished: opts.on_process_finished.as_deref(),
+    };
     let sample = sampler::sample_video(
         input_path,
-        &opts.ffmpeg_path,
         &opts.ffprobe_path,
         &opts.sampler,
+        process_control,
     )?;
 
     checkpoint()?;
@@ -111,6 +119,14 @@ pub fn compile_video(
         .map(|config| config.accepts_video)
         .unwrap_or(false);
     let max_segment = if use_video { Some(120.0) } else { None };
+    let mut video_encoder = if use_video {
+        Some(sampler::detect_fast_encoder(
+            &opts.ffmpeg_path,
+            process_control,
+        )?)
+    } else {
+        None
+    };
     let (chunks, anchor_map) = build_chunks(
         &sample.frames,
         &sample.frame_index_map,
@@ -141,20 +157,28 @@ pub fn compile_video(
             &format!("编译切片 {}/{}", index + 1, chunks.len()),
         );
 
-        let _has_audio = !sample.audio.data.is_empty() && chunk.end_sec > chunk.start_sec;
+        let _has_audio = sample.audio.has_audio && chunk.end_sec > chunk.start_sec;
 
         let output = if requested_mode == CompileMode::CloudPrecision {
-            let config = opts.client_config.as_ref().ok_or_else(||
-                "未配置 API Provider，无法编译。".to_string()
-            )?;
+            let config = opts
+                .client_config
+                .as_ref()
+                .ok_or_else(|| "未配置 API Provider，无法编译。".to_string())?;
             if !config.accepts_video {
-                return Err("当前 Provider 不支持视频分析，无法编译。请更换支持多模态的 Provider。".to_string());
+                return Err(
+                    "当前 Provider 不支持视频分析，无法编译。请更换支持多模态的 Provider。"
+                        .to_string(),
+                );
             }
             let video_data = sampler::cut_video_segment(
                 input_path,
                 &opts.ffmpeg_path,
                 chunk.start_sec,
                 chunk.end_sec,
+                video_encoder
+                    .as_mut()
+                    .ok_or_else(|| "video encoder was not initialized".to_string())?,
+                process_control,
             )
             .map_err(|e| format!("chunk {} video cut failed: {}", chunk.sequence, e))?;
             if video_data.is_empty() {
@@ -172,7 +196,9 @@ pub fn compile_video(
                 Some(&context.prev_chunk_summary),
             )?
         } else {
-            return Err("未配置 API Provider，无法编译。请在设置中添加 Provider 和 API Key。".to_string());
+            return Err(
+                "未配置 API Provider，无法编译。请在设置中添加 Provider 和 API Key。".to_string(),
+            );
         };
         context = context.advance(&output.chunk_summary);
         outputs.push(output);
@@ -199,6 +225,34 @@ pub fn compile_video(
             } else {
                 event.confidence =
                     calibrate::calibrate_confidence(event.confidence, &summary, &previous, &next);
+            }
+        }
+    }
+
+    // Post-processing: normalize known term confusions in model output
+    for output in &mut outputs {
+        normalize_terms(&mut output.chunk_summary);
+        for event in &mut output.events {
+            normalize_terms(&mut event.description);
+            normalize_terms(&mut event.title);
+        }
+    }
+
+    // Validate cross-chunk anchor consistency: each event's anchor range
+    // must be non-empty and fall within its chunk's anchor span.
+    // This catches cases the per-chunk validator misses (boundary overlap).
+    for (index, (chunk, output)) in chunks.iter().zip(outputs.iter()).enumerate() {
+        let chunk_anchor_min = *chunk.anchor_indices.first().unwrap_or(&0);
+        let chunk_anchor_max = *chunk.anchor_indices.last().unwrap_or(&0);
+        for event in &output.events {
+            if event.event_frame_indexes.len() == 2 {
+                let (a, b) = (event.event_frame_indexes[0], event.event_frame_indexes[1]);
+                if a < chunk_anchor_min || b > chunk_anchor_max {
+                    return Err(format!(
+                        "chunk {} event anchors [{}, {}] outside chunk range [{}, {}]",
+                        index, a, b, chunk_anchor_min, chunk_anchor_max,
+                    ));
+                }
             }
         }
     }
@@ -236,19 +290,12 @@ pub fn compile_video(
     let version = store.reserve_next_version(source_hash)?;
     let capsule = builder.build(version);
     let evidence_count = capsule.evidences.len();
-    #[allow(unused_mut)]
-    let mut warnings = capsule.warnings.clone();
+    let warnings = capsule.warnings.clone();
     let mode = capsule.compilation_mode;
-
-    // Persist v0.2 bundle alongside the legacy capsule (behind feature gate)
     #[cfg(feature = "compiler_v3")]
-    {
-        use crate::compile_v3::{BundleStore, FileBundleStore as V3FileStore};
-        let mut v3_store = V3FileStore::new(opts.storage_dir.clone());
-        if let Err(e) = v3_store.insert(&crate::compile_v3::convert(&capsule)) {
-            warnings.push(format!("v0.2 persistence warning: {e}"));
-        }
-    }
+    let v3_capsule = capsule.clone();
+    #[cfg(feature = "compiler_v3")]
+    let mut warnings = warnings;
 
     let capsule_id = match store.insert(capsule) {
         Ok(id) => id,
@@ -257,6 +304,19 @@ pub fn compile_video(
             return Err(format!("storage error: {error}"));
         }
     };
+
+    // Commit v0.2 only after the legacy source of truth is durable. A v0.2
+    // failure is visible as a warning and never rolls back the legacy version.
+    #[cfg(feature = "compiler_v3")]
+    {
+        use crate::compile_v3::{BundleStore, FileBundleStore as V3FileStore};
+        let mut v3_store = V3FileStore::new(opts.storage_dir.clone());
+        if let Err(error) = crate::compile_v3::convert(&v3_capsule)
+            .and_then(|bundle| v3_store.insert(&bundle).map(|_| ()))
+        {
+            warnings.push(format!("v0.2 persistence warning: {error}"));
+        }
+    }
 
     progress("complete", 100, "编译完成");
     Ok(CompileResult {
@@ -300,19 +360,12 @@ fn build_chunks(
                 let num_anchors = chunk_dur.ceil() as u32 + 1;
                 let chunk_anchors: Vec<u32> = (0..num_anchors).map(|i| anchor_offset + i).collect();
 
-                // Collect frames that fall within this segment (for draft fallback)
-                let seg_frames: Vec<Frame> = frames
-                    .iter()
-                    .filter(|f| f.timestamp_sec >= start_sec && f.timestamp_sec < end_sec)
-                    .copied()
-                    .collect();
                 for &a in &chunk_anchors {
                     let ts = start_sec + (a - anchor_offset) as f64;
                     anchors.insert(a, ts.min(total_duration));
                 }
                 chunks.push(CompileChunk {
                     sequence: index as u32,
-                    frames: seg_frames,
                     anchor_indices: chunk_anchors,
                     start_sec,
                     end_sec,
@@ -326,7 +379,6 @@ fn build_chunks(
         let anchor_indices: Vec<u32> = frames.iter().map(|f| f.index).collect();
         let chunks = vec![CompileChunk {
             sequence: 0,
-            frames: frames.to_vec(),
             anchor_indices,
             start_sec: frames.first().map(|f| f.timestamp_sec).unwrap_or(0.0),
             end_sec: total_duration,
@@ -342,12 +394,97 @@ fn build_chunks(
     anchors.insert(end_anchor, duration);
     let chunks = vec![CompileChunk {
         sequence: 0,
-        frames: Vec::new(),
         anchor_indices: vec![start_anchor, end_anchor],
         start_sec: 0.0,
         end_sec: duration,
     }];
     (chunks, anchors)
+}
+
+/// Correct known term confusions in model-generated text.
+///
+/// The AI model sometimes mishears domain-specific proper nouns (especially
+/// software names) and substitutes homophones. This function applies targeted
+/// corrections to fix those errors before they reach the final note.
+fn normalize_terms(text: &mut String) {
+    // Correct "Gaia" → "Gaea" only when it appears in a Chinese-script context
+    // (software name, not the English word "Gaia"/"Gaia hypothesis").
+    // Detection: "Gaia" preceded or followed by CJK or punctuation chars.
+    const TARGETS: &[(&str, &str)] = &[("Gaia", "Gaea")];
+    for (from, to) in TARGETS {
+        let from_len = from.len();
+        let bytes: Vec<u8> = text.as_bytes().to_vec();
+        let mut result = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + from_len <= bytes.len() && bytes[i..i + from_len] == *from.as_bytes() {
+                // Check surrounding context
+                let prev_is_cjk = i > 0 && is_cjk_or_boundary(bytes[i - 1]);
+                let next_is_cjk =
+                    i + from_len < bytes.len() && is_cjk_or_boundary(bytes[i + from_len]);
+                let is_spaced = (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t')
+                    && (i + from_len >= bytes.len()
+                        || bytes[i + from_len] == b' '
+                        || bytes[i + from_len] == b'\t');
+                if prev_is_cjk || next_is_cjk || is_spaced {
+                    result.extend_from_slice(to.as_bytes());
+                    i += from_len;
+                    continue;
+                }
+            }
+            result.push(bytes[i]);
+            i += 1;
+        }
+        *text = String::from_utf8(result).unwrap_or_else(|_| text.clone());
+    }
+}
+
+/// Check if a byte is part of a CJK character, punctuation, or boundary char
+/// that suggests the adjacent word is in a Chinese-script context.
+fn is_cjk_or_boundary(b: u8) -> bool {
+    // ASCII punctuation and space
+    if matches!(
+        b,
+        b' ' | b'\t'
+            | b'\n'
+            | b'\r'
+            | b','
+            | b'.'
+            | b';'
+            | b':'
+            | b'('
+            | b')'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'"'
+            | b'\''
+            | b'!'
+            | b'?'
+            | b'-'
+            | b'`'
+            | b'~'
+            | b'@'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'^'
+            | b'&'
+            | b'*'
+            | b'+'
+            | b'='
+            | b'|'
+            | b'\\'
+            | b'/'
+            | b'<'
+            | b'>'
+    ) {
+        return true;
+    }
+    // Any non-ASCII byte (UTF-8 start or continuation) — catches CJK,
+    // fullwidth punctuation, emoji, accented Latin, etc.
+    b >= 0x80
 }
 
 #[cfg(test)]

@@ -1,0 +1,52 @@
+{
+  "task_id": "VN-IMPL-003",
+  "title": "Complete compiler v3 conversion and immutable storage",
+  "phase": "v0.2-implementation",
+  "priority": "P0",
+  "spec_refs": [
+    "SPEC-COMPILER-005",
+    "SPEC-COMPILER-033",
+    "SPEC-EVIDENCE-028"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile_v3/**",
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/lib.rs",
+    "desktop/src-tauri/tests/**",
+    "tasks/spec-v0.2/vn-impl-003.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-IMPL-003.md"
+  ],
+  "forbidden_changes": [
+    "Enabling compiler_v3 by default",
+    "Weakening schemas or conformance validation",
+    "Overwriting an existing Capsule or bundle version",
+    "Skipping digest verification when metadata is missing",
+    "Using panic or unchecked slicing on legacy input"
+  ],
+  "deliverables": [
+    "Fallible loss-preserving VideoCapsule to ExchangeBundle conversion",
+    "Validated immutable and concurrent-safe FileBundleStore",
+    "Atomic v0.2 persistence integration",
+    "Conversion storage and corruption regression tests",
+    "Task completion report"
+  ],
+  "acceptance_tests": [
+    "Short and non-ASCII legacy identifiers never panic",
+    "Legacy model output without content-bound anchors is retained as unsupported Claims with provenance and explicit Gaps",
+    "Invalid converted bundles are rejected before persistence",
+    "Concurrent inserts allocate distinct immutable versions",
+    "Missing or corrupt version metadata fails closed",
+    "All compiler_v3 unit and conformance tests pass"
+  ],
+  "security_requirements": [
+    "All untrusted conversion input must return structured errors",
+    "Stored bytes must match a mandatory indexed digest",
+    "Conversion must apply unknown private rights and must not fabricate anchor content digests",
+    "Bundle validation and external trust semantics must remain unchanged"
+  ],
+  "dependencies": [
+    "VN-IMPL-001"
+  ],
+  "status": "done"
+}

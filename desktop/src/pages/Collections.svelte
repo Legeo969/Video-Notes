@@ -39,7 +39,7 @@
   let createItems = $state("");
   let creating = $state(false);
 
-  let processing = $state(false);
+  let processingScope = $state<"pending" | "failed" | null>(null);
   let batchJobId = $state<string | null>(null);
   let batchProgress = $state<string>("");
   let batchOutputDir = $state<string | null>(null);
@@ -47,6 +47,9 @@
   let confirmDeleteId = $state<number | null>(null);
   let showAddItems = $state(false);
   let addItemsText = $state("");
+  let retryingItemId = $state<number | null>(null);
+  let detailRequestVersion = 0;
+  let collectionPollInFlight = false;
 
   let filteredCollections = $derived.by(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -58,7 +61,8 @@
   let completedItems = $derived(detail?.items.filter((item) => item.status === "completed").length || 0);
   let failedItems = $derived(detail?.items.filter((item) => ["failed", "cancelled", "interrupted"].includes(item.status)).length || 0);
   let pausedItems = $derived(detail?.items.filter((item) => item.status === "paused").length || 0);
-  let runningItems = $derived(detail?.items.filter((item) => ["pending", "running", "pausing", "cancelling"].includes(item.status)).length || 0);
+  let pendingItems = $derived(detail?.items.filter((item) => item.status === "pending" && item.run_id == null).length || 0);
+  let runningItems = $derived(detail?.items.filter((item) => ["running", "pausing", "cancelling"].includes(item.status) || (item.status === "pending" && item.run_id != null)).length || 0);
   let workProgress = $derived.by(() => {
     const items = detail?.items ?? [];
     if (items.length === 0) return 0;
@@ -66,9 +70,11 @@
     return Math.round(total / items.length);
   });
 
-  async function loadCollections() {
-    loading = true;
-    error = null;
+  async function loadCollections(silent = false) {
+    if (!silent) {
+      loading = true;
+      error = null;
+    }
     try {
       collections = await engineCall<CollectionInfo[]>("collection.list");
       if (selectedId && !collections.some((item) => item.id === selectedId)) {
@@ -77,15 +83,22 @@
     } catch (e) {
       error = `加载合集列表失败：${e}`;
       console.error(e);
-    } finally { loading = false; }
+    } finally { if (!silent) loading = false; }
   }
 
   async function selectCollection(id: number, force = false) {
     if (selectedId === id && !force) return;
+    const requestVersion = ++detailRequestVersion;
     selectedId = id; detailLoading = !force; detail = force ? detail : null; exportPath = force ? exportPath : null; batchJobId = force ? batchJobId : null; batchProgress = force ? batchProgress : ""; batchOutputDir = force ? batchOutputDir : null;
-    try { detail = await engineCall<CollectionDetail>("collection.get", { id }); }
-    catch (e) { error = `加载合集详情失败：${e}`; console.error(e); }
-    finally { detailLoading = false; }
+    try {
+      const nextDetail = await engineCall<CollectionDetail>("collection.get", { id });
+      if (requestVersion === detailRequestVersion && selectedId === id) detail = nextDetail;
+    }
+    catch (e) {
+      if (requestVersion === detailRequestVersion) error = `加载合集详情失败：${e}`;
+      console.error(e);
+    }
+    finally { if (requestVersion === detailRequestVersion) detailLoading = false; }
   }
 
   async function createCollection() {
@@ -103,7 +116,7 @@
   async function deleteCollection(id: number) {
     try {
       await engineCall("collection.delete", { id });
-      if (selectedId === id) { selectedId = null; detail = null; }
+      if (selectedId === id) { detailRequestVersion += 1; selectedId = null; detail = null; }
       confirmDeleteId = null; await loadCollections();
     } catch (e) { error = `删除合集失败：${e}`; }
   }
@@ -131,33 +144,47 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
 }) ?? false);
 
   let hasPausedItems = $derived(detail?.items.some((item) => item.status === "paused") ?? false);
-  let hasRunningItems = $derived(runningItems > 0);
   let hasFailedItems = $derived(detail?.items.some((item) => ["failed", "cancelled", "interrupted"].includes(item.status)) ?? false);
 
   async function retryItem(itemId: number) {
     if (!selectedId) return;
+    const item = detail?.items.find((candidate) => candidate.id === itemId);
+    if (!item?.run_id) {
+      error = "该条目没有可重试的原任务记录。";
+      return;
+    }
+    retryingItemId = itemId;
     try {
-      await engineCall("collection.remove_items", { id: selectedId, item_ids: [itemId] });
-      await engineCall("collection.add_items", { id: selectedId, items: [detail?.items.find((item) => item.id === itemId)?.input ?? ""] });
+      await engineCall("process.retry", { job_id: item.run_id });
       await loadCollections(); await selectCollection(selectedId, true);
     } catch (e) { error = `重试失败：${e}`; }
+    finally { retryingItemId = null; }
   }
 
-  async function batchProcess() {
+  async function batchProcess(scope: "pending" | "failed") {
     if (!selectedId) return;
-    processing = true; batchJobId = null; batchOutputDir = null; batchProgress = "正在提交批量处理…";
+    const count = scope === "pending" ? pendingItems : failedItems;
+    if (count === 0) return;
+    const prompt = scope === "pending"
+      ? `确定继续处理 ${count} 个未开始条目吗？已完成和失败条目都会跳过。`
+      : `确定重试 ${count} 个失败、取消或中断条目吗？已完成条目不会重新处理。`;
+    if (!window.confirm(prompt)) return;
+    processingScope = scope; batchJobId = null; batchOutputDir = null;
+    batchProgress = scope === "pending" ? "正在提交未处理条目…" : "正在提交失败项重试…";
     try {
-      const result = await engineCall<{ batch_job_id: string; count?: number; output_dir?: string }>("collection.batch_process", { id: selectedId, opts: { max_concurrency: 1, compile_mode: "precision" } });
+      const result = await engineCall<{ batch_job_id: string; count?: number; output_dir?: string }>("collection.batch_process", { id: selectedId, scope, opts: { max_concurrency: 1, compile_mode: "precision" } });
       await loadCollections(); await selectCollection(selectedId, true);
       batchJobId = result.batch_job_id; batchOutputDir = result.output_dir || null;
-      const count = result.count ?? 0;
-      if (count > 0) {
-        batchProgress = `已提交 ${count} 个任务到处理队列，默认串行处理；最终笔记会写入合集文件夹。`;
+      const submitted = result.count ?? 0;
+      if (submitted > 0) {
+        batchProgress = scope === "pending"
+          ? `已提交 ${submitted} 个未处理条目；已完成和失败条目已跳过。`
+          : `已提交 ${submitted} 个失败项重试；已完成条目已跳过。`;
       } else {
-        batchProgress = "没有需要处理的新条目（已有进行中的任务）。";
+        batchProgress = scope === "pending" ? "没有未处理条目。" : "没有可重试的失败项。";
       }
-    } catch (e) { batchProgress = `批量处理失败：${e}`; }
-    finally { processing = false; }
+    } catch (e) { batchProgress = `${scope === "pending" ? "继续处理" : "重试失败项"}失败：${e}`; }
+    finally { processingScope = null; }
   }
 
   async function exportCollection() {
@@ -228,7 +255,19 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   }
 
   function collectionNeedsRefresh(collection: CollectionDetail | null): boolean {
-    return Boolean(collection?.items.some((item) => item.run_id && ["pending", "running", "pausing", "cancelling", "paused"].includes(item.status)));
+    return Boolean(collection?.items.some((item) => item.run_id != null && ["pending", "running", "pausing", "cancelling", "paused"].includes(item.status)));
+  }
+
+  async function refreshActiveCollection() {
+    const id = selectedId;
+    if (collectionPollInFlight || id === null || !collectionNeedsRefresh(detail)) return;
+    collectionPollInFlight = true;
+    try {
+      await loadCollections(true);
+      if (selectedId === id) await selectCollection(id, true);
+    } finally {
+      collectionPollInFlight = false;
+    }
   }
 
   function fileName(path: string) { return path.split(/[\\/]/).pop() || path; }
@@ -236,10 +275,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
 
   onMount(() => {
     const timer = window.setInterval(() => {
-      if (selectedId && collectionNeedsRefresh(detail)) {
-        loadCollections();
-        selectCollection(selectedId, true);
-      }
+      void refreshActiveCollection();
     }, 1500);
     return () => window.clearInterval(timer);
   });
@@ -289,7 +325,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
             <button class="collection-item" class:selected={selectedId === collection.id} onclick={() => selectCollection(collection.id)}>
               <span class="collection-folder"><Icon name="folder" size={17} /></span>
               <span class="collection-copy"><strong>{collection.name}</strong><small>{collection.item_count} 个条目</small></span>
-              <StatusPill status={collection.status} label={statusLabel(collection.status)} />
+              <span class="collection-status"><StatusPill status={collection.status} label={statusLabel(collection.status)} /></span>
             </button>
           {/each}
         {/if}
@@ -304,14 +340,18 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
         <header class="detail-header">
           <div class="detail-title-wrap">
             <div class="detail-folder"><Icon name="folder-open" size={22} /></div>
-            <div><span>COLLECTION #{detail.id}</span><h2>{detail.name}</h2><p>{detail.item_count} 个媒体条目 · 成功 {completedItems} · 失败/取消 {failedItems} · 暂停 {pausedItems}</p></div>
+            <div><span>COLLECTION #{detail.id}</span><h2>{detail.name}</h2><p>{detail.item_count} 个媒体条目 · 成功 {completedItems} · 待处理 {pendingItems} · 失败/取消 {failedItems} · 暂停 {pausedItems}</p></div>
           </div>
           <div class="detail-actions">
             <button class="btn btn-secondary btn-sm" onclick={() => showAddItems = true}><Icon name="plus" size={14} />添加条目</button>
             <button class="btn btn-secondary btn-sm" onclick={exportCollection}><Icon name="download" size={14} />导出</button>
             <span class="batch-mode-label"><Icon name="cloud" size={13} />云端精确编译</span>
-            <button class="btn btn-primary btn-sm" onclick={batchProcess} disabled={processing || stoppingAll || detail.items.length === 0}>
-              <Icon name="play" size={14} />{processing ? "提交中" : "批量处理"}</button>
+            <button class="btn btn-primary btn-sm" onclick={() => batchProcess("pending")} disabled={processingScope !== null || stoppingAll || pendingItems === 0} title="只处理从未开始的条目，跳过已完成和失败项">
+              <Icon name="play" size={14} />{processingScope === "pending" ? "提交中" : `继续处理 ${pendingItems}`}</button>
+            {#if hasFailedItems}
+              <button class="btn btn-secondary btn-sm retry-batch" onclick={() => batchProcess("failed")} disabled={processingScope !== null || stoppingAll} title="只重试失败、取消或中断的条目">
+                <Icon name="rotate" size={14} />{processingScope === "failed" ? "提交中" : `重试失败项 ${failedItems}`}</button>
+            {/if}
             {#if hasPausedItems}
               <button class="btn btn-secondary btn-sm" onclick={resumeAll} disabled={stoppingAll}><Icon name="play" size={14} />恢复全部</button>
             {/if}
@@ -326,7 +366,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
         <div class="detail-progress-strip">
           <div><span>处理进度</span><strong>{workProgress}%</strong></div>
           <div class="progress-track"><div class="progress-bar" style={`width:${workProgress}%`}></div></div>
-          <div class="progress-breakdown"><span>成功 {completedItems}/{detail.item_count}</span>{#if runningItems}<span>进行中 {runningItems}</span>{/if}{#if pausedItems}<span>暂停 {pausedItems}</span>{/if}{#if failedItems}<span>失败/取消 {failedItems}</span>{/if}</div>
+          <div class="progress-breakdown"><span>成功 {completedItems}/{detail.item_count}</span>{#if pendingItems}<span>待处理 {pendingItems}</span>{/if}{#if runningItems}<span>进行中 {runningItems}</span>{/if}{#if pausedItems}<span>暂停 {pausedItems}</span>{/if}{#if failedItems}<span>失败/取消 {failedItems}</span>{/if}</div>
         </div>
 
         {#if batchProgress}
@@ -367,8 +407,8 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
                     </button>
                   {/if}
                   {#if ["failed", "cancelled", "interrupted"].includes(item.status)}
-                    <button class="link-btn retry-btn" onclick={() => retryItem(item.id)} title="重试此条目">
-                      <Icon name="refresh" size={13} />重试
+                    <button class="link-btn retry-btn" onclick={() => retryItem(item.id)} disabled={retryingItemId === item.id} title="按原任务参数重试此条目">
+                      <Icon name="refresh" size={13} />{retryingItemId === item.id ? "提交中" : "按原参数重试"}
                     </button>
                   {/if}
                   <button class="icon-btn remove-item" onclick={() => removeItem(item.id)} title="从合集中移除"><Icon name="trash" size={14} /></button>
@@ -435,7 +475,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .metric-icon.items { color: var(--info-color); background: var(--info-soft); }
   .metric-icon.batch { color: var(--success-color); background: var(--success-soft); }
   .metric div { display: flex; flex-direction: column; }
-  .metric strong { font-size: 23px; line-height: 1.05; }
+  .metric strong { font-size: 23px; line-height: 1.05; font-variant-numeric: tabular-nums; }
   .metric small { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
   .collection-alert { margin-bottom: 14px; }
   .collection-alert span { flex: 1; }
@@ -449,7 +489,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; color: var(--text-tertiary); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
   .sidebar-label em { font-style: normal; }
   .collection-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 7px; }
-  .collection-item { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; margin-bottom: 3px; padding: 9px; border: 1px solid transparent; border-radius: 11px; color: var(--text-primary); background: transparent; cursor: pointer; text-align: left; transition: background .14s, border-color .14s; }
+  .collection-item { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; min-height: 44px; margin-bottom: 3px; padding: 9px; border: 1px solid transparent; border-radius: 11px; color: var(--text-primary); background: transparent; cursor: pointer; text-align: left; transition: background .14s, border-color .14s; }
   .collection-item:hover { background: var(--bg-hover); }
   .collection-item.selected { border-color: color-mix(in srgb, var(--accent-color) 22%, var(--border-color)); background: var(--accent-faint); box-shadow: inset 3px 0 0 var(--accent-color); }
   .collection-folder { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); }
@@ -457,7 +497,8 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .collection-copy { display: flex; min-width: 0; flex-direction: column; }
   .collection-copy strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
   .collection-copy small { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
-  .new-collection-inline { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 10px 12px 13px; min-height: 34px; border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; }
+  .collection-status { min-width: 0; }
+  .new-collection-inline { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 10px 12px 13px; min-height: 40px; border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 13px; font-weight: 650; }
   .new-collection-inline:hover { color: var(--accent-color); border-color: var(--accent-color); background: var(--accent-faint); }
   .side-loading { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 13px; }
   .loading-ring { width: 27px; height: 27px; margin-bottom: 9px; border: 3px solid var(--bg-progress); border-top-color: var(--accent-color); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -472,14 +513,17 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .detail-title-wrap span { color: var(--accent-color); font-size: 11px; font-weight: 800; letter-spacing: .11em; }
   .detail-title-wrap h2 { margin-top: 2px; overflow: hidden; font-size: 21px; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
   .detail-title-wrap p { margin-top: 3px; color: var(--text-secondary); font-size: 13px; }
-  .detail-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+  .detail-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; flex: 0 1 auto; }
+  .detail-actions .btn { min-height: 40px; white-space: nowrap; }
+  .detail-actions .icon-btn { width: 40px; height: 40px; flex: 0 0 40px; }
   .batch-mode-label { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 640; }
+  .retry-batch { color: var(--warning-color); }
   .retry-btn { color: var(--warning-color) !important; }
   .danger-button { color: var(--danger-color); }
   .detail-progress-strip { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px 14px; padding: 12px 22px; border-bottom: 1px solid var(--border-color); background: var(--bg-subtle); }
   .detail-progress-strip > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .detail-progress-strip span { color: var(--text-secondary); font-size: 12px; }
-  .detail-progress-strip strong { font-size: 15px; }
+  .detail-progress-strip strong { font-size: 15px; font-variant-numeric: tabular-nums; }
   .detail-progress-strip .progress-track { height: 6px; }
   .progress-breakdown { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; color: var(--text-tertiary); font-size: 12px; }
   .progress-breakdown span { margin: 0; }
@@ -491,8 +535,8 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .items-toolbar span { margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
   .item-counter { margin: 0 !important; padding: 4px 8px; border-radius: 99px; background: var(--bg-muted); font-size: 12px !important; font-weight: 650; }
   .items-list { padding: 0 22px 22px; }
-  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 120px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
-  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 120px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
+  .items-head { display: grid; grid-template-columns: minmax(220px,1fr) minmax(180px,.65fr) 210px; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .media-row { display: grid; grid-template-columns: 28px 34px minmax(160px,1fr) minmax(170px,.65fr) 210px; align-items: center; gap: 9px; min-height: 58px; padding: 8px 3px; border-bottom: 1px solid var(--border-color); }
   .media-row:last-child { border-bottom: 0; }
   .row-index { color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
   .row-media-icon { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 10px; color: var(--accent-color); background: var(--accent-soft); }
@@ -501,12 +545,12 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .row-copy small { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .row-status { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
   .row-status > span:first-child { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
-  .row-status em { color: var(--text-secondary); font-size: 12px; font-style: normal; }
+  .row-status em { color: var(--text-secondary); font-size: 12px; font-style: normal; font-variant-numeric: tabular-nums; }
   .row-status .progress-track { height: 4px; }
   .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
-  .link-btn { display: inline-flex; align-items: center; gap: 4px; border: 0; color: var(--accent-color); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; padding: 4px 8px; border-radius: 6px; }
+  .link-btn { display: inline-flex; align-items: center; gap: 4px; min-height: 40px; border: 0; color: var(--accent-color); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; padding: 4px 8px; border-radius: 6px; }
   .link-btn:hover { background: var(--accent-soft); }
-  .remove-item { width: 31px; height: 31px; color: var(--text-tertiary); }
+  .remove-item { width: 40px; height: 40px; color: var(--text-tertiary); }
   .remove-item:hover { color: var(--danger-color); background: var(--danger-soft); }
   .detail-loading, .collection-welcome { min-height: 560px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
   .detail-loading h2, .collection-welcome h2 { font-size: 20px; }
@@ -551,7 +595,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
   .collection-sidebar { padding: 14px 11px; }
   .collection-search input { min-height: 38px; font-size: 12px; }
   .sidebar-label { padding: 12px 9px 8px; font-size: 10px; }
-  .collection-item { grid-template-columns: 38px minmax(0,1fr); gap: 10px; padding: 10px; }
+  .collection-item { grid-template-columns: 38px minmax(0,1fr) auto; gap: 10px; padding: 10px; }
   .collection-folder { width: 36px; height: 36px; }
   .collection-copy strong { font-size: 13px; }
   .collection-copy small { font-size: 10px; }
@@ -578,11 +622,11 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
     .collection-list { max-height: 260px; }
     .detail-header { flex-direction: column; align-items: flex-start; gap: 10px; }
     .detail-actions { width: 100%; flex-wrap: wrap; }
-    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 110px; }
-    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 110px; gap: 5px; padding: 7px 2px; }
+    .items-head { grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) 190px; }
+    .media-row { grid-template-columns: 22px 28px minmax(100px, 1fr) minmax(100px, .65fr) 190px; gap: 5px; padding: 7px 2px; }
     .detail-progress-strip { grid-template-columns: 85px 1fr; }
     .collection-metrics { grid-template-columns: repeat(3, 1fr); }
-    .detail-actions .btn { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+    .detail-actions .btn { min-height: 40px; padding: 7px 10px; font-size: 11px; }
   }
 
   @media (max-width: 600px) {
