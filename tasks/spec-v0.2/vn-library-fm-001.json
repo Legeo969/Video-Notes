@@ -1,0 +1,90 @@
+{
+  "task_id": "VN-LIBFM-001",
+  "title": "File-manager style notes library (folder tree, multi-select, drag-drop)",
+  "phase": "v0.2-implementation",
+  "priority": "P1",
+  "spec_refs": [
+    "SPEC-COMPILER-001",
+    "SPEC-COMPILER-005",
+    "SPEC-ARCH-025"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src-tauri/src/native_engine/tests.rs",
+    "desktop/src/pages/Notes.svelte",
+    "desktop/src/pages/Tasks.svelte",
+    "desktop/src/lib/components/Icon.svelte",
+    "desktop/src/lib/components/notes/**",
+    "desktop/src/lib/types/index.ts",
+    "desktop/src/lib/stores/jobs.ts",
+    "desktop/src/lib/api/index.ts",
+    "desktop/src/lib/api/dev/mockTauri.ts",
+    "tasks/spec-v0.2/vn-library-fm-001.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-LIBFM-001.md"
+  ],
+  "forbidden_changes": [
+    "Modifying compile output path or filename scheme",
+    "Removing or weakening existing notes.list, notes.search, notes.get, notes.update, notes.delete, notes.open, notes.reveal, notes.answer, notes.video_playback commands",
+    "Allowing notes.tree, notes.create_folder, notes.move, notes.rename_folder, notes.delete_folder, notes.batch_move, or notes.batch_delete to operate outside effective_note_output_dir or the legacy output_dir",
+    "Allowing target_folder to contain .. segments, absolute Windows drive prefixes, or symlinks pointing outside the export root",
+    "Deleting or renaming the root export folder",
+    "Removing or modifying localStorage cache keys vn-qa-cache and vn-graph-cache in non-additive ways",
+    "Modifying the path-derived note_id hash function (notes must remain path-stable for cache invalidation to be correct)",
+    "Default-enabling compiler_v3",
+    "Persisting expand/collapse state across navigation (per user requirement)",
+    "Touching files outside allowed_paths"
+  ],
+  "deliverables": [
+    "Backend command notes.tree returning sorted folder list and notes with folder paths",
+    "Backend command notes.create_folder with parent+name validation",
+    "Backend command notes.move with asset directory follow and job.note_id update",
+    "Backend command notes.rename_folder that updates every descendant note path",
+    "Backend command notes.delete_folder with mandatory confirm flag and asset cleanup",
+    "Backend commands notes.batch_move and notes.batch_delete with rollback semantics",
+    "Private validate_path_within_roots helper used by every path-mutating command",
+    "Frontend tree rendering with expandable folders and notes",
+    "Four-button toolbar: edit, new folder, sort, collapse-all",
+    "Sort menu supporting created_at, modified_at, title, path with asc/desc",
+    "Multi-select mode toggled by edit button with checkbox column",
+    "Batch bar with move-to and delete-selected actions",
+    "HTML5 drag-and-drop between folders with cache invalidation on drop",
+    "Frontend invalidateNoteCaches helper that drops vn-qa-cache and vn-graph-cache entries by note id",
+    "Rust unit tests covering every new command (one test minimum per command)",
+    "Task completion report with manual smoke results"
+  ],
+  "acceptance_tests": [
+    "notes.tree returns folders sorted case-insensitive by name and notes with folder field set to parent relative path",
+    "notes.create_folder rejects parent paths containing ..",
+    "notes.create_folder rejects empty names and existing names",
+    "notes.move rejects same-path moves with a structured error",
+    "notes.move relocates the .md file and any matching assets/<stem>/ directory",
+    "notes.move updates job.note_id for any persisted job pointing at the moved note",
+    "notes.move re-registers the new parent directory with the asset protocol scope",
+    "notes.rename_folder updates every descendant note path and corresponding job ids",
+    "notes.delete_folder refuses to operate without confirm: true",
+    "notes.delete_folder refuses to delete the root export directory",
+    "notes.batch_move rolls back already-moved notes if a later note fails",
+    "notes.batch_delete sets job.note_id and job.output_path to None for deleted notes",
+    "Frontend tree renders nested folders up to depth 8 with default root expanded",
+    "Clicking a folder toggles expand; clicking a note in normal mode opens it",
+    "Sort menu reorders notes within each folder using the chosen field and direction with stable id tie-breaker",
+    "Multi-select mode shows checkbox column; selection persists across folder toggles",
+    "Batch bar count chip matches the Set size and clears after action or cancel",
+    "Drag-and-drop moves a note to a different folder and shows a success toast",
+    "Drag-and-drop onto the same folder surfaces a toast instead of silently succeeding",
+    "After move, vn-qa-cache and vn-graph-cache entries for the old note id are removed",
+    "No regression on existing notes_rpc_scans_updates_and_deletes_markdown test"
+  ],
+  "security_requirements": [
+    "Every path argument from the frontend must be canonicalized and validated to live under effective_note_output_dir or the legacy output_dir before any filesystem mutation",
+    "Rejections of .., absolute Windows drive prefixes, and symlinks pointing outside the export root must return structured errors before any IO",
+    "delete_folder and batch_delete require an explicit confirm flag and refuse to operate on the root export directory",
+    "notes.move and notes.rename_folder must update job.note_id atomically with the filesystem move under the self.jobs lock",
+    "Asset protocol scope must be re-registered for the new parent directory after every move so embedded images continue to render"
+  ],
+  "dependencies": [
+    "VN-IMPL-001"
+  ],
+  "status": "ready"
+}

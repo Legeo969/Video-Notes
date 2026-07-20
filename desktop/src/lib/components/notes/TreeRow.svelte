@@ -132,7 +132,8 @@
 
   function countInFolder(folderPath: string): number {
     let n = 0;
-    const prefix = folderPath === '' ? '' : folderPath + '/';
+    // Use backslash to match `noteDirectory` in Notes.svelte (canonical Windows-style separator).
+    const prefix = folderPath === '' ? '' : folderPath + '\\';
     for (const note of notes) {
       const f = note.folder ?? '';
       if (f === folderPath) n += 1;

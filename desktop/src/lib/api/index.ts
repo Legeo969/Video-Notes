@@ -6,17 +6,34 @@
  */
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke as mockInvoke, listen as mockListen, isTauri } from "./mockTauri";
 
-const useMock = !isTauri();
+function isTauriEnv(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+// Dev-only mock module. The dynamic import lives behind `import.meta.env.DEV`,
+// which Vite replaces with the literal `false` at production build time — the
+// dev mock (including its `setInterval` side effect) is therefore excluded
+// from the production bundle.
+async function loadDevMock(): Promise<typeof import("./dev/mockTauri") | null> {
+  if (import.meta.env.DEV && !isTauriEnv()) {
+    return import("./dev/mockTauri");
+  }
+  return null;
+}
+
+let mockModulePromise: Promise<typeof import("./dev/mockTauri") | null> | null = null;
+function getMockModule() {
+  if (!mockModulePromise) mockModulePromise = loadDevMock();
+  return mockModulePromise;
+}
 
 export async function engineCall<T = unknown>(
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
-  if (useMock) {
-    return mockInvoke<T>(method, params);
-  }
+  const mock = await getMockModule();
+  if (mock) return mock.invoke<T>(method, params);
   return tauriInvoke<T>("engine_call", { method, params });
 }
 
@@ -36,9 +53,8 @@ export async function onEngineEvent<T>(
   eventName: string,
   handler: (payload: T) => void
 ): Promise<UnlistenFn> {
-  if (useMock) {
-    return mockListen<T>(eventName, handler);
-  }
+  const mock = await getMockModule();
+  if (mock) return mock.listen<T>(eventName, handler);
   return tauriListen<T>(toTauriEventName(eventName), (event) => handler(event.payload));
 }
 
@@ -49,14 +65,13 @@ export interface EngineStatus {
 }
 
 export async function getEngineStatus(): Promise<EngineStatus> {
-  if (useMock) {
-    return { running: true, error: null, startup_log: "" };
-  }
+  const mock = await getMockModule();
+  if (mock) return { running: true, error: null, startup_log: "" };
   return tauriInvoke<EngineStatus>("get_engine_status");
 }
 
 export function runningInTauri(): boolean {
-  return !useMock;
+  return isTauriEnv();
 }
 
 // ── v0.2 Bundle store ──────────────────────────────────────────

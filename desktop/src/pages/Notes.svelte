@@ -706,18 +706,23 @@
     }
   });
 
-  // Close sort menu on outside click.
+  // Close sort menu on outside click. Handler is extracted to a stable
+  // function so the effect re-runs deterministically when `sortMenuOpen`
+  // toggles without re-binding a new closure each run; multiple future menus
+  // can share this pattern safely.
+  function handleSortMenuOutsideClick(e: MouseEvent) {
+    if (!sortMenuOpen) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest('.sort-menu')) return;
+    if (target.closest('.sort-btn')) return;
+    sortMenuOpen = false;
+  }
+
   $effect(() => {
     if (!sortMenuOpen) return;
-    function handler(e: MouseEvent) {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest('.sort-menu')) return;
-      if (target.closest('.sort-btn')) return;
-      sortMenuOpen = false;
-    }
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('mousedown', handleSortMenuOutsideClick);
+    return () => document.removeEventListener('mousedown', handleSortMenuOutsideClick);
   });
 
   onDestroy(() => {
@@ -730,7 +735,7 @@
   <aside class="library-panel">
     <div class="library-header">
       <div class="library-title"><div class="library-icon"><Icon name="note" size={18} /></div><div><span>KNOWLEDGE LIBRARY</span><h1>笔记库</h1></div></div>
-      <div class="note-count"><strong>{notes.length}</strong><span>篇笔记</span></div>
+      <div class="note-count"><strong>{totalNoteCount}</strong><span>篇笔记</span></div>
     </div>
 
     <div class="library-tools">
