@@ -34,6 +34,12 @@
     saveGraphCache(map);
   }
 
+  /** Drop the cached knowledge graph for a single note id (used after move/delete). */
+  function clearGraphCache(id: number) {
+    const map = loadGraphCache();
+    if (map.delete(id)) saveGraphCache(map);
+  }
+
   /** Exposed for Settings page — returns cached graph count and estimated bytes. */
   (window as any).__graphCacheInfo = () => {
     const map = loadGraphCache();
@@ -319,6 +325,142 @@
   function toggleMultiSelect() {
     multiSelect = !multiSelect;
     if (!multiSelect) selectedIds = new Set();
+  }
+
+  /**
+   * Drop every frontend cache entry tied to a note id. Call after any
+   * operation that changes a note's path (so its path-derived id may
+   * change or its entry may be removed entirely).
+   */
+  function invalidateNoteCaches(oldId: number) {
+    clearQACache(oldId);
+    clearGraphCache(oldId);
+  }
+
+  function toggleCheck(id: number) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedIds = next;
+  }
+
+  function toggleSelectAllVisible(visibleIds: number[]) {
+    if (visibleIds.length === 0) return;
+    const allSelected = visibleIds.every((id) => selectedIds.has(id));
+    const next = new Set(selectedIds);
+    if (allSelected) {
+      for (const id of visibleIds) next.delete(id);
+    } else {
+      for (const id of visibleIds) next.add(id);
+    }
+    selectedIds = next;
+  }
+
+  function cancelSelection() {
+    selectedIds = new Set();
+    multiSelect = false;
+  }
+
+  let batchPending = $state(false);
+  let moveMenuOpen = $state(false);
+  let moveMenuAnchor: HTMLElement | null = $state(null);
+
+  function toggleMoveMenu() {
+    moveMenuOpen = !moveMenuOpen;
+  }
+
+  function handleMoveMenuOutsideClick(e: MouseEvent) {
+    if (!moveMenuOpen) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest('.move-menu')) return;
+    if (target.closest('.move-trigger')) return;
+    moveMenuOpen = false;
+  }
+
+  $effect(() => {
+    if (!moveMenuOpen) return;
+    document.addEventListener('mousedown', handleMoveMenuOutsideClick);
+    return () => document.removeEventListener('mousedown', handleMoveMenuOutsideClick);
+  });
+
+  /** Folders available as move targets — root first, then sorted by depth, then case-insensitive name. */
+  let moveTargetFolders = $derived.by(() => {
+    if (!tree) return [{ path: "", name: "（根目录）" } as { path: string; name: string }];
+    const out = [{ path: "", name: "（根目录）" }];
+    const sorted = [...tree.folders].sort((a, b) => {
+      const ad = a.path.split(/[\\/]/).length;
+      const bd = b.path.split(/[\\/]/).length;
+      if (ad !== bd) return ad - bd;
+      return (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' });
+    });
+    for (const f of sorted) out.push(f);
+    return out;
+  });
+
+  async function batchMoveSelected(targetFolder: string) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || batchPending) return;
+    batchPending = true;
+    moveMenuOpen = false;
+    error = null;
+    try {
+      const result = await engineCall<{
+        moved?: Array<{ id: number; path: string }>;
+        failed?: Array<{ id: number; error: string }>;
+      }>("notes.batch_move", { ids, target_folder: targetFolder });
+      const failedCount = result.failed?.length ?? 0;
+      for (const id of ids) invalidateNoteCaches(id);
+      if (failedCount > 0) {
+        error = `${failedCount} 篇笔记未能移动到「${targetFolder || '根目录'}」`;
+      } else {
+        showSuccess(`已移动 ${ids.length} 篇笔记`);
+      }
+      selectedIds = new Set();
+      multiSelect = false;
+      await loadTree();
+      await loadNotes();
+    } catch (e) {
+      error = `批量移动失败：${String(e)}`;
+    } finally {
+      batchPending = false;
+    }
+  }
+
+  async function batchDeleteSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || batchPending) return;
+    if (!confirm(`确定一次性删除 ${ids.length} 篇笔记吗？关联资源目录也会一并删除，此操作不可恢复。`)) return;
+    batchPending = true;
+    error = null;
+    try {
+      const result = await engineCall<{
+        deleted_notes?: Array<{ id: number; path: string }>;
+        failed?: Array<{ id: number; error: string }>;
+      }>("notes.batch_delete", { ids, confirm: true });
+      const failedCount = result.failed?.length ?? 0;
+      const deletedIds = new Set((result.deleted_notes ?? []).map((item) => item.id));
+      for (const id of ids) {
+        if (deletedIds.has(id)) invalidateNoteCaches(id);
+      }
+      if (failedCount > 0) {
+        error = `${failedCount} 篇笔记未能删除`;
+      } else {
+        showSuccess(`已删除 ${ids.length} 篇笔记`);
+      }
+      selectedIds = new Set();
+      multiSelect = false;
+      if (selectedNoteId !== null && deletedIds.has(selectedNoteId)) {
+        selectedNoteId = null;
+        selectedNote = null;
+      }
+      await loadTree();
+      await loadNotes();
+    } catch (e) {
+      error = `批量删除失败：${String(e)}`;
+    } finally {
+      batchPending = false;
+    }
   }
 
   function startCreateFolder() {
@@ -832,9 +974,64 @@
           {multiSelect}
           onSelectNote={selectNoteFromTree}
           onToggleFolder={toggleFolder}
+          onToggleCheck={toggleCheck}
+          onToggleSelectAll={toggleSelectAllVisible}
         />
       {/if}
     </div>
+
+    {#if multiSelect && selectedIds.size > 0}
+      <div class="batch-bar" role="region" aria-label="批量操作">
+        <span class="batch-count"><Icon name="check" size={13} />已选 {selectedIds.size} 个</span>
+        <div class="move-wrap">
+          <button
+            class="action-btn move-trigger"
+            onclick={toggleMoveMenu}
+            disabled={batchPending}
+            title="将所选笔记移动到…"
+            aria-haspopup="menu"
+            aria-expanded={moveMenuOpen}
+          >
+            <Icon name="folder" size={13} />移动到…
+          </button>
+          {#if moveMenuOpen}
+            <div class="move-menu" role="menu">
+              {#if moveTargetFolders.length === 0}
+                <p class="move-menu-empty">暂无可用文件夹</p>
+              {:else}
+                {#each moveTargetFolders as folder (folder.path)}
+                  <button
+                    class="move-menu-item"
+                    class:root={folder.path === ''}
+                    onclick={() => batchMoveSelected(folder.path)}
+                    role="menuitem"
+                  >
+                    <Icon name={folder.path === '' ? 'folder' : 'folder-open'} size={13} />
+                    <span>{folder.name}</span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          {/if}
+        </div>
+        <button
+          class="action-btn danger-action"
+          onclick={batchDeleteSelected}
+          disabled={batchPending}
+          title="删除所选笔记"
+        >
+          <Icon name="trash" size={13} />删除所选
+        </button>
+        <button
+          class="action-btn"
+          onclick={cancelSelection}
+          disabled={batchPending}
+          title="退出多选模式"
+        >
+          取消选择
+        </button>
+      </div>
+    {/if}
 
     <div class="library-footer"><Icon name="shield" size={13} /><span>笔记文件保存在本地，内容不会上传到第三方存储。</span></div>
   </aside>
@@ -1055,6 +1252,84 @@
   .loading-ring.large { width: 36px; height: 36px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .library-footer { display: flex; align-items: flex-start; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border-color); color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+
+  .batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border-color);
+    background: var(--accent-faint);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .batch-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 99px;
+    background: var(--accent-color);
+    color: #fff;
+    font-weight: 700;
+    font-size: 11px;
+  }
+  .batch-bar .action-btn { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+  .batch-bar .action-btn.danger-action {
+    color: var(--danger-color);
+    border-color: color-mix(in srgb, var(--danger-color) 28%, var(--border-color));
+    background: var(--danger-soft);
+  }
+  .batch-bar .action-btn.danger-action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger-color) 18%, var(--bg-card));
+  }
+
+  .move-wrap { position: relative; display: inline-flex; }
+  .move-menu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 35;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 200px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    box-shadow: var(--shadow-md);
+  }
+  .move-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 6px 9px;
+    border: 0;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+  }
+  .move-menu-item:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .move-menu-item.root {
+    color: var(--accent-color);
+    font-weight: 700;
+  }
+  .move-menu-empty {
+    margin: 6px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
 
   .reader-panel { display: flex; min-width: 0; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
   .reader-header { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 8px; min-height: 56px; padding: 10px 18px; border-bottom: 1px solid var(--border-color); background: var(--bg-appbar); }

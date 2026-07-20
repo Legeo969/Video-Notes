@@ -27,6 +27,8 @@
     multiSelect = false,
     onSelectNote,
     onToggleFolder,
+    onToggleCheck,
+    onToggleSelectAll,
   }: {
     folders?: Folder[];
     notes?: TreeNote[];
@@ -40,6 +42,8 @@
     multiSelect?: boolean;
     onSelectNote?: (id: number) => void;
     onToggleFolder?: (path: string) => void;
+    onToggleCheck?: (id: number) => void;
+    onToggleSelectAll?: (ids: number[]) => void;
   } = $props();
 
   function compareCi(a: string, b: string): number {
@@ -91,6 +95,21 @@
   let childFolders = $derived(directChildFolders(folders, parentPath));
   let notesHere = $derived(notesInFolder(notes, parentPath));
   let isOpen = $derived(expanded.has(parentPath));
+
+  // Collect every note id reachable beneath `parentPath`, including descendants.
+  // Used by the root-level "select all visible" checkbox in multi-select mode.
+  function collectReachableIds(folderPath: string): number[] {
+    const direct = notes.filter((n) => (n.folder ?? '') === folderPath).map((n) => n.id);
+    const childFolderPaths = directChildFolders(folders, folderPath).map((f) => f.path);
+    for (const childPath of childFolderPaths) {
+      for (const id of collectReachableIds(childPath)) direct.push(id);
+    }
+    return direct;
+  }
+  let reachableIds = $derived(collectReachableIds(parentPath));
+  let allReachableSelected = $derived(
+    multiSelect && reachableIds.length > 0 && reachableIds.every((id) => selectedIds.has(id))
+  );
 
   function basename(path: string): string {
     return path.split(/[\\/]/).pop() ?? path;
@@ -144,6 +163,20 @@
 </script>
 
 {#if isOpen}
+  {#if multiSelect && parentPath === ''}
+    <div class="tree-header" style="--depth: 0">
+      <label class="tree-check" title="全选可见笔记">
+        <input
+          type="checkbox"
+          checked={allReachableSelected}
+          onchange={() => onToggleSelectAll?.(reachableIds)}
+          aria-label="全选可见笔记"
+        />
+      </label>
+      <span class="tree-header-label">全选可见笔记（{reachableIds.length}）</span>
+    </div>
+  {/if}
+
   {#each childFolders as folder (folder.path)}
     <div class="tree-folder" style="--depth: {depth}">
       <button
@@ -178,6 +211,8 @@
           {multiSelect}
           {onSelectNote}
           {onToggleFolder}
+          {onToggleCheck}
+          {onToggleSelectAll}
         />
       {/if}
     </div>
@@ -187,10 +222,28 @@
     <button
       type="button"
       class="tree-note"
+      class:with-check={multiSelect}
       class:selected={selectedId === note.id}
+      class:checked={multiSelect && selectedIds.has(note.id)}
       style="--depth: {depth + 1}"
       onclick={() => handleNoteClick(note.id)}
     >
+      {#if multiSelect}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <label
+          class="tree-check"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => e.stopPropagation()}
+          title="选择"
+          aria-label={`选择 ${note.title}`}
+        >
+          <input
+            type="checkbox"
+            checked={selectedIds.has(note.id)}
+            onchange={() => onToggleCheck?.(note.id)}
+          />
+        </label>
+      {/if}
       <span class="tree-note-icon"><Icon name="file-text" size={14} /></span>
       <span class="tree-note-copy">
         <strong>{note.title}</strong>
@@ -276,6 +329,12 @@
     text-align: left;
     transition: background 0.14s, border-color 0.14s;
   }
+  .tree-note.with-check {
+    grid-template-columns: 22px 22px minmax(0, 1fr) auto;
+  }
+  .tree-note.checked {
+    background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-card));
+  }
   .tree-note:hover {
     background: var(--bg-hover);
   }
@@ -328,5 +387,37 @@
   .tree-note-date {
     color: var(--text-tertiary);
     font-size: 10px;
+  }
+
+  .tree-check {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+  }
+  .tree-check input {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--accent-color);
+  }
+
+  .tree-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 6px 8px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    background: var(--bg-subtle);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .tree-header-label {
+    flex: 1;
+    min-width: 0;
   }
 </style>
