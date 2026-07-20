@@ -237,11 +237,9 @@ fn build_video_request_body(
     user_text: &str,
 ) -> Result<Value, String> {
     let video_part = if config.provider_kind == ProviderKind::Anthropic {
-        // Anthropic-style base64 source. The cap is measured after JSON
-        // serialisation below; this branch keeps the data URL short enough
-        // to fit comfortably under the per-provider limit during preview
-        // checks but the authoritative cap lives in
+        // Anthropic-style base64 source. The 64 MB cap is enforced below via
         // validate_video_payload_size.
+        validate_video_payload_size(config.provider_kind, video_b64.len())?;
         serde_json::json!({
             "type": "video",
             "source": {
@@ -557,25 +555,23 @@ mod tests {
 
     #[test]
     fn compile_video_request_url_uses_messages_endpoint_for_anthropic() {
-        let mut config = CompileClientConfig::new(
+        let config = CompileClientConfig::new(
             "https://api.minimax.io/anthropic/v1/".to_string(),
             "test-key".to_string(),
             "MiniMax-M3".to_string(),
             ProviderKind::Anthropic,
         );
-        config.accepts_video = true;
         assert_eq!(
             compile_video_request_url(&config),
             "https://api.minimax.io/anthropic/v1/messages"
         );
 
-        let mut compat = CompileClientConfig::new(
+        let compat = CompileClientConfig::new(
             "https://api.xiaomimimo.com/v1".to_string(),
             "test-key".to_string(),
             "mimo-v2.5".to_string(),
             ProviderKind::XiaomiMiMo,
         );
-        compat.accepts_video = true;
         assert_eq!(
             compile_video_request_url(&compat),
             "https://api.xiaomimimo.com/v1/chat/completions"
