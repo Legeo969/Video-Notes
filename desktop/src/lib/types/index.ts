@@ -63,6 +63,10 @@ export interface NoteInfo {
   title: string;
   path: string;
   created_at: string;
+  /** Parent folder's relative path within the export root (`""` for root). Optional — only populated by `notes.tree`. */
+  folder?: string;
+  /** ISO timestamp from `fs::metadata().modified()`. Optional — only populated by `notes.tree`. */
+  modified_at?: string;
 }
 
 export interface NoteDetail {
