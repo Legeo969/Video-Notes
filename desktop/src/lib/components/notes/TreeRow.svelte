@@ -146,14 +146,10 @@
   }
 
   function handleNoteClick(id: number) {
-    if (multiSelect) {
-      const next = new Set(selectedIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      selectedIds = next;
-      onSelectNote?.(id);
-      return;
-    }
+    // Multi-select toggle is owned by the parent's `selectNoteFromTree` so
+    // there's exactly one source of truth for the selection Set. Calling it
+    // from here is enough — the local toggle was previously double-toggling
+    // and silently breaking row clicks in multi-select mode.
     onSelectNote?.(id);
   }
 
