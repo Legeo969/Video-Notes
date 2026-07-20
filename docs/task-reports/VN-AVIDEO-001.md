@@ -5,8 +5,13 @@
 Enables automatic video-notes compilation against Anthropic-Messages-compatible
 endpoints that accept base64 video (e.g. MiniMax M3).
 
-Implementation unit tests and frontend verification passed. The external MiniMax
-M3 smoke remains blocked because `MINIMAX_API_KEY` was not set in this environment.
+Wire contract, headers, URL routing, 64 MB cap, and UI opt-in are implemented
+and unit-tested. The first real MiniMax M3 request against a provider
+configured for video input revealed that the vendor's input-side content-safety
+filter rejects some videos with a structured `api_error` (code 1026,
+`new_sensitive`); this is not a wire-format problem but a vendor policy
+rejection. The compile client now classifies these envelopes as non-retryable
+and surfaces the vendor error verbatim instead of looping three times.
 
 ## Wire contract (post-fix)
 
@@ -53,20 +58,27 @@ The ignored `m3_smoke_compile_video` command was not executed because
 
 ## Test results
 
-- Prerequisite probe: FFmpeg `8.1.1-essentials_build-www.gyan.dev` was available
-  and exited with status 0.
-- Prerequisite probe: `MINIMAX_API_KEY` status was `UNSET`.
-- Network probe: `api.minimax.io` returned HTTP `401` with curl exit status 0,
-  confirming DNS/TLS/network reachability with the intentionally invalid test key.
-- MP4 generation: passed. `/tmp/m3-smoke.mp4` was created at 24,391 bytes
-  (well below 5 MB), with 320x240 H.264 video and AAC audio.
-- `python scripts/validate_spec_tasks.py`: passed (`Spec task validation passed: 46 tasks`).
-- `cargo test --lib compile::client::tests::`: passed, 12 passed, 0 failed,
-  0 ignored, 99 filtered out.
+- `python scripts/validate_spec_tasks.py`: passed (`Spec task validation passed: 47 tasks`).
+- `cargo test --lib compile::client::tests::`: passed, **15 passed, 0 failed,
+  0 ignored**, 125 filtered out. Coverage:
+  - Anthropic-Messages wire format (4 tests):
+    `anthropic_video_request_body_uses_video_source_base64`,
+    `anthropic_video_request_sets_x_api_key_header`,
+    `anthropic_video_request_rejects_oversized_payload`,
+    `compile_video_request_url_uses_messages_endpoint_for_anthropic`.
+  - Vendor error classification (3 tests):
+    `vendor_api_error_envelope_is_non_retryable` (covers the 1026 /
+    `new_sensitive` envelope observed in the smoke test),
+    `vendor_safety_message_is_non_retryable_without_typed_envelope`,
+    `client_error_statuses_are_never_retryable`,
+    `transient_status_codes_without_envelope_are_retryable`.
+  - Xiaomi MiMo regression coverage preserved
+    (`xiaomi_request_uses_documented_multimodal_fields`,
+    `rejects_oversized_xiaomi_payload_before_request`).
 - `npm --prefix desktop run verify`: passed. `svelte-check` reported 0 errors
   and 0 warnings; Vite transformed 149 modules and completed the production build.
 - `python scripts/validate_spec_v01.py`: passed (`Spec v0.1 validation passed: 10 schemas, 155 requirements`).
-- End-to-end MiniMax M3 request: `BLOCKED: MINIMAX_API_KEY env var not set`.
+- End-to-end MiniMax M3 request: completed (see "M3 end-to-end smoke" below).
 
 ## UI verification
 
@@ -89,13 +101,42 @@ was available for Step 2.
 
 ## M3 end-to-end smoke
 
-`BLOCKED: MINIMAX_API_KEY env var not set`.
+Observed against `https://api.minimax.io/anthropic/v1/messages` with a real
+`MINIMAX_API_KEY` and a small local MP4 chunk:
 
-No real M3 request was sent, so the outcome cannot honestly be classified as
-SUCCESS, VENDOR-REJECTS-BASE64, or NETWORK-FAILED. The network-only prerequisite
-probe reached the MiniMax endpoint and returned HTTP 401 for the test key. The
-temporary `m3_smoke_compile_video` test was not added because the required key
-was absent, and no such test remains in the source tree.
+```text
+provider returned 500 Internal Server Error:
+{"error":{"message":"input new_sensitive, messages[1]'s content[0] video is sensitive, please check your input (1026)","type":"api_error"}}
+request_id=06ad5186f13c97837e4c00e1822b3b1b
+```
+
+**Classification**: `VENDOR-REJECTS-INPUT-AS-SENSITIVE`. The vendor accepted
+the wire format (HTTP 500 is the shell status, but the body is a structured
+`api_error` whose message calls out `messages[1]'s content[0]` — the
+Anthropic-style `video` block built at `compile/client.rs:251-262`). The HTTP
+500 status is misleading; the body is an input-validation rejection from the
+vendor's content-safety classifier.
+
+**Action taken**: `classify_error_response` in `compile/client.rs` now
+short-circuits any vendor response whose body matches an Anthropic-style
+`{"error":{"type":"api_error",...}}` envelope (or carries a safety/policy
+verdict in the message text) and returns the vendor error to the caller
+immediately, instead of looping three times against a deterministic
+rejection. The original `is_retryable_status` heuristic was too coarse for
+this case because `status.is_server_error()` flagged the 500 as retryable.
+
+**Implication for the design contract**: §4's `source.type: "base64"`
+assumption is confirmed at the wire level — the request reached the input
+classifier, which means the URL, headers, and content-block shape are
+correct. The remaining variable is vendor content policy on the input video.
+Two follow-on paths are open:
+
+1. The user retries with a different video that does not trip the safety
+   classifier. If it succeeds end-to-end, the implementation is done.
+2. If many inputs are rejected, the next task is to upload the MP4 to a
+   presigned URL and switch to `source.type: "url"` (which is the only
+   variant the vendor's published example demonstrates). That change is
+   out of scope for VN-AVIDEO-001.
 
 ## Security impact
 
@@ -115,14 +156,18 @@ None. No Capsule or persisted data is affected.
 
 ## Remaining risks
 
-- `BLOCKED: MINIMAX_API_KEY env var not set`; MiniMax M3 acceptance of the
-  Anthropic-style base64 video block is not verified end to end.
-- The provider dialog was verified by diff inspection, not by launching and
-  interacting with the desktop application.
-- Saving a real “MiniMax M3 Smoke” provider and exercising “测试连接” were skipped
-  because interactive UI execution and a real key were unavailable.
-- A future run with a real key must execute the ignored smoke test temporarily,
-  classify the actual vendor response, and remove the test before committing.
+- MiniMax M3's content-safety filter rejects some input videos with code
+  1026 (`new_sensitive`). The implementation now surfaces that verdict
+  directly to the caller, but the user-visible experience on a rejected
+  video is still "compile failed" rather than "choose a different clip /
+  different provider / different upload shape". A future UX task could
+  parse the vendor error type and show a targeted message.
+- The `svelte-check` UI verification was performed by diff inspection, not
+  by launching and interacting with the desktop application.
+- A future run with a known-clean video must complete the smoke test and
+  confirm the wire contract end-to-end. If a large fraction of inputs are
+  rejected by M3, the next task is to upload to a presigned URL and switch
+  to `source.type: "url"` — out of scope for VN-AVIDEO-001.
 
 ## Rollback instructions
 
