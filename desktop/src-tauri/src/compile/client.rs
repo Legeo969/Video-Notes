@@ -295,6 +295,18 @@ fn apply_provider_auth(
         } else {
             request.header("api-key", token)
         }
+    } else if config.provider_kind == ProviderKind::Anthropic {
+        let token = config.api_key.trim();
+        let token = token
+            .strip_prefix("Bearer ")
+            .or_else(|| token.strip_prefix("bearer "))
+            .unwrap_or(token);
+        let request = if token.is_empty() {
+            request
+        } else {
+            request.header("x-api-key", token)
+        };
+        request.header("anthropic-version", "2023-06-01")
     } else {
         crate::native_engine::with_optional_bearer(request, &config.api_key)
     }
@@ -525,6 +537,38 @@ mod tests {
         .build()
         .unwrap();
         assert_eq!(request.headers()["api-key"], "test-key");
+        assert!(request.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn anthropic_video_request_sets_x_api_key_header() {
+        let mut config = CompileClientConfig::new(
+            "https://api.minimax.io/anthropic/v1".to_string(),
+            "test-key".to_string(),
+            "MiniMax-M3".to_string(),
+            ProviderKind::Anthropic,
+        );
+        config.accepts_video = true;
+        let request = apply_provider_auth(
+            reqwest::blocking::Client::new().post("https://example.test"),
+            &config,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(request.headers()["x-api-key"], "test-key");
+        assert_eq!(request.headers()["anthropic-version"], "2023-06-01");
+        assert!(request.headers().get("authorization").is_none());
+
+        // Bare key without prefix still works.
+        let mut config_no_prefix = config.clone();
+        config_no_prefix.api_key = "Bearer another-key".to_string();
+        let request = apply_provider_auth(
+            reqwest::blocking::Client::new().post("https://example.test"),
+            &config_no_prefix,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(request.headers()["x-api-key"], "another-key");
         assert!(request.headers().get("authorization").is_none());
     }
 
