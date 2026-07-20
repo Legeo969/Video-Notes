@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -30,6 +30,8 @@ const YTDLP_DOWNLOAD_SHA256: &str =
     "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
 const MAX_MEDIA_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_COMPONENT_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const SMART_COMPILE_CONCURRENCY: usize = 2;
+const MAX_COMPILE_CONCURRENCY: usize = 4;
 const DEFAULT_COMPONENT_MANIFESTS: &[(&str, &str)] = &[
     (
         "download-tools",
@@ -72,6 +74,7 @@ pub struct NativeEngine {
     settings_lock: Arc<Mutex<()>>,
     collection_lock: Arc<Mutex<()>>,
     retry_lock: Arc<Mutex<()>>,
+    compile_scheduler: Arc<CompileScheduler>,
     mpv_session: Arc<Mutex<MpvSession>>,
 }
 
@@ -138,6 +141,21 @@ struct JobControl {
     condvar: Condvar,
 }
 
+struct CompileSchedulerState {
+    limit: usize,
+    active: usize,
+    queue: VecDeque<u64>,
+}
+
+struct CompileScheduler {
+    state: Mutex<CompileSchedulerState>,
+    condvar: Condvar,
+}
+
+struct CompilePermit {
+    scheduler: Arc<CompileScheduler>,
+}
+
 type RetryContext = (u32, String, Option<(u64, u64)>);
 
 impl JobControl {
@@ -147,6 +165,80 @@ impl JobControl {
             pause_requested: AtomicBool::new(false),
             current_child: Mutex::new(None),
             condvar: Condvar::new(),
+        }
+    }
+}
+
+impl CompileScheduler {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(CompileSchedulerState {
+                limit: limit.clamp(1, MAX_COMPILE_CONCURRENCY),
+                active: 0,
+                queue: VecDeque::new(),
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn limit(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.limit)
+            .unwrap_or(SMART_COMPILE_CONCURRENCY)
+    }
+
+    fn set_limit(&self, limit: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.limit = limit.clamp(1, MAX_COMPILE_CONCURRENCY);
+            self.condvar.notify_all();
+        }
+    }
+
+    fn notify_all(&self) {
+        self.condvar.notify_all();
+    }
+
+    fn acquire(
+        self: &Arc<Self>,
+        job_id: u64,
+        control: &JobControl,
+    ) -> Result<CompilePermit, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "compile scheduler lock poisoned".to_string())?;
+        if !state.queue.contains(&job_id) {
+            state.queue.push_back(job_id);
+        }
+
+        loop {
+            if control.cancel_requested.load(Ordering::SeqCst) {
+                state.queue.retain(|queued_id| *queued_id != job_id);
+                self.condvar.notify_all();
+                return Err(crate::compile::engine::COMPILE_CANCELLED_ERROR.to_string());
+            }
+            if state.active < state.limit && state.queue.front() == Some(&job_id) {
+                state.queue.pop_front();
+                state.active += 1;
+                return Ok(CompilePermit {
+                    scheduler: self.clone(),
+                });
+            }
+            state = self
+                .condvar
+                .wait_timeout(state, Duration::from_millis(250))
+                .map_err(|_| "compile scheduler wait poisoned".to_string())?
+                .0;
+        }
+    }
+}
+
+impl Drop for CompilePermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.scheduler.state.lock() {
+            state.active = state.active.saturating_sub(1);
+            self.scheduler.condvar.notify_all();
         }
     }
 }
@@ -204,6 +296,7 @@ impl NativeEngine {
         if let Err(error) = migrate_plaintext_provider_secrets(&settings_path) {
             eprintln!("[warn] Could not migrate Provider credentials to the OS vault: {error}");
         }
+        let compile_concurrency = compile_concurrency_from_path(&settings_path);
         let runtime_dir = data_dir.join("runtime");
         let jobs_state_path = jobs_state_path(&data_dir);
         let jobs = load_jobs(&jobs_state_path);
@@ -228,6 +321,7 @@ impl NativeEngine {
             settings_lock: Arc::new(Mutex::new(())),
             collection_lock: Arc::new(Mutex::new(())),
             retry_lock: Arc::new(Mutex::new(())),
+            compile_scheduler: Arc::new(CompileScheduler::new(compile_concurrency)),
             mpv_session: Arc::new(Mutex::new(MpvSession::new())),
         };
         if let Err(error) = engine.allow_configured_asset_roots() {
@@ -251,6 +345,7 @@ impl NativeEngine {
                 }
             }
         }
+        self.compile_scheduler.notify_all();
         if let Ok(mut session) = self.mpv_session.lock() {
             stop_mpv_session(&mut session);
         }
@@ -274,6 +369,7 @@ impl NativeEngine {
         let jobs_state_path = jobs_state_path(&data_dir);
         let jobs = load_jobs(&jobs_state_path);
         let next_job_id = next_job_id(&jobs);
+        let compile_concurrency = compile_concurrency_from_path(&settings_path);
         Self {
             app_handle: None,
             settings_path,
@@ -288,6 +384,7 @@ impl NativeEngine {
             settings_lock: Arc::new(Mutex::new(())),
             collection_lock: Arc::new(Mutex::new(())),
             retry_lock: Arc::new(Mutex::new(())),
+            compile_scheduler: Arc::new(CompileScheduler::new(compile_concurrency)),
             mpv_session: Arc::new(Mutex::new(MpvSession::new())),
         }
     }
@@ -406,6 +503,8 @@ impl NativeEngine {
             "bilibili_cookie_file": string_value(&settings, "bilibili_cookie_file")
                 .or_else(|| string_value(&settings, "bilibili_cookies"))
                 .unwrap_or_default(),
+            "compile_concurrency": configured_compile_concurrency(&settings),
+            "effective_compile_concurrency": self.compile_scheduler.limit(),
         }))
     }
 
@@ -415,6 +514,10 @@ impl NativeEngine {
             .and_then(Value::as_object)
             .or_else(|| params.as_object())
             .ok_or_else(|| "patches must be an object".to_string())?;
+        let compile_concurrency = patches
+            .get("compile_concurrency")
+            .map(validate_compile_concurrency)
+            .transpose()?;
         let allowed = [
             "output_dir",
             "compile_mode",
@@ -426,6 +529,7 @@ impl NativeEngine {
             "base_url",
             "bilibili_cookie_file",
             "bilibili_cookies",
+            "compile_concurrency",
         ];
         self.update_settings(|raw| {
             for key in allowed {
@@ -438,6 +542,10 @@ impl NativeEngine {
             }
             Ok(())
         })?;
+        if let Some(configured) = compile_concurrency {
+            self.compile_scheduler
+                .set_limit(effective_compile_concurrency(configured));
+        }
         self.allow_configured_asset_roots()?;
         Ok(json!(true))
     }
@@ -1355,6 +1463,7 @@ impl NativeEngine {
             return Err(error);
         }
         control.condvar.notify_all();
+        self.compile_scheduler.notify_all();
         Ok(json!(true))
     }
 
@@ -2326,7 +2435,7 @@ impl NativeEngine {
             collection["status"] = json!("processing");
             Ok((collection_name, claimed))
         })?;
-        let max_concurrency = 1; // force serial execution
+        let max_concurrency = self.compile_scheduler.limit();
         let output_dir = collection_output_dir(
             &self.read_settings(),
             &self.default_export_dir,
@@ -2335,17 +2444,10 @@ impl NativeEngine {
         );
         let count = items.len();
         let runner = self.clone();
-        let batch_output_dir = output_dir.clone();
         let thread_batch_id = batch_job_id.clone();
         std::thread::spawn(move || {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                runner.run_collection_batch(
-                    id,
-                    &thread_batch_id,
-                    items,
-                    max_concurrency,
-                    batch_output_dir,
-                );
+                runner.run_collection_batch(id, &thread_batch_id, items);
             }))
             .is_err()
             {
@@ -2453,14 +2555,7 @@ impl NativeEngine {
         Ok(json!({ "cancelled": cancelled + queued_cancelled }))
     }
 
-    fn run_collection_batch(
-        &self,
-        id: u64,
-        batch_id: &str,
-        items: Vec<CollectionBatchItem>,
-        _max_concurrency: usize,
-        _output_dir: PathBuf,
-    ) {
+    fn run_collection_batch(&self, id: u64, batch_id: &str, items: Vec<CollectionBatchItem>) {
         for item in &items {
             // Check if collection was deleted mid-batch
             {
@@ -2490,7 +2585,6 @@ impl NativeEngine {
                     "input": item.input.clone(),
                     "title": item.title.clone(),
                     "mode": item.compile_mode.clone(),
-                    "sync": true,
                 }),
                 Some((id, item.id)),
                 None,
@@ -2913,7 +3007,7 @@ impl NativeEngine {
             title: Some(title.clone()),
             status: "pending".to_string(),
             progress: 0,
-            progress_message: "准备编译".to_string(),
+            progress_message: "等待运行名额".to_string(),
             stage: "pending".to_string(),
             input: input.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -2972,6 +3066,7 @@ impl NativeEngine {
         let job_controls = self.job_controls.clone();
         let thread_control = job_control.clone();
         let thread_cookie_file = bilibili_cookie_file.clone();
+        let compile_scheduler = self.compile_scheduler.clone();
 
         let thread_handle = std::thread::spawn(move || {
             let _active_job_guard = ActiveJobGuard {
@@ -3012,6 +3107,24 @@ impl NativeEngine {
                             "timestamp": chrono::Utc::now().to_rfc3339(),
                         }),
                     );
+                }
+            };
+
+            let _compile_permit = match compile_scheduler.acquire(id, thread_control.as_ref()) {
+                Ok(permit) => permit,
+                Err(error) => {
+                    if error == crate::compile::engine::COMPILE_CANCELLED_ERROR {
+                        set_job("cancelled", "cancelled", 100, "任务已取消");
+                    } else {
+                        set_job("failed", "failed", 100, &error);
+                        if let Ok(mut guard) = jobs.lock() {
+                            if let Some(job) = guard.iter_mut().find(|job| job.id == id) {
+                                job.error_message = Some(error);
+                            }
+                            let _ = save_jobs(&jobs_state_path, &guard);
+                        }
+                    }
+                    return;
                 }
             };
 
@@ -3350,6 +3463,37 @@ impl NativeJob {
             "heartbeat_at": Utc::now().to_rfc3339(),
         })
     }
+}
+
+fn configured_compile_concurrency(settings: &Map<String, Value>) -> u64 {
+    settings
+        .get("compile_concurrency")
+        .and_then(Value::as_u64)
+        .filter(|value| *value <= MAX_COMPILE_CONCURRENCY as u64)
+        .unwrap_or(0)
+}
+
+fn effective_compile_concurrency(configured: u64) -> usize {
+    match configured {
+        1..=4 => configured as usize,
+        _ => SMART_COMPILE_CONCURRENCY,
+    }
+}
+
+fn validate_compile_concurrency(value: &Value) -> Result<u64, String> {
+    value
+        .as_u64()
+        .filter(|configured| *configured <= MAX_COMPILE_CONCURRENCY as u64)
+        .ok_or_else(|| "compile_concurrency must be an integer from 0 (smart) to 4".to_string())
+}
+
+fn compile_concurrency_from_path(settings_path: &Path) -> usize {
+    let configured = read_json_file(settings_path)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|settings| configured_compile_concurrency(&settings))
+        .unwrap_or(0);
+    effective_compile_concurrency(configured)
 }
 
 fn jobs_state_path(data_dir: &Path) -> PathBuf {
@@ -4215,7 +4359,13 @@ fn fetch_provider_models(profile: &NativeProviderProfile) -> Result<Vec<String>,
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| error.to_string())?;
-    let url = format!("{}/models", profile.base_url.trim_end_matches('/'));
+    let url = if profile.provider_type == "anthropic_messages" {
+        let base = profile.base_url.trim_end_matches('/');
+        let root = if base.ends_with("/v1") { &base[..base.len() - 3] } else { base };
+        format!("{root}/v1/models")
+    } else {
+        format!("{}/models", profile.base_url.trim_end_matches('/'))
+    };
     let request = match profile.provider_type.as_str() {
         "google_gemini" => client
             .get(url)

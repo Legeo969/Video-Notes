@@ -85,9 +85,21 @@ impl CompileClientConfig {
 fn compile_video_request_url(config: &CompileClientConfig) -> String {
     let base = config.base_url.trim_end_matches('/');
     if config.provider_kind == ProviderKind::Anthropic {
-        format!("{base}/messages")
+        format!("{}/v1/messages", anthropic_api_root(base))
     } else {
         format!("{base}/chat/completions")
+    }
+}
+
+/// Returns the Anthropic API root, stripping any trailing `/v1` segment so that
+/// the caller can append `/v1/...` without producing a doubled `/v1/v1/...`
+/// path. Accepts both `https://api.minimaxi.com/anthropic` and
+/// `https://api.minimaxi.com/anthropic/v1` as inputs.
+fn anthropic_api_root(base: &str) -> &str {
+    if base.ends_with("/v1") {
+        &base[..base.len() - 3]
+    } else {
+        base
     }
 }
 
@@ -555,17 +567,43 @@ mod tests {
 
     #[test]
     fn compile_video_request_url_uses_messages_endpoint_for_anthropic() {
+        // Token Plan form: base_url without /v1 → code appends /v1/messages.
         let config = CompileClientConfig::new(
-            "https://api.minimax.io/anthropic/v1/".to_string(),
+            "https://api.minimaxi.com/anthropic".to_string(),
             "test-key".to_string(),
             "MiniMax-M3".to_string(),
             ProviderKind::Anthropic,
         );
         assert_eq!(
             compile_video_request_url(&config),
-            "https://api.minimax.io/anthropic/v1/messages"
+            "https://api.minimaxi.com/anthropic/v1/messages"
         );
 
+        // Already-versioned form: code must not double /v1.
+        let config = CompileClientConfig::new(
+            "https://api.minimaxi.com/anthropic/v1/".to_string(),
+            "test-key".to_string(),
+            "MiniMax-M3".to_string(),
+            ProviderKind::Anthropic,
+        );
+        assert_eq!(
+            compile_video_request_url(&config),
+            "https://api.minimaxi.com/anthropic/v1/messages"
+        );
+
+        // Anthropic-vanilla form: also accepted.
+        let config = CompileClientConfig::new(
+            "https://api.anthropic.com/v1/".to_string(),
+            "test-key".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ProviderKind::Anthropic,
+        );
+        assert_eq!(
+            compile_video_request_url(&config),
+            "https://api.anthropic.com/v1/messages"
+        );
+
+        // Non-Anthropic providers are unaffected.
         let compat = CompileClientConfig::new(
             "https://api.xiaomimimo.com/v1".to_string(),
             "test-key".to_string(),
