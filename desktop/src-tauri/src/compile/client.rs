@@ -211,22 +211,12 @@ pub fn compile_chunk_video(
             }
         };
 
-        let raw_text = payload
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|c| c.first())
-            .and_then(|c| c.get("message"))
-            .and_then(|m| {
-                // content → reasoning_content (some providers use this as output field
-                // instead of chain-of-thought) → reasoning (Anthropic-style)
-                ["content", "reasoning_content", "reasoning"]
-                    .iter()
-                    .find_map(|field| m.get(*field).and_then(|v| v.as_str()))
-            })
-            .ok_or_else(|| format!("API returned no content: payload={}", payload))?;
+        let raw_text = extract_response_text(config.provider_kind, &payload).ok_or_else(|| {
+            format!("API returned no content: payload={}", payload)
+        })?;
 
         // Use same repair/parse/validate chain as frame-based path
-        match repair::repair_mllm_output(raw_text) {
+        match repair::repair_mllm_output(&raw_text) {
             repair::RepairResult::Valid(value) | repair::RepairResult::Repaired(value) => {
                 let output = parse_compile_response(&value)?;
                 let output = validate_compile_output(output, &local_anchor_indices)?;
@@ -422,6 +412,66 @@ fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposit
 
 fn preview_text(text: &str) -> String {
     text.chars().take(200).collect()
+}
+
+/// Extract the model's text output from a provider response.
+///
+/// Two wire shapes are in play, picked by `provider_kind`:
+///
+/// - **Anthropic-Messages-compatible** (`ProviderKind::Anthropic`):
+///   top-level `content: [{type: "text", text: "..."}, ...]`. The text blocks
+///   are concatenated with a single newline between them so multi-block
+///   responses (e.g. reasoning + final) round-trip into the repair/parse
+///   pipeline as one string.
+///
+/// - **OpenAI-style** (everything else): `choices[0].message.content` —
+///   with fallbacks for vendors that use `reasoning_content` or
+///   `reasoning` instead.
+///
+/// Returning `None` signals the caller to surface the raw payload in the
+/// "API returned no content" error so the user can debug.
+fn extract_response_text(provider_kind: ProviderKind, payload: &Value) -> Option<String> {
+    if provider_kind == ProviderKind::Anthropic {
+        // Anthropic Messages shape: top-level `content` array of blocks.
+        // Each block has a `type` and either a `text` field (text blocks)
+        // or an `input` field (tool-use blocks, ignored here). Multiple
+        // text blocks are concatenated so downstream JSON repair sees a
+        // single coherent string.
+        let blocks = payload.get("content").and_then(Value::as_array)?;
+        let mut parts: Vec<&str> = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let block_obj = block.as_object()?;
+            if !matches!(
+                block_obj.get("type").and_then(Value::as_str),
+                Some("text") | None
+            ) {
+                continue;
+            }
+            if let Some(text) = block_obj.get("text").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    parts.push(text);
+                }
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
+    } else {
+        // OpenAI-style: choices[0].message.content (with reasoning fallbacks).
+        payload
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("message"))
+            .and_then(|m| {
+                ["content", "reasoning_content", "reasoning"]
+                    .iter()
+                    .find_map(|field| m.get(*field).and_then(|v| v.as_str()))
+            })
+            .map(|s| s.to_string())
+    }
 }
 
 fn validate_video_payload_size(
@@ -853,6 +903,99 @@ mod tests {
         assert!(part.get("media_resolution").is_none());
         assert_eq!(body["max_tokens"], 4096);
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn extract_response_text_handles_anthropic_top_level_content_blocks() {
+        // VN-AVIDEO-002: the MiniMax M3 (Anthropic-Messages-compatible)
+        // response uses top-level `content: [{type:"text", text:"..."}]`,
+        // not the OpenAI-style `choices[0].message.content`. The shape
+        // observed in production:
+        let payload = serde_json::json!({
+            "id": "06ad772c198f5ff6ea6712146e8a99f7",
+            "model": "MiniMax-M3",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "type": "message",
+            "base_resp": {"status_code": 0, "status_msg": ""},
+            "content": [
+                {"type": "text", "text": "{\"events\": [], \"chunk_summary\": \"ok\"}"}
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 10}
+        });
+        let text = extract_response_text(ProviderKind::Anthropic, &payload)
+            .expect("Anthropic-style content block must be extracted");
+        assert_eq!(text, "{\"events\": [], \"chunk_summary\": \"ok\"}");
+    }
+
+    #[test]
+    fn extract_response_text_concatenates_multiple_anthropic_text_blocks() {
+        // Anthropic-Messages responses may contain several text blocks
+        // (e.g. reasoning + final answer). They must be joined so the JSON
+        // repair step sees a single coherent string.
+        let payload = serde_json::json!({
+            "type": "message",
+            "content": [
+                {"type": "text", "text": "reasoning step"},
+                {"type": "text", "text": "{\"events\": [], \"chunk_summary\": \"x\"}"}
+            ]
+        });
+        let text = extract_response_text(ProviderKind::Anthropic, &payload).unwrap();
+        assert_eq!(text, "reasoning step\n{\"events\": [], \"chunk_summary\": \"x\"}");
+    }
+
+    #[test]
+    fn extract_response_text_ignores_non_text_anthropic_blocks() {
+        // Tool-use blocks (and other types we don't consume) must be
+        // skipped; only `type:"text"` (or untagged) blocks contribute to
+        // the extracted text.
+        let payload = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "id": "x", "name": "x", "input": {}},
+                {"type": "text", "text": "{\"events\": [], \"chunk_summary\": \"\"}"}
+            ]
+        });
+        let text = extract_response_text(ProviderKind::Anthropic, &payload).unwrap();
+        assert_eq!(text, "{\"events\": [], \"chunk_summary\": \"\"}");
+    }
+
+    #[test]
+    fn extract_response_text_anthropic_returns_none_when_no_text_blocks() {
+        let payload = serde_json::json!({
+            "type": "message",
+            "content": [
+                {"type": "tool_use", "id": "x", "name": "x", "input": {}}
+            ]
+        });
+        assert!(extract_response_text(ProviderKind::Anthropic, &payload).is_none());
+    }
+
+    #[test]
+    fn extract_response_text_openai_choices_message_still_works() {
+        // Regression: OpenAI-style responses must continue to extract from
+        // choices[0].message.content. Also covers the reasoning_content
+        // and reasoning fallbacks some vendors use.
+        let payload = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "{\"events\": [], \"chunk_summary\": \"a\"}",
+                    "reasoning_content": null
+                }
+            }]
+        });
+        let text = extract_response_text(ProviderKind::OpenAICompat, &payload).unwrap();
+        assert_eq!(text, "{\"events\": [], \"chunk_summary\": \"a\"}");
+    }
+
+    #[test]
+    fn extract_response_text_openai_falls_back_to_reasoning_field() {
+        let payload = serde_json::json!({
+            "choices": [{
+                "message": {"reasoning": "{\"events\": [], \"chunk_summary\": \"r\"}"}
+            }]
+        });
+        let text = extract_response_text(ProviderKind::XiaomiMiMo, &payload).unwrap();
+        assert_eq!(text, "{\"events\": [], \"chunk_summary\": \"r\"}");
     }
 
     #[test]

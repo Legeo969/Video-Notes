@@ -1,0 +1,41 @@
+{
+  "task_id": "VN-AVIDEO-002",
+  "title": "Parse Anthropic-Messages-style response in compile client",
+  "phase": "v0.2-implementation",
+  "priority": "P1",
+  "spec_refs": [
+    "SPEC-COMPILER-006"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile/client.rs",
+    "tasks/spec-v0.2/vn-anthropic-video-002.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-AVIDEO-002.md"
+  ],
+  "forbidden_changes": [
+    "Sending Authorization alongside x-api-key for Anthropic providers",
+    "Modifying files outside allowed_paths",
+    "Removing or weakening the OpenAI-style video_url block path",
+    "Default-enabling compiler_v3"
+  ],
+  "deliverables": [
+    "extract_response_text helper in compile/client.rs that dispatches on provider_kind: Anthropic-style top-level content[] for ProviderKind::Anthropic, OpenAI-style choices[0].message.content (with reasoning_content/reasoning fallbacks) for everything else",
+    "compile_chunk_video uses extract_response_text instead of inline parser",
+    "6 new unit tests covering Anthropic single-block, multi-block concatenation, tool-use block skipping, empty content, OpenAI message.content path, OpenAI reasoning fallback"
+  ],
+  "acceptance_tests": [
+    "cargo test --lib compile::client::tests::extract_response_text_* all pass (6 tests)",
+    "cargo test --lib compile:: passes (61 tests)",
+    "Real MiniMax M3 Anthropic-style response shape (top-level content[].text) is correctly extracted",
+    "OpenAI-style choices[0].message.content still extracts correctly (regression)",
+    "npm --prefix desktop run verify passes"
+  ],
+  "security_requirements": [
+    "Non-text blocks (e.g. tool_use) are ignored so untrusted model output cannot inject executable content into the JSON repair stage",
+    "Provider auth header classification unchanged"
+  ],
+  "dependencies": [
+    "VN-AVIDEO-001"
+  ],
+  "status": "ready"
+}
