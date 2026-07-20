@@ -29,6 +29,7 @@
     onToggleFolder,
     onToggleCheck,
     onToggleSelectAll,
+    onDropNote,
   }: {
     folders?: Folder[];
     notes?: TreeNote[];
@@ -44,7 +45,14 @@
     onToggleFolder?: (path: string) => void;
     onToggleCheck?: (id: number) => void;
     onToggleSelectAll?: (ids: number[]) => void;
+    onDropNote?: (noteId: number, targetFolder: string) => void | Promise<void>;
   } = $props();
+
+  // Per-row drag state for `.drag-over` highlight. Folder rows track
+  // entry/leave independently of inherited state so children do not
+  // flash the highlight when a note hovers over their parent.
+  let dragOverFolder = $state<string | null>(null);
+  let isDragging = $state(false);
 
   function compareCi(a: string, b: string): number {
     return (a ?? '').localeCompare(b ?? '', undefined, { sensitivity: 'base' });
@@ -149,6 +157,69 @@
     onSelectNote?.(id);
   }
 
+  // Phase D — HTML5 drag-and-drop handlers.
+  // Notes expose themselves via a custom mime type so folder rows can accept
+  // them as drop targets. Effect is gated by `!multiSelect`; while multi-select
+  // is active the checkbox column owns the row.
+  function handleNoteDragStart(e: DragEvent, id: number) {
+    if (multiSelect || !e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = 'move';
+    try {
+      e.dataTransfer.setData('application/x-note', JSON.stringify({ id }));
+      // Fallback for browsers that ignore custom mime types (WebView/Tauri).
+      e.dataTransfer.setData('text/plain', String(id));
+    } catch {
+      // Some browsers reject setData during security-restricted drags; ignore.
+    }
+    isDragging = true;
+  }
+  function handleNoteDragEnd() {
+    isDragging = false;
+    dragOverFolder = null;
+  }
+
+  function handleFolderDragOver(e: DragEvent, folderPath: string) {
+    if (multiSelect) return;
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types ?? []);
+    // Only highlight when an actual note is being dragged over us.
+    if (!types.includes('application/x-note') && !types.includes('text/plain')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    dragOverFolder = folderPath;
+  }
+  function handleFolderDragLeave(e: DragEvent, folderPath: string) {
+    if (multiSelect) return;
+    // Only clear when the cursor truly leaves the row (not when entering a child).
+    const related = e.relatedTarget as Node | null;
+    const current = e.currentTarget as Node | null;
+    if (related && current && current.contains(related)) return;
+    if (dragOverFolder === folderPath) dragOverFolder = null;
+  }
+
+  async function handleFolderDrop(e: DragEvent, targetFolder: string) {
+    if (multiSelect) return;
+    e.preventDefault();
+    dragOverFolder = null;
+    const raw = e.dataTransfer?.getData('application/x-note') ?? '';
+    let noteId: number | null = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.id === 'number') noteId = parsed.id;
+      } catch {
+        noteId = null;
+      }
+    }
+    if (noteId === null) {
+      const fallback = e.dataTransfer?.getData('text/plain') ?? '';
+      const n = Number(fallback);
+      if (Number.isFinite(n)) noteId = n;
+    }
+    if (noteId === null) return;
+    await onDropNote?.(noteId, targetFolder);
+  }
+
   function countInFolder(folderPath: string): number {
     let n = 0;
     // Use backslash to match `noteDirectory` in Notes.svelte (canonical Windows-style separator).
@@ -182,9 +253,14 @@
       <button
         type="button"
         class="folder-row"
+        class:drag-over={dragOverFolder === folder.path}
+        draggable={!multiSelect}
         onclick={() => onToggleFolder?.(folder.path)}
         title={folder.path}
         aria-expanded={expanded.has(folder.path)}
+        ondragover={(e) => handleFolderDragOver(e, folder.path)}
+        ondragleave={(e) => handleFolderDragLeave(e, folder.path)}
+        ondrop={(e) => handleFolderDrop(e, folder.path)}
       >
         <span class="folder-chevron">
           {#if expanded.has(folder.path)}
@@ -213,6 +289,7 @@
           {onToggleFolder}
           {onToggleCheck}
           {onToggleSelectAll}
+          {onDropNote}
         />
       {/if}
     </div>
@@ -225,8 +302,12 @@
       class:with-check={multiSelect}
       class:selected={selectedId === note.id}
       class:checked={multiSelect && selectedIds.has(note.id)}
+      class:dragging={isDragging}
       style="--depth: {depth + 1}"
+      draggable={!multiSelect}
       onclick={() => handleNoteClick(note.id)}
+      ondragstart={(e) => handleNoteDragStart(e, note.id)}
+      ondragend={handleNoteDragEnd}
     >
       {#if multiSelect}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -419,5 +500,16 @@
   .tree-header-label {
     flex: 1;
     min-width: 0;
+  }
+
+  /* Drag-and-drop affordances. Folder row pulls in the dashed outline and
+     accent-tinted background when a note is dragged over it; the note itself
+     dims to 55% opacity while a drag is in flight. */
+  .folder-row.drag-over {
+    outline: 2px dashed var(--accent-color);
+    background: var(--accent-soft);
+  }
+  .tree-note.dragging {
+    opacity: 0.55;
   }
 </style>

@@ -337,6 +337,31 @@
     clearGraphCache(oldId);
   }
 
+  /**
+   * Phase D — handler for HTML5 drag-and-drop. Called by `TreeRow.svelte`
+   * when a note row is dropped onto a folder row. Backend `notes.move`
+   * returns both the new and the previous path-derived id; we invalidate
+   * frontend caches for the previous id so a re-opened note will not
+   * surface stale data.
+   */
+  async function dropNoteIntoFolder(noteId: number, targetFolder: string) {
+    error = null;
+    try {
+      const result = await engineCall<{
+        id: number;
+        previous_id: number;
+        path: string;
+        previous_path: string;
+      }>("notes.move", { id: noteId, target_folder: targetFolder });
+      invalidateNoteCaches(result.previous_id);
+      await loadTree();
+      await loadNotes();
+      showSuccess("笔记已移动到目标文件夹");
+    } catch (e) {
+      error = `未移动：${String(e)}`;
+    }
+  }
+
   function toggleCheck(id: number) {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
@@ -976,6 +1001,7 @@
           onToggleFolder={toggleFolder}
           onToggleCheck={toggleCheck}
           onToggleSelectAll={toggleSelectAllVisible}
+          onDropNote={dropNoteIntoFolder}
         />
       {/if}
     </div>
