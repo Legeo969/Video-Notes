@@ -192,10 +192,12 @@ pub fn compile_chunk_video(
             let payload = serde_json::from_str::<serde_json::Value>(&raw_text)
                 .unwrap_or_else(|_| serde_json::json!({ "raw": preview_text(&raw_text) }));
             last_error = format!("provider returned {status}: {payload}");
-            if !is_retryable_status(status) {
-                return Err(format!("compile chunk rejected by provider: {last_error}"));
+            match classify_error_response(status, &payload) {
+                ErrorDisposition::NonRetryable { reason } => {
+                    return Err(format!("compile chunk rejected by provider: {last_error} ({reason})"));
+                }
+                ErrorDisposition::Retryable => continue,
             }
-            continue;
         }
 
         let payload: serde_json::Value = match serde_json::from_str(&raw_text) {
@@ -332,10 +334,90 @@ fn apply_provider_auth(
     }
 }
 
-fn is_retryable_status(status: StatusCode) -> bool {
-    status == StatusCode::REQUEST_TIMEOUT
+/// Outcome of inspecting a non-2xx response from the compile provider.
+#[derive(Debug, Clone, PartialEq)]
+enum ErrorDisposition {
+    /// Vendor rejected the request deterministically; retrying would burn
+    /// attempts on the same input. Surface the error to the caller instead.
+    NonRetryable { reason: &'static str },
+    /// Vendor may have hit a transient condition (network blip, rate limit,
+    /// generic 5xx without a structured error envelope). Worth retrying.
+    Retryable,
+}
+
+/// Classify a non-2xx response so we can fail-fast on deterministic input
+/// rejections and only retry on genuinely transient conditions.
+///
+/// Anthropic-Messages-compatible vendors (e.g. MiniMax M3) return HTTP 500 with
+/// a structured `{"error": {"type": "api_error", "code": "1026", ...}}` body
+/// when the input video triggers content-safety filters. That envelope is not
+/// transient — the next attempt with the same video hits the same rejection.
+/// `is_server_error()` alone is too coarse: it would loop three times on a
+/// rejection that can only be resolved by the user (different clip, different
+/// provider, or a different upload shape like a presigned URL).
+fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposition {
+    // Well-known deterministic status codes are never worth retrying.
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST
+            | StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            | StatusCode::NOT_FOUND
+            | StatusCode::CONFLICT
+            | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        return ErrorDisposition::NonRetryable {
+            reason: "client error status",
+        };
+    }
+
+    // Anthropic-style error envelope: {"type":"error","error":{"type":"api_error",...}}
+    // or OpenAI-compatible: {"error":{"type":"...","code":..., "message":...}}
+    let error_obj = payload.get("error");
+    if let Some(error_obj) = error_obj {
+        // `error.type == "api_error"` is the Anthropic-Messages shape used by
+        // MiniMax M3 and friends. Any vendor that returns this envelope for an
+        // input-side failure should be treated as deterministic.
+        if let Some(kind) = error_obj.get("type").and_then(Value::as_str) {
+            if kind == "api_error" {
+                return ErrorDisposition::NonRetryable {
+                    reason: "vendor returned api_error envelope",
+                };
+            }
+        }
+
+        // Belt-and-braces: catch input-safety rejections even when vendors
+        // embed the verdict in the message string instead of a typed code.
+        // Examples observed: "input new_sensitive, ...", "input blocked",
+        // "content policy violation".
+        if let Some(message) = error_obj.get("message").and_then(Value::as_str) {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("input new_sensitive")
+                || lower.contains("input is sensitive")
+                || lower.contains("input blocked")
+                || lower.contains("content policy")
+                || lower.contains("safety")
+            {
+                return ErrorDisposition::NonRetryable {
+                    reason: "vendor rejected input as policy/safety violation",
+                };
+            }
+        }
+    }
+
+    // Status-based fallback: 408 / 429 / 5xx without a structured envelope
+    // are treated as transient. Same behaviour the old `is_retryable_status`
+    // produced for vendors that don't speak Anthropic-Messages envelopes.
+    if status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
+    {
+        ErrorDisposition::Retryable
+    } else {
+        ErrorDisposition::NonRetryable {
+            reason: "non-retryable status",
+        }
+    }
 }
 
 fn preview_text(text: &str) -> String {
@@ -649,11 +731,76 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_provider_errors_are_not_retryable() {
-        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
-        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
-        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+    fn transient_status_codes_without_envelope_are_retryable() {
+        assert_eq!(
+            classify_error_response(StatusCode::REQUEST_TIMEOUT, &serde_json::json!({})),
+            ErrorDisposition::Retryable
+        );
+        assert_eq!(
+            classify_error_response(StatusCode::TOO_MANY_REQUESTS, &serde_json::json!({})),
+            ErrorDisposition::Retryable
+        );
+        assert_eq!(
+            classify_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &serde_json::json!({ "raw": "upstream timeout" })
+            ),
+            ErrorDisposition::Retryable
+        );
+    }
+
+    #[test]
+    fn client_error_statuses_are_never_retryable() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ] {
+            assert_eq!(
+                classify_error_response(status, &serde_json::json!({})),
+                ErrorDisposition::NonRetryable { reason: "client error status" },
+                "status {status} should be non-retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn vendor_api_error_envelope_is_non_retryable() {
+        // MiniMax M3 / Anthropic-Messages style envelope for input-side
+        // rejection: a 500 status carrying a structured `api_error`.
+        let payload = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "input new_sensitive, messages[1]'s content[0] video is sensitive, please check your input (1026)",
+                "code": 1026
+            }
+        });
+        match classify_error_response(StatusCode::INTERNAL_SERVER_ERROR, &payload) {
+            ErrorDisposition::NonRetryable { reason } => {
+                assert_eq!(reason, "vendor returned api_error envelope");
+            }
+            other => panic!("expected NonRetryable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vendor_safety_message_is_non_retryable_without_typed_envelope() {
+        // Vendor returns 500 (so it would otherwise look transient) but the
+        // message text describes an input-side safety decision. Fail fast.
+        let payload = serde_json::json!({
+            "error": {
+                "message": "input blocked by safety classifier"
+            }
+        });
+        match classify_error_response(StatusCode::INTERNAL_SERVER_ERROR, &payload) {
+            ErrorDisposition::NonRetryable { reason } => {
+                assert!(reason.contains("policy") || reason.contains("safety"));
+            }
+            other => panic!("expected NonRetryable, got {other:?}"),
+        }
     }
 
     #[test]
