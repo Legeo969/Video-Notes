@@ -191,12 +191,24 @@ pub fn compile_chunk_video(
         if !status.is_success() {
             let payload = serde_json::from_str::<serde_json::Value>(&raw_text)
                 .unwrap_or_else(|_| serde_json::json!({ "raw": preview_text(&raw_text) }));
-            last_error = format!("provider returned {status}: {payload}");
+            // Keep the raw vendor payload (including request_id) in the
+            // error so users and logs can quote it back to the vendor
+            // support team. The user-visible hint is appended after.
+            let vendor_message = extract_vendor_message(&payload)
+                .unwrap_or_else(|| format!("provider returned {status}: {payload}"));
             match classify_error_response(status, &payload) {
-                ErrorDisposition::NonRetryable { reason } => {
-                    return Err(format!("compile chunk rejected by provider: {last_error} ({reason})"));
+                ErrorDisposition::NonRetryable { kind, .. } => {
+                    return Err(format!(
+                        "{} ({}). {}",
+                        vendor_message,
+                        describe_disposition(status, &payload, kind),
+                        kind.user_hint()
+                    ));
                 }
-                ErrorDisposition::Retryable => continue,
+                ErrorDisposition::Retryable => {
+                    last_error = format!("provider returned {status}: {payload}");
+                    continue;
+                }
             }
         }
 
@@ -329,10 +341,46 @@ fn apply_provider_auth(
 enum ErrorDisposition {
     /// Vendor rejected the request deterministically; retrying would burn
     /// attempts on the same input. Surface the error to the caller instead.
-    NonRetryable { reason: &'static str },
+    NonRetryable { reason: &'static str, kind: VendorErrorKind },
     /// Vendor may have hit a transient condition (network blip, rate limit,
     /// generic 5xx without a structured error envelope). Worth retrying.
     Retryable,
+}
+
+/// Coarse category of a non-retryable vendor rejection.
+///
+/// The category drives the user-facing message emitted by `compile_chunk_video`:
+/// safety/policy verdicts get a localized hint suggesting alternative
+/// providers or different clips; structural API errors get a generic
+/// "provider rejected the request" framing; anything else falls through.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum VendorErrorKind {
+    /// Vendor's content-safety classifier rejected the input. Observed on
+    /// MiniMax M3 with code 1026 ("input new_sensitive") and similar.
+    SafetyPolicy,
+    /// Vendor returned an Anthropic-Messages `api_error` envelope (or the
+    /// OpenAI-compatible equivalent) for a non-safety reason (e.g. invalid
+    /// parameter, model not found).
+    ApiError,
+    /// 4xx with no structured envelope, or anything else deterministic.
+    Other,
+}
+
+impl VendorErrorKind {
+    /// Short, user-visible hint appended after the vendor's own message.
+    fn user_hint(self) -> &'static str {
+        match self {
+            VendorErrorKind::SafetyPolicy => {
+                "提示：供应商内容安全策略拒绝该视频。可尝试更换视频，或在设置中切换到其他多模态 Provider。"
+            }
+            VendorErrorKind::ApiError => {
+                "提示：供应商 API 返回错误，请检查 Provider 配置或稍后重试。"
+            }
+            VendorErrorKind::Other => {
+                "提示：供应商拒绝了该请求，请稍后重试或更换 Provider。"
+            }
+        }
+    }
 }
 
 /// Classify a non-2xx response so we can fail-fast on deterministic input
@@ -358,6 +406,7 @@ fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposit
     ) {
         return ErrorDisposition::NonRetryable {
             reason: "client error status",
+            kind: VendorErrorKind::Other,
         };
     }
 
@@ -365,21 +414,9 @@ fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposit
     // or OpenAI-compatible: {"error":{"type":"...","code":..., "message":...}}
     let error_obj = payload.get("error");
     if let Some(error_obj) = error_obj {
-        // `error.type == "api_error"` is the Anthropic-Messages shape used by
-        // MiniMax M3 and friends. Any vendor that returns this envelope for an
-        // input-side failure should be treated as deterministic.
-        if let Some(kind) = error_obj.get("type").and_then(Value::as_str) {
-            if kind == "api_error" {
-                return ErrorDisposition::NonRetryable {
-                    reason: "vendor returned api_error envelope",
-                };
-            }
-        }
-
-        // Belt-and-braces: catch input-safety rejections even when vendors
-        // embed the verdict in the message string instead of a typed code.
-        // Examples observed: "input new_sensitive, ...", "input blocked",
-        // "content policy violation".
+        // Inspect the message text first: safety verdicts can be folded
+        // into the `api_error` envelope (e.g. MiniMax M3 with 1026) so
+        // they would otherwise be misclassified as plain ApiError.
         if let Some(message) = error_obj.get("message").and_then(Value::as_str) {
             let lower = message.to_ascii_lowercase();
             if lower.contains("input new_sensitive")
@@ -390,6 +427,21 @@ fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposit
             {
                 return ErrorDisposition::NonRetryable {
                     reason: "vendor rejected input as policy/safety violation",
+                    kind: VendorErrorKind::SafetyPolicy,
+                };
+            }
+        }
+
+        // `error.type == "api_error"` is the Anthropic-Messages shape used by
+        // MiniMax M3 and friends. Any vendor that returns this envelope for
+        // an input-side failure should be treated as deterministic; if the
+        // message sniffing above did not classify it as a safety verdict
+        // it falls into the generic ApiError bucket.
+        if let Some(kind) = error_obj.get("type").and_then(Value::as_str) {
+            if kind == "api_error" {
+                return ErrorDisposition::NonRetryable {
+                    reason: "vendor returned api_error envelope",
+                    kind: VendorErrorKind::ApiError,
                 };
             }
         }
@@ -406,12 +458,90 @@ fn classify_error_response(status: StatusCode, payload: &Value) -> ErrorDisposit
     } else {
         ErrorDisposition::NonRetryable {
             reason: "non-retryable status",
+            kind: VendorErrorKind::Other,
         }
     }
 }
 
 fn preview_text(text: &str) -> String {
     text.chars().take(200).collect()
+}
+
+/// Pull the human-readable vendor message out of a structured error envelope.
+///
+/// Tries, in order:
+///   - `error.message` (Anthropic-Messages and OpenAI-compatible shape)
+///   - `error.code` as a fallback (some vendors only include a numeric code)
+///   - `message` at the top level (some legacy shapes)
+///
+/// Returns `None` if none of those fields are present so the caller can fall
+/// back to the full payload.
+fn extract_vendor_message(payload: &Value) -> Option<String> {
+    let error_obj = payload.get("error");
+    if let Some(message) = error_obj
+        .and_then(|obj| obj.get("message"))
+        .and_then(Value::as_str)
+    {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(code) = error_obj
+        .and_then(|obj| obj.get("code"))
+        .and_then(Value::as_i64)
+    {
+        return Some(format!("error code {code}"));
+    }
+    payload
+        .get("message")
+        .and_then(Value::as_str)
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+}
+
+/// Short technical classification string used in the error envelope so the
+/// caller can still see WHY the request failed (status + disposition kind).
+/// Kept deliberately short — the longer vendor hint lives in
+/// `VendorErrorKind::user_hint`.
+fn describe_disposition(status: StatusCode, payload: &Value, kind: VendorErrorKind) -> String {
+    let kind_label = match kind {
+        VendorErrorKind::SafetyPolicy => "safety/policy verdict",
+        VendorErrorKind::ApiError => "vendor api_error envelope",
+        VendorErrorKind::Other => "vendor error",
+    };
+    if let Some(req_id) = extract_request_id(payload) {
+        format!("{status} {kind_label}, request_id={req_id}")
+    } else {
+        format!("{status} {kind_label}")
+    }
+}
+
+/// Try to extract a vendor `request_id` from the error body. Several
+/// Anthropic-Messages-compatible vendors use `request_id`, some use
+/// `id` (collision with the message id), some nest it under `error`.
+/// We try the most common positions in order.
+fn extract_request_id(payload: &Value) -> Option<String> {
+    const KEYS: &[&str] = &["request_id", "requestId", "trace_id"];
+    for key in KEYS {
+        if let Some(value) = payload.get(*key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Some(error_obj) = payload.get("error") {
+        for key in KEYS {
+            if let Some(value) = error_obj.get(*key).and_then(Value::as_str) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Extract the model's text output from a provider response.
@@ -810,16 +940,22 @@ mod tests {
         ] {
             assert_eq!(
                 classify_error_response(status, &serde_json::json!({})),
-                ErrorDisposition::NonRetryable { reason: "client error status" },
+                ErrorDisposition::NonRetryable {
+                    reason: "client error status",
+                    kind: VendorErrorKind::Other,
+                },
                 "status {status} should be non-retryable"
             );
         }
     }
 
     #[test]
-    fn vendor_api_error_envelope_is_non_retryable() {
-        // MiniMax M3 / Anthropic-Messages style envelope for input-side
-        // rejection: a 500 status carrying a structured `api_error`.
+    fn vendor_safety_envelope_with_typed_api_error_is_safety_policy() {
+        // MiniMax M3 / Anthropic-Messages envelope for input-side
+        // rejection: a 500 status carrying a structured `api_error` whose
+        // message advertises a content-safety verdict. The message sniff
+        // must beat the typed-envelope classifier so the user sees the
+        // "safety policy" hint rather than the generic api_error hint.
         let payload = serde_json::json!({
             "type": "error",
             "error": {
@@ -829,8 +965,31 @@ mod tests {
             }
         });
         match classify_error_response(StatusCode::INTERNAL_SERVER_ERROR, &payload) {
-            ErrorDisposition::NonRetryable { reason } => {
+            ErrorDisposition::NonRetryable { reason, kind } => {
+                assert_eq!(reason, "vendor rejected input as policy/safety violation");
+                assert_eq!(kind, VendorErrorKind::SafetyPolicy);
+            }
+            other => panic!("expected NonRetryable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vendor_api_error_envelope_without_safety_message_is_api_error() {
+        // A typed `api_error` envelope whose message is non-safety text
+        // (e.g. "model not found", "invalid parameter") must fall into
+        // the generic ApiError bucket so the user gets the right hint.
+        let payload = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "model 'unknown-model' is not supported on this endpoint",
+                "code": 404
+            }
+        });
+        match classify_error_response(StatusCode::INTERNAL_SERVER_ERROR, &payload) {
+            ErrorDisposition::NonRetryable { reason, kind } => {
                 assert_eq!(reason, "vendor returned api_error envelope");
+                assert_eq!(kind, VendorErrorKind::ApiError);
             }
             other => panic!("expected NonRetryable, got {other:?}"),
         }
@@ -846,8 +1005,9 @@ mod tests {
             }
         });
         match classify_error_response(StatusCode::INTERNAL_SERVER_ERROR, &payload) {
-            ErrorDisposition::NonRetryable { reason } => {
+            ErrorDisposition::NonRetryable { reason, kind } => {
                 assert!(reason.contains("policy") || reason.contains("safety"));
+                assert_eq!(kind, VendorErrorKind::SafetyPolicy);
             }
             other => panic!("expected NonRetryable, got {other:?}"),
         }
@@ -996,6 +1156,86 @@ mod tests {
         });
         let text = extract_response_text(ProviderKind::XiaomiMiMo, &payload).unwrap();
         assert_eq!(text, "{\"events\": [], \"chunk_summary\": \"r\"}");
+    }
+
+    #[test]
+    fn extract_vendor_message_prefers_error_message_field() {
+        let payload = serde_json::json!({
+            "error": {
+                "type": "api_error",
+                "message": "input new_sensitive, please check your input",
+                "code": 1026
+            }
+        });
+        assert_eq!(
+            extract_vendor_message(&payload).as_deref(),
+            Some("input new_sensitive, please check your input")
+        );
+    }
+
+    #[test]
+    fn extract_vendor_message_falls_back_to_code() {
+        let payload = serde_json::json!({"error": {"code": 1026}});
+        assert_eq!(
+            extract_vendor_message(&payload).as_deref(),
+            Some("error code 1026")
+        );
+    }
+
+    #[test]
+    fn extract_vendor_message_falls_back_to_top_level_message() {
+        let payload = serde_json::json!({"message": "service unavailable"});
+        assert_eq!(
+            extract_vendor_message(&payload).as_deref(),
+            Some("service unavailable")
+        );
+    }
+
+    #[test]
+    fn extract_request_id_finds_top_level_request_id() {
+        let payload = serde_json::json!({
+            "error": {"type": "api_error", "message": "x"},
+            "request_id": "06ad7e5302a7e31cebc8d1f79b63b5e1"
+        });
+        assert_eq!(
+            extract_request_id(&payload).as_deref(),
+            Some("06ad7e5302a7e31cebc8d1f79b63b5e1")
+        );
+    }
+
+    #[test]
+    fn extract_request_id_finds_nested_error_request_id() {
+        let payload = serde_json::json!({
+            "error": {"type": "api_error", "message": "x", "request_id": "abc"}
+        });
+        assert_eq!(extract_request_id(&payload).as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn vendor_error_kind_user_hint_mentions_alternative_paths_for_safety() {
+        let hint = VendorErrorKind::SafetyPolicy.user_hint();
+        assert!(hint.contains("视频") || hint.contains("Provider"));
+        // The hint must suggest at least one actionable next step.
+        assert!(
+            hint.contains("更换") || hint.contains("切换"),
+            "safety hint should suggest changing clip or provider: {hint}"
+        );
+    }
+
+    #[test]
+    fn describe_disposition_includes_request_id_when_available() {
+        let payload = serde_json::json!({
+            "error": {"type": "api_error", "message": "x"},
+            "request_id": "abc-123"
+        });
+        let text = describe_disposition(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &payload,
+            VendorErrorKind::SafetyPolicy,
+        );
+        assert!(text.contains("500"));
+        assert!(text.contains("safety/policy verdict"));
+        assert!(text.contains("abc-123"));
     }
 
     #[test]

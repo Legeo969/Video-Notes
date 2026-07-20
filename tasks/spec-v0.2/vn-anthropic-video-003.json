@@ -1,0 +1,43 @@
+{
+  "task_id": "VN-AVIDEO-003",
+  "title": "Friendly hint when vendor rejects input as policy/safety violation",
+  "phase": "v0.2-implementation",
+  "priority": "P2",
+  "spec_refs": [
+    "SPEC-COMPILER-006"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile/client.rs",
+    "tasks/spec-v0.2/vn-anthropic-video-003.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-AVIDEO-003.md"
+  ],
+  "forbidden_changes": [
+    "Auto-enabling video for anthropic_messages without an explicit checkbox opt-in",
+    "Sending Authorization alongside x-api-key for Anthropic providers",
+    "Modifying files outside allowed_paths",
+    "Removing or weakening the OpenAI-style video_url block path"
+  ],
+  "deliverables": [
+    "VendorErrorKind enum (SafetyPolicy / ApiError / Other) wired through ErrorDisposition",
+    "user_hint() returning localized Chinese guidance per kind",
+    "extract_vendor_message / extract_request_id / describe_disposition helpers",
+    "compile_chunk_video emits: vendor message + (status, kind, request_id) + user hint for non-retryable errors",
+    "8 new unit tests covering vendor message extraction, request_id extraction, hint wording, and disposition formatting"
+  ],
+  "acceptance_tests": [
+    "cargo test --lib compile::client::tests:: passes (29 tests, 0 failed)",
+    "cargo test --lib compile:: passes (69 tests, 0 failed)",
+    "npm --prefix desktop run verify passes",
+    "python scripts/validate_spec_tasks.py passes (49 tasks)"
+  ],
+  "security_requirements": [
+    "User-facing hint does not leak credentials or model internals beyond what the vendor already returned",
+    "Vendor request_id is preserved verbatim for support escalation"
+  ],
+  "dependencies": [
+    "VN-AVIDEO-001",
+    "VN-AVIDEO-002"
+  ],
+  "status": "ready"
+}

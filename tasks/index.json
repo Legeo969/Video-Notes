@@ -438,6 +438,15 @@
       "dependencies": [
         "VN-AVIDEO-001"
       ]
+    },
+    {
+      "task_id": "VN-AVIDEO-003",
+      "path": "tasks/spec-v0.2/vn-anthropic-video-003.json",
+      "status": "ready",
+      "priority": "P2",
+      "dependencies": [
+        "VN-AVIDEO-002"
+      ]
     }
   ]
 }
