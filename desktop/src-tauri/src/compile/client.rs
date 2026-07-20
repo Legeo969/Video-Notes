@@ -17,6 +17,7 @@ const COMPILE_TIMEOUT_SEC: u64 = 420;
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 1_000;
 const XIAOMI_MAX_BASE64_BYTES: usize = 50 * 1024 * 1024;
+const ANTHROPIC_MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Valid event types the schema permits.
 const VALID_EVENT_TYPES: &[&str] = &["fact", "procedure", "concept", "failure", "verification"];
@@ -340,6 +341,11 @@ fn validate_video_payload_size(
             "Xiaomi MiMo video payload exceeds the 50 MB Base64 limit ({data_url_len} bytes)"
         ));
     }
+    if provider_kind == ProviderKind::Anthropic && data_url_len > ANTHROPIC_MAX_REQUEST_BYTES {
+        return Err(format!(
+            "Anthropic-Messages video request exceeds the 64 MB whole-body limit ({data_url_len} bytes)"
+        ));
+    }
     Ok(())
 }
 
@@ -627,6 +633,23 @@ mod tests {
             XIAOMI_MAX_BASE64_BYTES + 1
         )
         .is_ok());
+    }
+
+    #[test]
+    fn anthropic_video_request_rejects_oversized_payload() {
+        assert!(
+            validate_video_payload_size(ProviderKind::Anthropic, ANTHROPIC_MAX_REQUEST_BYTES)
+                .is_ok()
+        );
+        assert!(
+            validate_video_payload_size(ProviderKind::Anthropic, ANTHROPIC_MAX_REQUEST_BYTES + 1)
+                .is_err()
+        );
+        // Other providers are unaffected.
+        assert!(
+            validate_video_payload_size(ProviderKind::XiaomiMiMo, ANTHROPIC_MAX_REQUEST_BYTES)
+                .is_ok()
+        );
     }
 
     #[test]
