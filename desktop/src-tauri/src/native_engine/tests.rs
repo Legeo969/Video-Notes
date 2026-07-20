@@ -1873,6 +1873,49 @@ fn notes_batch_delete_requires_confirm() {
 }
 
 #[test]
+fn validate_path_within_roots_rejects_traversal_and_outside_paths() {
+    let root = std::env::temp_dir().join(format!("video-notes-paths-{}", Uuid::new_v4()));
+    let export_root = root.join("exports");
+    let outside = root.join("outside");
+    fs::create_dir_all(export_root.join("safe")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let roots = vec![export_root.clone()];
+
+    let inside = validate_path_within_roots(&export_root.join("safe").join("new"), &roots)
+        .expect("inside path is accepted");
+    assert!(inside.starts_with(&export_root));
+    assert!(validate_path_within_roots(
+        &export_root.join("safe").join("..").join("escape"),
+        &roots
+    )
+    .is_err());
+    assert!(validate_path_within_roots(&outside, &roots).is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn validate_path_within_roots_rejects_symlink_to_outside() {
+    let root = std::env::temp_dir().join(format!("video-notes-symlink-{}", Uuid::new_v4()));
+    let export_root = root.join("exports");
+    let outside = root.join("outside");
+    let link = export_root.join("outside-link");
+    fs::create_dir_all(&export_root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+
+    #[cfg(target_os = "windows")]
+    if std::os::windows::fs::symlink_dir(&outside, &link).is_err() {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    assert!(validate_path_within_roots(&link.join("child"), &[export_root]).is_err());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
