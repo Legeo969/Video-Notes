@@ -1,0 +1,53 @@
+{
+  "task_id": "VN-AVIDEO-001",
+  "title": "Enable Anthropic Messages video upload for compatible endpoints (MiniMax M3)",
+  "phase": "v0.2-implementation",
+  "priority": "P1",
+  "spec_refs": [
+    "SPEC-COMPILER-006",
+    "SPEC-COMPILER-018"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile/client.rs",
+    "desktop/src/lib/components/settings/ProviderFormDialog.svelte",
+    "desktop/src/lib/components/settings/ProvidersPanel.svelte",
+    "tasks/spec-v0.2/vn-anthropic-video-001.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-AVIDEO-001.md"
+  ],
+  "forbidden_changes": [
+    "Auto-enabling video for anthropic_messages without an explicit checkbox opt-in",
+    "Removing or weakening the OpenAI-style video_url block path",
+    "Sending Authorization alongside x-api-key for Anthropic providers",
+    "Raising any existing per-provider size cap",
+    "Modifying files outside allowed_paths",
+    "Default-enabling compiler_v3",
+    "Weakening request body size, JSON depth, or parsed node limits"
+  ],
+  "deliverables": [
+    "Anthropic-style base64 video content block in compile/client.rs build_video_request_body",
+    "Anthropic auth headers (x-api-key + anthropic-version) in compile/client.rs apply_provider_auth",
+    "64 MB per-request size cap for Anthropic providers",
+    "ProviderFormDialog updated: anthropic_messages marked supported, hint and warning copy revised, video checkbox enabled",
+    "Rust unit tests for Anthropic video body shape, headers, oversize rejection, and messages URL",
+    "Task completion report with manual MiniMax M3 smoke test result"
+  ],
+  "acceptance_tests": [
+    "anthropic_video_request_body_uses_video_source_base64 asserts content block equals {type:video,source:{type:base64,media_type:video/mp4,data:...}}",
+    "anthropic_video_request_sets_x_api_key_header asserts x-api-key and anthropic-version headers are present and Authorization is absent",
+    "anthropic_video_request_rejects_oversized_payload asserts a request body above 64 MB is rejected before transport",
+    "anthropic_video_request_resolves_messages_url asserts the POST URL is <base_url>/messages for Anthropic providers",
+    "ProviderFormDialog shows anthropic_messages as supported and the video checkbox is enabled when the type is selected",
+    "OpenAI-compatible, Xiaomi MiMo, Google Gemini, and OpenAI Responses compile paths remain unchanged",
+    "Manual MiniMax M3 smoke test with a small local MP4 returns a non-error response or a documented vendor error"
+  ],
+  "security_requirements": [
+    "Anthropic auth headers are gated on provider_kind == Anthropic and never leak to non-Anthropic providers",
+    "Per-provider request body size cap is enforced before any network IO",
+    "Provider credentials are not written to logs or task snapshots"
+  ],
+  "dependencies": [
+    "VN-IMPL-001"
+  ],
+  "status": "ready"
+}

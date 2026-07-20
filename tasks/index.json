@@ -11,6 +11,15 @@
       ]
     },
     {
+      "task_id": "VN-AVIDEO-001",
+      "path": "tasks/spec-v0.2/vn-anthropic-video-001.json",
+      "status": "ready",
+      "priority": "P1",
+      "dependencies": [
+        "VN-IMPL-001"
+      ]
+    },
+    {
       "task_id": "VN-BUG-001",
       "path": "tasks/spec-v0.2/vn-bug-001.json",
       "status": "done",
@@ -137,6 +146,15 @@
       "priority": "P0",
       "dependencies": [
         "VN-BUG-014"
+      ]
+    },
+    {
+      "task_id": "VN-BUG-016",
+      "path": "tasks/spec-v0.2/vn-bug-016.json",
+      "status": "done",
+      "priority": "P0",
+      "dependencies": [
+        "VN-BUG-015"
       ]
     },
     {
