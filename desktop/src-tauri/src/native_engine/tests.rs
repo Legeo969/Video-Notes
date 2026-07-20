@@ -1688,6 +1688,83 @@ fn notes_rename_folder_updates_jobs_for_moved_notes() {
 }
 
 #[test]
+fn notes_delete_folder_requires_confirm_flag() {
+    let (engine, root) = temp_engine();
+    let folder = root.join("exports").join("Course");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("lesson.md"), "# Lesson").unwrap();
+
+    let result = engine
+        .call(
+            "notes.delete_folder",
+            json!({ "path": "Course", "confirm": false, "delete_assets": true }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("confirmation is mandatory")
+        .contains("confirm_required"));
+    assert!(folder.join("lesson.md").is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_delete_folder_removes_notes_and_assets_recursively() {
+    let (engine, root) = temp_engine();
+    let folder = root.join("exports").join("Course");
+    let nested = folder.join("Module");
+    let assets = nested.join("assets").join("lesson");
+    fs::create_dir_all(&assets).unwrap();
+    let overview = folder.join("overview.md");
+    let lesson = nested.join("lesson.md");
+    fs::write(&overview, "# Overview").unwrap();
+    fs::write(&lesson, "# Lesson").unwrap();
+    fs::write(assets.join("frame.png"), "image").unwrap();
+
+    let deleted = engine
+        .call(
+            "notes.delete_folder",
+            json!({ "path": "Course", "confirm": true, "delete_assets": true }),
+        )
+        .expect("method handled")
+        .expect("delete succeeds");
+    let deleted_notes = deleted["deleted_notes"].as_array().unwrap();
+    assert_eq!(deleted_notes.len(), 2);
+    assert!(deleted_notes
+        .iter()
+        .any(|note| note["id"] == note_id(&overview)
+            && note["path"] == overview.to_string_lossy().as_ref()));
+    assert!(deleted_notes
+        .iter()
+        .any(|note| note["id"] == note_id(&lesson)
+            && note["path"] == lesson.to_string_lossy().as_ref()));
+    assert!(!folder.exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_delete_folder_refuses_root() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(&exports).unwrap();
+    fs::write(exports.join("keep.md"), "# Keep").unwrap();
+
+    let result = engine
+        .call(
+            "notes.delete_folder",
+            json!({ "path": "", "confirm": true, "delete_assets": true }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("root deletion must fail")
+        .contains("cannot_delete_root"));
+    assert!(exports.join("keep.md").is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");

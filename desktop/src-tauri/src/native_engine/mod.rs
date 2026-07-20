@@ -437,6 +437,7 @@ impl NativeEngine {
             "notes.create_folder" => self.notes_create_folder(params),
             "notes.move" => self.notes_move(params),
             "notes.rename_folder" => self.notes_rename_folder(params),
+            "notes.delete_folder" => self.notes_delete_folder(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1836,6 +1837,59 @@ impl NativeEngine {
             finalized.push((old_note_path.clone(), new_note_path.clone()));
         }
         Ok(json!({ "path": new_path.to_string_lossy() }))
+    }
+
+    fn notes_delete_folder(&self, params: Value) -> Result<Value, String> {
+        if params.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Err("confirm_required: confirm must be true".to_string());
+        }
+        let relative = params
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "invalid_path: path is required".to_string())?;
+        validate_relative_path_arg(relative)?;
+        if relative.trim().is_empty() || relative.trim() == "." {
+            return Err("cannot_delete_root: root export folder cannot be deleted".to_string());
+        }
+        let _delete_assets = params
+            .get("delete_assets")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let roots = self.note_roots();
+        let folder_path = roots
+            .iter()
+            .map(|root| root.join(relative))
+            .find(|candidate| candidate.is_dir())
+            .ok_or_else(|| "folder_not_found: folder does not exist".to_string())?;
+        let folder_path = validate_path_within_roots(&folder_path, &roots)?;
+        let is_root = roots
+            .iter()
+            .filter_map(|root| fs::canonicalize(root).ok())
+            .map(strip_windows_verbatim_prefix)
+            .any(|root| root == folder_path);
+        if is_root {
+            return Err("cannot_delete_root: root export folder cannot be deleted".to_string());
+        }
+
+        let mut notes = Vec::new();
+        collect_markdown_notes(&folder_path, &mut notes, 0)?;
+        let mut deleted_notes = notes
+            .into_iter()
+            .map(|note| {
+                json!({
+                    "id": note.id,
+                    "path": note.path.to_string_lossy(),
+                })
+            })
+            .collect::<Vec<_>>();
+        deleted_notes.sort_by(|left, right| {
+            left["path"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["path"].as_str().unwrap_or_default())
+        });
+        fs::remove_dir_all(&folder_path).map_err(|error| error.to_string())?;
+        Ok(json!({ "deleted_notes": deleted_notes }))
     }
 
     fn relocate_note_in_place(&self, old_path: &Path, new_path: &Path) -> Result<u32, String> {
