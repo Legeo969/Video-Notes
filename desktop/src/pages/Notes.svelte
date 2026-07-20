@@ -151,6 +151,8 @@
   let creatingFolder = $state(false);
   let newFolderName = $state("");
   let sortMenuOpen = $state(false);
+  let sortMenuPos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
+  let sortBtnEl = $state<HTMLButtonElement | null>(null);
 
   const SORT_FIELDS: { id: "created_at" | "modified_at" | "title" | "path"; label: string }[] = [
     { id: "created_at", label: "创建时间" },
@@ -311,6 +313,27 @@
     expanded = new Set();
   }
 
+  /**
+   * Toggle: if any folder (other than root) is currently expanded, collapse
+   * everything. Otherwise expand every folder that exists in the tree plus
+   * root. Gives the button a useful "expand all" affordance after a
+   * collapse-all, matching common file-manager behaviour.
+   */
+  function toggleCollapseAll() {
+    const allFolders = (tree?.folders ?? []).map((f) => f.path);
+    const hasAnyExpanded = allFolders.some((path) => expanded.has(path));
+    if (hasAnyExpanded) {
+      expanded = new Set([""]);
+    } else {
+      expanded = new Set(["", ...allFolders]);
+    }
+  }
+
+  function isAllExpanded(): boolean {
+    const allFolders = (tree?.folders ?? []).map((f) => f.path);
+    return allFolders.length > 0 && allFolders.every((path) => expanded.has(path));
+  }
+
   function selectNoteFromTree(id: number) {
     if (multiSelect) {
       const next = new Set(selectedIds);
@@ -389,9 +412,31 @@
   let batchPending = $state(false);
   let moveMenuOpen = $state(false);
   let moveMenuAnchor: HTMLElement | null = $state(null);
+  // When a single note requests a move (right-click / long-press), the
+  // popover lists the same folder targets as batch mode and runs the
+  // single-note move flow on selection. Null when the move menu was opened
+  // from the batch bar.
+  let moveMenuNoteId: number | null = $state(null);
+  let moveMenuPos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
   function toggleMoveMenu() {
+    if (!moveMenuOpen) moveMenuAnchor = null;
+    moveMenuNoteId = null;
     moveMenuOpen = !moveMenuOpen;
+  }
+
+  function openMoveMenuForNote(note: { id: number }, anchor: { x: number; y: number }) {
+    moveMenuNoteId = note.id;
+    moveMenuAnchor = null;
+    moveMenuPos = { top: anchor.y, left: anchor.x };
+    moveMenuOpen = true;
+  }
+
+  async function moveSingleNoteTo(targetFolder: string) {
+    const noteId = moveMenuNoteId;
+    if (noteId === null) return;
+    moveMenuOpen = false;
+    await dropNoteIntoFolder(noteId, targetFolder);
   }
 
   function handleMoveMenuOutsideClick(e: MouseEvent) {
@@ -527,6 +572,10 @@
   }
 
   function toggleSortMenu() {
+    if (!sortMenuOpen && sortBtnEl) {
+      const rect = sortBtnEl.getBoundingClientRect();
+      sortMenuPos = { top: rect.bottom + 6, left: rect.left };
+    }
     sortMenuOpen = !sortMenuOpen;
   }
 
@@ -919,9 +968,9 @@
         <button class="action-btn" class:active={multiSelect} title={multiSelect ? "完成选择" : "编辑"} onclick={toggleMultiSelect}><Icon name="edit" size={14} />{multiSelect ? "完成" : "编辑"}</button>
         <button class="action-btn" title="新建文件夹" onclick={startCreateFolder} disabled={creatingFolder}><Icon name="plus" size={14} />新建文件夹</button>
         <div class="sort-wrap">
-          <button class="action-btn sort-btn" class:active={sortMenuOpen} title="排序" onclick={toggleSortMenu}><Icon name="more" size={14} />排序</button>
+          <button class="action-btn sort-btn" class:active={sortMenuOpen} title="排序" bind:this={sortBtnEl} onclick={toggleSortMenu}><Icon name="more" size={14} />排序</button>
           {#if sortMenuOpen}
-            <div class="sort-menu" role="menu">
+            <div class="sort-menu" role="menu" style="top:{sortMenuPos.top}px; left:{sortMenuPos.left}px;">
               <div class="sort-menu-section">
                 {#each SORT_FIELDS as f (f.id)}
                   <button class:active={sortField === f.id} onclick={() => selectSortField(f.id)} role="menuitem">{f.label}</button>
@@ -935,7 +984,7 @@
             </div>
           {/if}
         </div>
-        <button class="action-btn" title="收起全部" onclick={collapseAll}><Icon name="chevrons-inward" size={14} />收起</button>
+        <button class="action-btn" title={isAllExpanded() ? '收起全部' : '展开全部'} onclick={toggleCollapseAll}><Icon name={isAllExpanded() ? 'chevrons-inward' : 'chevrons-outward'} size={14} />{isAllExpanded() ? '收起' : '展开'}</button>
       </div>
 
       {#if creatingFolder}
@@ -1002,6 +1051,7 @@
           onToggleCheck={toggleCheck}
           onToggleSelectAll={toggleSelectAllVisible}
           onDropNote={dropNoteIntoFolder}
+          onRequestMove={openMoveMenuForNote}
         />
       {/if}
     </div>
@@ -1020,7 +1070,7 @@
           >
             <Icon name="folder" size={13} />移动到…
           </button>
-          {#if moveMenuOpen}
+          {#if moveMenuOpen && moveMenuNoteId === null}
             <div class="move-menu" role="menu">
               {#if moveTargetFolders.length === 0}
                 <p class="move-menu-empty">暂无可用文件夹</p>
@@ -1056,6 +1106,30 @@
         >
           取消选择
         </button>
+      </div>
+    {/if}
+
+    {#if moveMenuOpen && moveMenuNoteId !== null}
+      <div
+        class="move-menu move-menu-floating"
+        role="menu"
+        style="top:{moveMenuPos.top}px; left:{moveMenuPos.left}px;"
+      >
+        {#if moveTargetFolders.length === 0}
+          <p class="move-menu-empty">暂无可用文件夹</p>
+        {:else}
+          {#each moveTargetFolders as folder (folder.path)}
+            <button
+              class="move-menu-item"
+              class:root={folder.path === ''}
+              onclick={() => moveSingleNoteTo(folder.path)}
+              role="menuitem"
+            >
+              <Icon name={folder.path === '' ? 'folder' : 'folder-open'} size={13} />
+              <span>{folder.name}</span>
+            </button>
+          {/each}
+        {/if}
       </div>
     {/if}
 
@@ -1247,7 +1321,7 @@
   .action-btn[disabled] { opacity: .55; cursor: not-allowed; }
   .action-btn.primary { color: var(--accent-color); border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color)); background: var(--accent-faint); }
   .sort-wrap { position: relative; display: inline-flex; }
-  .sort-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 25; display: flex; flex-direction: column; gap: 4px; min-width: 168px; padding: 7px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-card); box-shadow: var(--shadow-sm); }
+  .sort-menu { position: fixed; z-index: 100; display: flex; flex-direction: column; gap: 4px; min-width: 168px; padding: 7px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-card); box-shadow: var(--shadow-sm); }
   .sort-menu-section { display: flex; flex-direction: column; gap: 2px; }
   .sort-menu-section button { padding: 6px 10px; border: 0; border-radius: 6px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; text-align: left; }
   .sort-menu-section button:hover { background: var(--bg-hover); color: var(--text-primary); }
@@ -1327,6 +1401,12 @@
     border-radius: 8px;
     background: var(--bg-card);
     box-shadow: var(--shadow-md);
+  }
+  .move-menu-floating {
+    position: fixed;
+    bottom: auto;
+    z-index: 100;
+    max-height: 320px;
   }
   .move-menu-item {
     display: flex;

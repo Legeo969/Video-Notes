@@ -66,6 +66,8 @@
     <path d="m9 18 6-6-6-6" />
   {:else if name === "chevrons-inward"}
     <path d="m7 7 3 3 3-3M7 17l3-3 3 3" />
+  {:else if name === "chevrons-outward"}
+    <path d="m7 17 3-3 3 3M17 7l-3 3-3-3" />
   {:else if name === "arrow-right"}
     <path d="M5 12h14M13 6l6 6-6 6" />
   {:else if name === "refresh"}

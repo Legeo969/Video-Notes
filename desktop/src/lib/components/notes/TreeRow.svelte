@@ -30,6 +30,7 @@
     onToggleCheck,
     onToggleSelectAll,
     onDropNote,
+    onRequestMove,
   }: {
     folders?: Folder[];
     notes?: TreeNote[];
@@ -46,7 +47,33 @@
     onToggleCheck?: (id: number) => void;
     onToggleSelectAll?: (ids: number[]) => void;
     onDropNote?: (noteId: number, targetFolder: string) => void | Promise<void>;
+    onRequestMove?: (note: TreeNote, anchor: { x: number; y: number }) => void;
   } = $props();
+
+  // Long-press detection for touch / mouse hold. On desktop the primary
+  // "move" affordance is right-click via the `contextmenu` handler below;
+  // long-press covers touch devices where contextmenu is unreliable.
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  let pressTriggered = $state(false);
+  function clearPress() {
+    if (pressTimer !== null) {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+  }
+  function startPress(note: TreeNote, e: Event) {
+    if (multiSelect) return;
+    pressTriggered = false;
+    clearPress();
+    const target = e.currentTarget as HTMLElement | null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    pressTimer = setTimeout(() => {
+      pressTriggered = true;
+      onRequestMove?.(note, { x: rect.left + rect.width / 2, y: rect.bottom });
+      pressTimer = null;
+    }, 550);
+  }
 
   // Per-row drag state for `.drag-over` highlight. Folder rows track
   // entry/leave independently of inherited state so children do not
@@ -286,6 +313,7 @@
           {onToggleCheck}
           {onToggleSelectAll}
           {onDropNote}
+          {onRequestMove}
         />
       {/if}
     </div>
@@ -302,6 +330,15 @@
       style="--depth: {depth + 1}"
       draggable={!multiSelect}
       onclick={() => handleNoteClick(note.id)}
+      oncontextmenu={(e) => {
+        if (multiSelect) return;
+        e.preventDefault();
+        onRequestMove?.(note, { x: e.clientX, y: e.clientY });
+      }}
+      onpointerdown={(e) => startPress(note, e)}
+      onpointerup={clearPress}
+      onpointerleave={clearPress}
+      onpointercancel={clearPress}
       ondragstart={(e) => handleNoteDragStart(e, note.id)}
       ondragend={handleNoteDragEnd}
     >
