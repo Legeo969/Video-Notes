@@ -435,6 +435,7 @@ impl NativeEngine {
             "notes.search" => self.notes_list(string_param(&params, "query")),
             "notes.tree" => self.notes_tree(),
             "notes.create_folder" => self.notes_create_folder(params),
+            "notes.move" => self.notes_move(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1724,6 +1725,133 @@ impl NativeEngine {
         }
         fs::create_dir(&new_path).map_err(|error| error.to_string())?;
         Ok(json!({ "path": new_path.to_string_lossy() }))
+    }
+
+    fn notes_move(&self, params: Value) -> Result<Value, String> {
+        let id = params
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "invalid_id: id is required".to_string())? as u32;
+        let target_folder = params
+            .get("target_folder")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "invalid_target_folder: target_folder is required".to_string())?;
+        validate_relative_path_arg(target_folder)?;
+
+        let note = self
+            .note_entries()?
+            .into_iter()
+            .find(|note| note.id == id)
+            .ok_or_else(|| format!("note_not_found: Note {id} not found"))?;
+        let roots = self.note_roots();
+        let old_path = validate_path_within_roots(&note.path, &roots)?;
+        let source_root = roots
+            .iter()
+            .filter_map(|root| fs::canonicalize(root).ok())
+            .map(strip_windows_verbatim_prefix)
+            .find(|root| old_path.starts_with(root))
+            .ok_or_else(|| "path_outside_roots: note is outside output directories".to_string())?;
+        let target_dir = validate_path_within_roots(&source_root.join(target_folder), &roots)?;
+        let file_name = old_path
+            .file_name()
+            .ok_or_else(|| "invalid_path: note path has no file name".to_string())?;
+        let new_path = validate_path_within_roots(&target_dir.join(file_name), &roots)?;
+        let old_id = note_id(&old_path);
+        if old_path == new_path {
+            return Err("same_path: note is already in the target folder".to_string());
+        }
+        let new_id = self.relocate_note_in_place(&old_path, &new_path)?;
+        Ok(json!({
+            "id": new_id,
+            "path": new_path.to_string_lossy(),
+            "previous_id": old_id,
+            "previous_path": old_path.to_string_lossy(),
+        }))
+    }
+
+    fn relocate_note_in_place(&self, old_path: &Path, new_path: &Path) -> Result<u32, String> {
+        if old_path == new_path {
+            return Err("same_path: note is already in the target folder".to_string());
+        }
+        if new_path.exists() {
+            return Err("note_exists: target note already exists".to_string());
+        }
+        let new_parent = new_path
+            .parent()
+            .ok_or_else(|| "invalid_path: target note has no parent".to_string())?;
+        fs::create_dir_all(new_parent).map_err(|error| error.to_string())?;
+
+        let old_asset_dir = note_asset_dir(old_path);
+        let new_asset_dir = note_asset_dir(new_path);
+        if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
+            if old_assets.is_dir() && new_assets.exists() {
+                return Err("asset_exists: target note assets already exist".to_string());
+            }
+        }
+
+        let old_id = note_id(old_path);
+        let new_id = note_id(new_path);
+        let mut jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs_lock_failed: jobs lock is poisoned".to_string())?;
+        fs::rename(old_path, new_path).map_err(|error| error.to_string())?;
+
+        let moved_assets = match (&old_asset_dir, &new_asset_dir) {
+            (Some(old_assets), Some(new_assets)) if old_assets.is_dir() => {
+                if let Some(parent) = new_assets.parent() {
+                    if let Err(error) = fs::create_dir_all(parent) {
+                        let _ = fs::rename(new_path, old_path);
+                        return Err(error.to_string());
+                    }
+                }
+                if let Err(error) = rename_dir_cross_volume(old_assets, new_assets) {
+                    let _ = fs::rename(new_path, old_path);
+                    return Err(error);
+                }
+                true
+            }
+            _ => false,
+        };
+
+        if let Err(error) = self.allow_note_asset_root(new_path) {
+            if moved_assets {
+                if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
+                    let _ = rename_dir_cross_volume(new_assets, old_assets);
+                }
+            }
+            let _ = fs::rename(new_path, old_path);
+            return Err(error);
+        }
+
+        let affected = jobs
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, job)| {
+                if job.note_id == Some(old_id) {
+                    let previous = (index, job.note_id, job.output_path.clone());
+                    job.note_id = Some(new_id);
+                    job.output_path = Some(new_path.to_string_lossy().to_string());
+                    Some(previous)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
+            for (index, note_id, output_path) in affected {
+                jobs[index].note_id = note_id;
+                jobs[index].output_path = output_path;
+            }
+            if moved_assets {
+                if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
+                    let _ = rename_dir_cross_volume(new_assets, old_assets);
+                }
+            }
+            let _ = fs::rename(new_path, old_path);
+            return Err(error);
+        }
+        Ok(new_id)
     }
 
     fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
@@ -6522,14 +6650,16 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+fn note_asset_dir(note_path: &Path) -> Option<PathBuf> {
+    let note_dir = note_path.parent()?;
+    let note_stem = note_path.file_stem()?.to_str()?;
+    Some(note_dir.join("assets").join(note_stem))
+}
+
 fn remove_note_assets(note_path: &Path) -> Result<(), String> {
-    let Some(note_dir) = note_path.parent() else {
+    let Some(asset_dir) = note_asset_dir(note_path) else {
         return Ok(());
     };
-    let Some(note_stem) = note_path.file_stem().and_then(|value| value.to_str()) else {
-        return Ok(());
-    };
-    let asset_dir = note_dir.join("assets").join(note_stem);
     if asset_dir.is_dir() {
         fs::remove_dir_all(&asset_dir).map_err(|error| {
             format!(

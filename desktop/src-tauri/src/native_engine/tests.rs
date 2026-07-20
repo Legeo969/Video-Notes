@@ -1462,6 +1462,122 @@ fn notes_create_folder_rejects_empty_and_existing_name() {
 }
 
 #[test]
+fn notes_move_relocates_file_and_updates_jobs() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let old_path = exports.join("Inbox").join("lesson.md");
+    let new_path = exports.join("Archive").join("lesson.md");
+    fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+    fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, "# Lesson").unwrap();
+    let old_id = note_id(&old_path);
+    let mut job = test_job(41, "completed");
+    job.note_id = Some(old_id);
+    job.output_path = Some(old_path.to_string_lossy().to_string());
+    insert_job(&engine, job, false);
+
+    let moved = engine
+        .call(
+            "notes.move",
+            json!({ "id": old_id, "target_folder": "Archive" }),
+        )
+        .expect("method handled")
+        .expect("move succeeds");
+    let new_id = note_id(&new_path);
+    assert_eq!(moved["previous_id"], old_id);
+    assert_eq!(moved["id"], new_id);
+    assert_eq!(
+        PathBuf::from(moved["previous_path"].as_str().unwrap()),
+        old_path
+    );
+    assert_eq!(PathBuf::from(moved["path"].as_str().unwrap()), new_path);
+    assert!(!old_path.exists());
+    assert!(new_path.is_file());
+
+    let jobs = engine.jobs.lock().unwrap();
+    assert_eq!(jobs[0].note_id, Some(new_id));
+    assert_eq!(
+        jobs[0].output_path.as_deref(),
+        Some(new_path.to_string_lossy().as_ref())
+    );
+    drop(jobs);
+    let reloaded = engine_for_root(&root);
+    let persisted_jobs = reloaded.jobs.lock().unwrap();
+    assert_eq!(persisted_jobs[0].note_id, Some(new_id));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_move_follows_asset_directory_when_present() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let old_path = exports.join("Inbox").join("lesson.md");
+    let new_path = exports.join("Archive").join("lesson.md");
+    let old_assets = exports.join("Inbox").join("assets").join("lesson");
+    let new_assets = exports.join("Archive").join("assets").join("lesson");
+    fs::create_dir_all(&old_assets).unwrap();
+    fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, "# Lesson").unwrap();
+    fs::write(old_assets.join("frame.png"), "image").unwrap();
+
+    engine
+        .call(
+            "notes.move",
+            json!({ "id": note_id(&old_path), "target_folder": "Archive" }),
+        )
+        .expect("method handled")
+        .expect("move succeeds");
+    assert!(!old_assets.exists());
+    assert_eq!(
+        fs::read_to_string(new_assets.join("frame.png")).unwrap(),
+        "image"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_move_rejects_traversal_target() {
+    let (engine, root) = temp_engine();
+    let old_path = root.join("exports").join("lesson.md");
+    fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, "# Lesson").unwrap();
+
+    let result = engine
+        .call(
+            "notes.move",
+            json!({ "id": note_id(&old_path), "target_folder": "../outside" }),
+        )
+        .expect("method handled");
+    assert!(result.is_err());
+    assert!(old_path.is_file());
+    assert!(!root.join("outside").join("lesson.md").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_move_is_noop_if_same_path() {
+    let (engine, root) = temp_engine();
+    let note_path = root.join("exports").join("lesson.md");
+    fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+    fs::write(&note_path, "# Lesson").unwrap();
+
+    let result = engine
+        .call(
+            "notes.move",
+            json!({ "id": note_id(&note_path), "target_folder": "" }),
+        )
+        .expect("method handled");
+    let error = result.expect_err("same-path move must fail");
+    assert!(error.contains("same_path"));
+    assert_eq!(fs::read_to_string(&note_path).unwrap(), "# Lesson");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
