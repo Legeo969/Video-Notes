@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -434,6 +434,7 @@ impl NativeEngine {
             "notes.list" => self.notes_list(None),
             "notes.search" => self.notes_list(string_param(&params, "query")),
             "notes.tree" => self.notes_tree(),
+            "notes.create_folder" => self.notes_create_folder(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1686,6 +1687,43 @@ impl NativeEngine {
                 .collect::<Vec<_>>(),
             "notes": notes,
         }))
+    }
+
+    fn notes_create_folder(&self, params: Value) -> Result<Value, String> {
+        let parent = params
+            .get("parent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "invalid_parent: parent is required".to_string())?;
+        validate_relative_path_arg(parent)?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "invalid_name: name must not be empty".to_string())?;
+        validate_folder_name(name)?;
+
+        let roots = self.note_roots();
+        let primary_root = roots
+            .first()
+            .ok_or_else(|| "invalid_root: no note output directory is configured".to_string())?;
+        fs::create_dir_all(primary_root).map_err(|error| error.to_string())?;
+        let relative_parent = Path::new(parent);
+        let parent_path = roots
+            .iter()
+            .map(|root| root.join(relative_parent))
+            .find(|candidate| candidate.is_dir())
+            .unwrap_or_else(|| primary_root.join(relative_parent));
+        if !parent_path.is_dir() {
+            return Err("parent_not_found: parent folder does not exist".to_string());
+        }
+        let parent_path = validate_path_within_roots(&parent_path, &roots)?;
+        let new_path = validate_path_within_roots(&parent_path.join(name), &roots)?;
+        if new_path.exists() {
+            return Err("folder_exists: target folder already exists".to_string());
+        }
+        fs::create_dir(&new_path).map_err(|error| error.to_string())?;
+        Ok(json!({ "path": new_path.to_string_lossy() }))
     }
 
     fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
@@ -4973,6 +5011,97 @@ pub(crate) fn resolve_tool_path(
             .map(|output| output.status.success())
             .unwrap_or(false)
     })
+}
+
+fn validate_relative_path_arg(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    let bytes = trimmed.as_bytes();
+    let has_windows_prefix = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if Path::new(trimmed).is_absolute()
+        || has_windows_prefix
+        || trimmed.starts_with("\\\\")
+        || trimmed.starts_with("//")
+        || Path::new(trimmed).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+        || trimmed
+            .split(['/', '\\'])
+            .any(|component| component == "..")
+    {
+        return Err("path_outside_roots: relative path is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_folder_name(name: &str) -> Result<(), String> {
+    if name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+    {
+        return Err("invalid_name: name must be one folder component".to_string());
+    }
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err("invalid_name: name must be one folder component".to_string());
+    }
+    Ok(())
+}
+
+fn validate_path_within_roots(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("path_outside_roots: parent traversal is not allowed".to_string());
+    }
+
+    let canonical_roots = roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect::<Vec<_>>();
+    if canonical_roots.is_empty() {
+        return Err("invalid_root: note output directories do not exist".to_string());
+    }
+
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| "invalid_path: path has no existing ancestor".to_string())?;
+        missing.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| "invalid_path: path has no existing ancestor".to_string())?;
+    }
+    let mut resolved = fs::canonicalize(existing).map_err(|error| error.to_string())?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+
+    if !canonical_roots
+        .iter()
+        .any(|root| resolved.starts_with(root))
+    {
+        return Err("path_outside_roots: path is outside note output directories".to_string());
+    }
+    Ok(strip_windows_verbatim_prefix(resolved))
+}
+
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 fn relative_path_string(path: &Path) -> String {

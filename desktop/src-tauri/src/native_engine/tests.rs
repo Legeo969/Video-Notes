@@ -1390,6 +1390,78 @@ fn notes_tree_excludes_non_markdown_files() {
 }
 
 #[test]
+fn notes_create_folder_makes_empty_dir() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(exports.join("Courses")).unwrap();
+
+    let created = engine
+        .call(
+            "notes.create_folder",
+            json!({ "parent": "Courses", "name": "Rust" }),
+        )
+        .expect("method handled")
+        .expect("create folder succeeds");
+    assert_eq!(
+        PathBuf::from(created["path"].as_str().unwrap()),
+        exports.join("Courses").join("Rust")
+    );
+    assert!(exports.join("Courses").join("Rust").is_dir());
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    assert!(tree["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|folder| folder["path"] == "Courses/Rust"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_create_folder_rejects_traversal() {
+    let (engine, root) = temp_engine();
+    fs::create_dir_all(root.join("exports")).unwrap();
+
+    let result = engine
+        .call(
+            "notes.create_folder",
+            json!({ "parent": "../outside", "name": "escape" }),
+        )
+        .expect("method handled");
+    assert!(result.is_err());
+    assert!(!root.join("outside").join("escape").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_create_folder_rejects_empty_and_existing_name() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(exports.join("Existing")).unwrap();
+
+    let empty = engine
+        .call("notes.create_folder", json!({ "parent": "", "name": "  " }))
+        .expect("method handled");
+    assert!(empty.is_err());
+
+    let existing = engine
+        .call(
+            "notes.create_folder",
+            json!({ "parent": "", "name": "Existing" }),
+        )
+        .expect("method handled");
+    assert!(existing.is_err());
+    assert!(exports.join("Existing").is_dir());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
