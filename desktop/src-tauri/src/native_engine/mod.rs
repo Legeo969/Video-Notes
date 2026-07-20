@@ -439,6 +439,7 @@ impl NativeEngine {
             "notes.rename_folder" => self.notes_rename_folder(params),
             "notes.delete_folder" => self.notes_delete_folder(params),
             "notes.batch_move" => self.notes_batch_move(params),
+            "notes.batch_delete" => self.notes_batch_delete(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1948,6 +1949,71 @@ impl NativeEngine {
             }
         }
         Ok(json!({ "moved": moved, "failed": [] }))
+    }
+
+    fn notes_batch_delete(&self, params: Value) -> Result<Value, String> {
+        if params.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Err("confirm_required: confirm must be true".to_string());
+        }
+        let ids = params
+            .get("ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "invalid_ids: ids must be an array".to_string())?
+            .iter()
+            .map(|value| {
+                value
+                    .as_u64()
+                    .map(|id| id as u32)
+                    .ok_or_else(|| "invalid_ids: every id must be an unsigned integer".to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let roots = self.note_roots();
+        let entries = self.note_entries()?;
+        let mut deleted_notes = Vec::new();
+        let mut failed = Vec::new();
+        let mut deleted_ids = HashSet::new();
+
+        for id in ids {
+            let Some(note) = entries.iter().find(|note| note.id == id) else {
+                failed.push(
+                    json!({ "id": id, "error": format!("note_not_found: Note {id} not found") }),
+                );
+                continue;
+            };
+            let path = match validate_path_within_roots(&note.path, &roots) {
+                Ok(path) => path,
+                Err(error) => {
+                    failed.push(json!({ "id": id, "error": error }));
+                    continue;
+                }
+            };
+            if let Err(error) = remove_note_assets(&path)
+                .and_then(|()| fs::remove_file(&path).map_err(|error| error.to_string()))
+            {
+                failed.push(json!({ "id": id, "error": error }));
+                continue;
+            }
+            deleted_ids.insert(id);
+            deleted_notes.push(json!({ "id": id, "path": path.to_string_lossy() }));
+        }
+
+        if !deleted_ids.is_empty() {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "jobs_lock_failed: jobs lock is poisoned".to_string())?;
+            for job in jobs.iter_mut() {
+                if job
+                    .note_id
+                    .is_some_and(|note_id| deleted_ids.contains(&note_id))
+                {
+                    job.note_id = None;
+                    job.output_path = None;
+                }
+            }
+            save_jobs(&self.jobs_state_path, &jobs)?;
+        }
+        Ok(json!({ "deleted_notes": deleted_notes, "failed": failed }))
     }
 
     fn relocate_note_in_place(&self, old_path: &Path, new_path: &Path) -> Result<u32, String> {

@@ -1803,6 +1803,76 @@ fn notes_batch_move_relocates_all_or_rolls_back() {
 }
 
 #[test]
+fn notes_batch_delete_removes_files_and_clears_job_pointer() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let first = exports.join("first.md");
+    let second = exports.join("second.md");
+    let first_assets = exports.join("assets").join("first");
+    fs::create_dir_all(&first_assets).unwrap();
+    fs::write(&first, "# First").unwrap();
+    fs::write(&second, "# Second").unwrap();
+    fs::write(first_assets.join("frame.png"), "image").unwrap();
+    let first_id = note_id(&first);
+    let second_id = note_id(&second);
+    let mut first_job = test_job(51, "completed");
+    first_job.note_id = Some(first_id);
+    first_job.output_path = Some(first.to_string_lossy().to_string());
+    insert_job(&engine, first_job, false);
+    let mut second_job = test_job(52, "completed");
+    second_job.note_id = Some(second_id);
+    second_job.output_path = Some(second.to_string_lossy().to_string());
+    insert_job(&engine, second_job, false);
+
+    let deleted = engine
+        .call(
+            "notes.batch_delete",
+            json!({ "ids": [first_id, second_id], "confirm": true }),
+        )
+        .expect("method handled")
+        .expect("batch delete succeeds");
+    assert_eq!(deleted["deleted_notes"].as_array().unwrap().len(), 2);
+    assert!(deleted["failed"].as_array().unwrap().is_empty());
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert!(!first_assets.exists());
+    let jobs = engine.jobs.lock().unwrap();
+    assert!(jobs.iter().all(|job| job.note_id.is_none()));
+    assert!(jobs.iter().all(|job| job.output_path.is_none()));
+    drop(jobs);
+    let reloaded = engine_for_root(&root);
+    assert!(reloaded
+        .jobs
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|job| job.note_id.is_none() && job.output_path.is_none()));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_batch_delete_requires_confirm() {
+    let (engine, root) = temp_engine();
+    let note_path = root.join("exports").join("keep.md");
+    fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+    fs::write(&note_path, "# Keep").unwrap();
+
+    let result = engine
+        .call(
+            "notes.batch_delete",
+            json!({ "ids": [note_id(&note_path)], "confirm": false }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("confirmation is mandatory")
+        .contains("confirm_required"));
+    assert!(note_path.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
