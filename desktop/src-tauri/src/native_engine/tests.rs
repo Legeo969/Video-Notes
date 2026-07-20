@@ -1765,6 +1765,44 @@ fn notes_delete_folder_refuses_root() {
 }
 
 #[test]
+fn notes_batch_move_relocates_all_or_rolls_back() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let source = exports.join("Source");
+    let target = exports.join("Target");
+    let first = source.join("first.md");
+    let second = source.join("second.md");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(&first, "# First").unwrap();
+    fs::write(&second, "# Second").unwrap();
+    fs::write(target.join("second.md"), "# Collision").unwrap();
+
+    let result = engine
+        .call(
+            "notes.batch_move",
+            json!({
+                "ids": [note_id(&first), note_id(&second)],
+                "target_folder": "Target"
+            }),
+        )
+        .expect("method handled")
+        .expect("batch result is structured");
+    assert!(result["moved"].as_array().unwrap().is_empty());
+    assert_eq!(result["failed"].as_array().unwrap().len(), 1);
+    assert_eq!(result["failed"][0]["id"], note_id(&second));
+    assert!(first.is_file(), "first move must be rolled back");
+    assert!(second.is_file());
+    assert!(!target.join("first.md").exists());
+    assert_eq!(
+        fs::read_to_string(target.join("second.md")).unwrap(),
+        "# Collision"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");

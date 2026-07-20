@@ -438,6 +438,7 @@ impl NativeEngine {
             "notes.move" => self.notes_move(params),
             "notes.rename_folder" => self.notes_rename_folder(params),
             "notes.delete_folder" => self.notes_delete_folder(params),
+            "notes.batch_move" => self.notes_batch_move(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1890,6 +1891,63 @@ impl NativeEngine {
         });
         fs::remove_dir_all(&folder_path).map_err(|error| error.to_string())?;
         Ok(json!({ "deleted_notes": deleted_notes }))
+    }
+
+    fn notes_batch_move(&self, params: Value) -> Result<Value, String> {
+        let ids = params
+            .get("ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "invalid_ids: ids must be an array".to_string())?;
+        let target_folder = params
+            .get("target_folder")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "invalid_target_folder: target_folder is required".to_string())?;
+        validate_relative_path_arg(target_folder)?;
+
+        let mut completed: Vec<(u32, PathBuf, PathBuf)> = Vec::new();
+        let mut moved = Vec::new();
+        for value in ids {
+            let id = value
+                .as_u64()
+                .ok_or_else(|| "invalid_ids: every id must be an unsigned integer".to_string())?
+                as u32;
+            match self.notes_move(json!({ "id": id, "target_folder": target_folder })) {
+                Ok(result) => {
+                    let new_id = result["id"]
+                        .as_u64()
+                        .ok_or_else(|| "invalid_move_result: id is missing".to_string())?
+                        as u32;
+                    let new_path = result["path"]
+                        .as_str()
+                        .map(PathBuf::from)
+                        .ok_or_else(|| "invalid_move_result: path is missing".to_string())?;
+                    let old_path = result["previous_path"]
+                        .as_str()
+                        .map(PathBuf::from)
+                        .ok_or_else(|| {
+                            "invalid_move_result: previous_path is missing".to_string()
+                        })?;
+                    completed.push((id, old_path, new_path.clone()));
+                    moved.push(json!({ "id": new_id, "path": new_path.to_string_lossy() }));
+                }
+                Err(error) => {
+                    let mut rollback_failed = false;
+                    for (_, old_path, new_path) in completed.iter().rev() {
+                        if self.relocate_note_in_place(new_path, old_path).is_err() {
+                            rollback_failed = true;
+                        }
+                    }
+                    if !rollback_failed {
+                        moved.clear();
+                    }
+                    return Ok(json!({
+                        "moved": moved,
+                        "failed": [{ "id": id, "error": error }],
+                    }));
+                }
+            }
+        }
+        Ok(json!({ "moved": moved, "failed": [] }))
     }
 
     fn relocate_note_in_place(&self, old_path: &Path, new_path: &Path) -> Result<u32, String> {
