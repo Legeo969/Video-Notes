@@ -143,8 +143,8 @@
   };
   type TreeResult = { folders: TreeFolder[]; notes: TreeNote[] };
   let tree = $state<TreeResult | null>(null);
-  let sortField = $state<"created_at" | "modified_at" | "title" | "path">("created_at");
-  let sortDir = $state<"asc" | "desc">("desc");
+  let sortField = $state<"name" | "created_at" | "modified_at" | "title" | "path">("name");
+  let sortDir = $state<"asc" | "desc">("asc");
   let expanded = $state<Set<string>>(new Set([""]));
   let multiSelect = $state(false);
   let selectedIds = $state<Set<number>>(new Set());
@@ -154,7 +154,8 @@
   let sortMenuPos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
   let sortBtnEl = $state<HTMLButtonElement | null>(null);
 
-  const SORT_FIELDS: { id: "created_at" | "modified_at" | "title" | "path"; label: string }[] = [
+  const SORT_FIELDS: { id: "name" | "created_at" | "modified_at" | "title" | "path"; label: string }[] = [
+    { id: "name", label: "名称" },
     { id: "created_at", label: "创建时间" },
     { id: "modified_at", label: "修改时间" },
     { id: "title", label: "标题" },

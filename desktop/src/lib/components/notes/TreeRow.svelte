@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from '../Icon.svelte';
   import Self from './TreeRow.svelte';
+  import { onDestroy } from 'svelte';
 
   type Folder = { path: string; name: string };
   type TreeNote = {
@@ -11,7 +12,7 @@
     created_at: string;
     modified_at?: string;
   };
-  type SortField = 'created_at' | 'modified_at' | 'title' | 'path';
+  type SortField = 'name' | 'created_at' | 'modified_at' | 'title' | 'path';
   type SortDir = 'asc' | 'desc';
 
   let {
@@ -50,60 +51,94 @@
     onRequestMove?: (note: TreeNote, anchor: { x: number; y: number }) => void;
   } = $props();
 
-  // Long-press detection for touch / mouse hold. On desktop the primary
-  // "move" affordance is right-click via the `contextmenu` handler below;
-  // long-press covers touch devices where contextmenu is unreliable.
-  //
-  // Implementation notes:
-  //   * We listen on BOTH `pointerdown` and `touchstart` because the Tauri
-  //     WebView2 on some Windows builds does not surface pointer events
-  //     for touch input reliably; touchstart is the legacy path.
-  //   * We do NOT cancel on `pointerleave` / `mouseleave` — that fires
-  //     when the finger or cursor drifts by a pixel and silently breaks
-  //     long-press. Cancellation is only by explicit lift, cancel, or
-  //     a drag starting.
+  // Long-press initiates a custom drag (no HTML5 dragstart, so we can
+  // support touch without the WebView2 quirks that broke the menu popover).
+  // Once the timer fires the note is "lifted"; pointermove tracks the
+  // cursor over folder rows (highlight via `.drag-over`), pointerup
+  // drops on whichever folder is under the cursor (or cancels if the
+  // pointer ends up outside any folder).
   let pressTimer: ReturnType<typeof setTimeout> | null = null;
-  let pressTriggered = $state(false);
+  let pressNoteId = $state<number | null>(null);
+  let pressOrigin: { x: number; y: number } | null = $state(null);
+  let isLongPressDragging = $state(false);
+  let activeHoverFolder: string | null = $state(null);
+
   function clearPress() {
     if (pressTimer !== null) {
       clearTimeout(pressTimer);
       pressTimer = null;
     }
   }
+  function endLongPressDrag() {
+    isLongPressDragging = false;
+    pressNoteId = null;
+    pressOrigin = null;
+    activeHoverFolder = null;
+  }
   function startPress(note: TreeNote, e: Event) {
     if (multiSelect) return;
     clearPress();
-    pressTriggered = false;
+    isLongPressDragging = false;
+    pressNoteId = note.id;
+    const point =
+      'touches' in e && (e as TouchEvent).touches[0]
+        ? { x: (e as TouchEvent).touches[0].clientX, y: (e as TouchEvent).touches[0].clientY }
+        : 'clientX' in e
+          ? { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY }
+          : null;
+    pressOrigin = point;
     const target = e.currentTarget as HTMLElement | null;
-    if (!target) return;
-    const rect = target.getBoundingClientRect();
+    if (!target || !point) return;
     pressTimer = setTimeout(() => {
-      pressTriggered = true;
-      onRequestMove?.(note, { x: rect.left + rect.width / 2, y: rect.bottom });
       pressTimer = null;
-    }, 550);
+      // Only start the drag if the cursor hasn't drifted too far (otherwise
+      // it was probably a scroll, not a long-press).
+      if (pressOrigin && Math.hypot(point.x - pressOrigin.x, point.y - pressOrigin.y) > 8) {
+        endLongPressDrag();
+        return;
+      }
+      isLongPressDragging = true;
+      activeHoverFolder = null;
+    }, 350);
   }
-  // Touch-specific long-press path. The `pointerdown` handler above
-  // covers most cases but Tauri WebView2 on Windows sometimes dispatches
-  // touch events only as TouchEvent, never as PointerEvent. This handler
-  // duplicates the timer setup and uses touch coordinates for the popover
-  // anchor.
+  // Touch-specific entry point. Duplicates `startPress` so we can read
+  // touch coordinates reliably on Tauri WebView2 builds that skip the
+  // synthesized PointerEvent for touch.
   function startTouchPress(note: TreeNote, e: TouchEvent) {
     if (multiSelect) return;
-    clearPress();
-    pressTriggered = false;
-    const touch = e.touches[0] ?? e.changedTouches[0];
-    const target = e.currentTarget as HTMLElement | null;
-    if (!touch || !target) return;
-    const rect = target.getBoundingClientRect();
-    pressTimer = setTimeout(() => {
-      pressTriggered = true;
-      // Prevent the synthetic mouseup that follows a long touch from
-      // being interpreted as a normal click that would open the note.
-      e.preventDefault();
-      onRequestMove?.(note, { x: rect.left + rect.width / 2, y: rect.bottom });
-      pressTimer = null;
-    }, 550);
+    startPress(note, e);
+    // Prevent the synthetic mouseup that follows a long touch from being
+    // interpreted as a normal click that would open the note.
+    if (isLongPressDragging) e.preventDefault();
+  }
+
+  // Window-level pointer tracking. Only attached while a long-press drag
+  // is active. Uses `document.elementFromPoint` to find the folder row
+  // under the cursor (if any) and toggles its highlight.
+  function onLongPressMove(e: PointerEvent) {
+    if (!isLongPressDragging || pressNoteId === null) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const folderEl = el?.closest?.('.folder-row') as HTMLElement | null;
+    const folderPath = folderEl?.getAttribute?.('data-folder-path') ?? null;
+    if (folderPath !== activeHoverFolder) activeHoverFolder = folderPath;
+  }
+  async function onLongPressEnd(e: PointerEvent) {
+    if (!isLongPressDragging || pressNoteId === null) {
+      // Not a long-press drag — nothing to do. The note row's normal
+      // click handler will fire next.
+      return;
+    }
+    // We're committed. Cancel the default click so the note doesn't open.
+    e.preventDefault();
+    e.stopPropagation();
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const folderEl = el?.closest?.('.folder-row') as HTMLElement | null;
+    const targetFolder = folderEl?.getAttribute?.('data-folder-path') ?? null;
+    const noteId = pressNoteId;
+    endLongPressDrag();
+    if (targetFolder !== null && onDropNote) {
+      await onDropNote(noteId, targetFolder);
+    }
   }
 
   // Per-row drag state for `.drag-over` highlight. Folder rows track
@@ -112,8 +147,44 @@
   let dragOverFolder = $state<string | null>(null);
   let isDragging = $state(false);
 
+  // While a long-press drag is in progress, track pointer position on the
+  // window so the highlight follows the cursor even when it leaves the
+  // originating note row. We attach / detach listeners reactively based
+  // on `isLongPressDragging`.
+  $effect(() => {
+    if (!isLongPressDragging) return;
+    const onMove = (e: PointerEvent) => onLongPressMove(e);
+    const onUp = (e: PointerEvent) => { void onLongPressEnd(e); };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { capture: true });
+    window.addEventListener('pointercancel', onUp, { capture: true });
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp, { capture: true } as any);
+      window.removeEventListener('pointercancel', onUp, { capture: true } as any);
+    };
+  });
+  onDestroy(() => {
+    if (pressTimer !== null) clearTimeout(pressTimer);
+  });
+
   function compareCi(a: string, b: string): number {
     return (a ?? '').localeCompare(b ?? '', undefined, { sensitivity: 'base' });
+  }
+
+  /**
+   * Natural sort by filename so prefixes like "1.", "2.", "10." come out
+   * in numeric order rather than lexicographic ("10." < "2.").
+   * `Intl.Collator({ numeric: true })` is the standard browser-native
+   * implementation and handles CJK locale correctly.
+   */
+  let nameCollator = $derived(new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }));
+  function basenameOf(path: string): string {
+    const segs = path.split(/[\\/]/);
+    return segs[segs.length - 1] ?? path;
+  }
+  function compareByName(a: string, b: string): number {
+    return nameCollator.compare(basenameOf(a), basenameOf(b));
   }
 
   function dateMs(iso: string): number {
@@ -146,7 +217,8 @@
     const out = list.filter((n) => (n.folder ?? '') === folder);
     out.sort((a, b) => {
       let primary = 0;
-      if (sortField === 'created_at') primary = dateMs(a.created_at) - dateMs(b.created_at);
+      if (sortField === 'name') primary = compareByName(a.path, b.path);
+      else if (sortField === 'created_at') primary = dateMs(a.created_at) - dateMs(b.created_at);
       else if (sortField === 'modified_at') primary = dateMs(a.modified_at ?? '') - dateMs(b.modified_at ?? '');
       else if (sortField === 'title') primary = compareCi(a.title, b.title);
       else primary = compareCi(a.path, b.path);
@@ -204,6 +276,9 @@
   }
 
   function handleNoteClick(id: number) {
+    // If a long-press drag just completed, suppress the synthesized click
+    // so the note doesn't open right after a drop.
+    if (isLongPressDragging) return;
     // Multi-select toggle is owned by the parent's `selectNoteFromTree` so
     // there's exactly one source of truth for the selection Set. Calling it
     // from here is enough — the local toggle was previously double-toggling
@@ -307,8 +382,9 @@
       <button
         type="button"
         class="folder-row"
-        class:drag-over={dragOverFolder === folder.path}
+        class:drag-over={dragOverFolder === folder.path || activeHoverFolder === folder.path}
         draggable={!multiSelect}
+        data-folder-path={folder.path}
         onclick={() => onToggleFolder?.(folder.path)}
         title={folder.path}
         aria-expanded={expanded.has(folder.path)}
@@ -357,7 +433,8 @@
       class:with-check={multiSelect}
       class:selected={selectedId === note.id}
       class:checked={multiSelect && selectedIds.has(note.id)}
-      class:dragging={isDragging}
+      class:dragging={isDragging || (isLongPressDragging && pressNoteId === note.id)}
+      class:long-press-dragging={isLongPressDragging && pressNoteId === note.id}
       style="--depth: {depth + 1}"
       draggable={!multiSelect}
       onclick={() => handleNoteClick(note.id)}
@@ -577,5 +654,11 @@
   }
   .tree-note.dragging {
     opacity: 0.55;
+  }
+  .tree-note.long-press-dragging {
+    opacity: 0.6;
+    outline: 2px dashed var(--accent-color);
+    background: var(--accent-faint);
+    cursor: grabbing;
   }
 </style>
