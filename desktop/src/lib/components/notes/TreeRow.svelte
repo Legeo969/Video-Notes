@@ -53,6 +53,15 @@
   // Long-press detection for touch / mouse hold. On desktop the primary
   // "move" affordance is right-click via the `contextmenu` handler below;
   // long-press covers touch devices where contextmenu is unreliable.
+  //
+  // Implementation notes:
+  //   * We listen on BOTH `pointerdown` and `touchstart` because the Tauri
+  //     WebView2 on some Windows builds does not surface pointer events
+  //     for touch input reliably; touchstart is the legacy path.
+  //   * We do NOT cancel on `pointerleave` / `mouseleave` — that fires
+  //     when the finger or cursor drifts by a pixel and silently breaks
+  //     long-press. Cancellation is only by explicit lift, cancel, or
+  //     a drag starting.
   let pressTimer: ReturnType<typeof setTimeout> | null = null;
   let pressTriggered = $state(false);
   function clearPress() {
@@ -63,13 +72,35 @@
   }
   function startPress(note: TreeNote, e: Event) {
     if (multiSelect) return;
-    pressTriggered = false;
     clearPress();
+    pressTriggered = false;
     const target = e.currentTarget as HTMLElement | null;
     if (!target) return;
     const rect = target.getBoundingClientRect();
     pressTimer = setTimeout(() => {
       pressTriggered = true;
+      onRequestMove?.(note, { x: rect.left + rect.width / 2, y: rect.bottom });
+      pressTimer = null;
+    }, 550);
+  }
+  // Touch-specific long-press path. The `pointerdown` handler above
+  // covers most cases but Tauri WebView2 on Windows sometimes dispatches
+  // touch events only as TouchEvent, never as PointerEvent. This handler
+  // duplicates the timer setup and uses touch coordinates for the popover
+  // anchor.
+  function startTouchPress(note: TreeNote, e: TouchEvent) {
+    if (multiSelect) return;
+    clearPress();
+    pressTriggered = false;
+    const touch = e.touches[0] ?? e.changedTouches[0];
+    const target = e.currentTarget as HTMLElement | null;
+    if (!touch || !target) return;
+    const rect = target.getBoundingClientRect();
+    pressTimer = setTimeout(() => {
+      pressTriggered = true;
+      // Prevent the synthetic mouseup that follows a long touch from
+      // being interpreted as a normal click that would open the note.
+      e.preventDefault();
       onRequestMove?.(note, { x: rect.left + rect.width / 2, y: rect.bottom });
       pressTimer = null;
     }, 550);
@@ -336,8 +367,10 @@
         onRequestMove?.(note, { x: e.clientX, y: e.clientY });
       }}
       onpointerdown={(e) => startPress(note, e)}
+      ontouchstart={(e) => startTouchPress(note, e)}
       onpointerup={clearPress}
-      onpointerleave={clearPress}
+      ontouchend={clearPress}
+      ontouchcancel={clearPress}
       onpointercancel={clearPress}
       ondragstart={(e) => handleNoteDragStart(e, note.id)}
       ondragend={handleNoteDragEnd}
