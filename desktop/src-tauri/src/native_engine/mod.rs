@@ -436,6 +436,7 @@ impl NativeEngine {
             "notes.tree" => self.notes_tree(),
             "notes.create_folder" => self.notes_create_folder(params),
             "notes.move" => self.notes_move(params),
+            "notes.rename_folder" => self.notes_rename_folder(params),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1769,23 +1770,96 @@ impl NativeEngine {
         }))
     }
 
+    fn notes_rename_folder(&self, params: Value) -> Result<Value, String> {
+        let relative = params
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "invalid_path: path is required".to_string())?;
+        validate_relative_path_arg(relative)?;
+        if relative.trim().is_empty() {
+            return Err("cannot_rename_root: root export folder cannot be renamed".to_string());
+        }
+        let new_name = params
+            .get("new_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "invalid_name: new_name must not be empty".to_string())?;
+        validate_folder_name(new_name)?;
+
+        let roots = self.note_roots();
+        let folder_path = roots
+            .iter()
+            .map(|root| root.join(relative))
+            .find(|candidate| candidate.is_dir())
+            .ok_or_else(|| "folder_not_found: folder does not exist".to_string())?;
+        let folder_path = validate_path_within_roots(&folder_path, &roots)?;
+        let old_name = folder_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "invalid_path: folder has no name".to_string())?;
+        if old_name == new_name {
+            return Err("same_name: folder already has that name".to_string());
+        }
+        let parent = folder_path.parent().ok_or_else(|| {
+            "cannot_rename_root: root export folder cannot be renamed".to_string()
+        })?;
+        let new_path = validate_path_within_roots(&parent.join(new_name), &roots)?;
+        if new_path.exists() {
+            return Err("folder_exists: target folder already exists".to_string());
+        }
+
+        let mut descendant_notes = Vec::new();
+        collect_markdown_notes(&folder_path, &mut descendant_notes, 0)?;
+        let mappings = descendant_notes
+            .into_iter()
+            .map(|note| {
+                let suffix = note
+                    .path
+                    .strip_prefix(&folder_path)
+                    .map_err(|error| error.to_string())?
+                    .to_path_buf();
+                Ok((note.path, new_path.join(suffix)))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        rename_dir_cross_volume(&folder_path, &new_path)?;
+        let mut finalized: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for (old_note_path, new_note_path) in &mappings {
+            if let Err(error) = self.relocate_note_in_place(old_note_path, new_note_path) {
+                let _ = rename_dir_cross_volume(&new_path, &folder_path);
+                for (old_finalized, new_finalized) in finalized.into_iter().rev() {
+                    let _ = self.relocate_note_in_place(&new_finalized, &old_finalized);
+                }
+                return Err(error);
+            }
+            finalized.push((old_note_path.clone(), new_note_path.clone()));
+        }
+        Ok(json!({ "path": new_path.to_string_lossy() }))
+    }
+
     fn relocate_note_in_place(&self, old_path: &Path, new_path: &Path) -> Result<u32, String> {
         if old_path == new_path {
             return Err("same_path: note is already in the target folder".to_string());
         }
-        if new_path.exists() {
+        let already_relocated = !old_path.exists() && new_path.is_file();
+        if new_path.exists() && !already_relocated {
             return Err("note_exists: target note already exists".to_string());
         }
-        let new_parent = new_path
-            .parent()
-            .ok_or_else(|| "invalid_path: target note has no parent".to_string())?;
-        fs::create_dir_all(new_parent).map_err(|error| error.to_string())?;
+        if !already_relocated {
+            let new_parent = new_path
+                .parent()
+                .ok_or_else(|| "invalid_path: target note has no parent".to_string())?;
+            fs::create_dir_all(new_parent).map_err(|error| error.to_string())?;
+        }
 
         let old_asset_dir = note_asset_dir(old_path);
         let new_asset_dir = note_asset_dir(new_path);
-        if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
-            if old_assets.is_dir() && new_assets.exists() {
-                return Err("asset_exists: target note assets already exist".to_string());
+        if !already_relocated {
+            if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
+                if old_assets.is_dir() && new_assets.exists() {
+                    return Err("asset_exists: target note assets already exist".to_string());
+                }
             }
         }
 
@@ -1795,23 +1869,29 @@ impl NativeEngine {
             .jobs
             .lock()
             .map_err(|_| "jobs_lock_failed: jobs lock is poisoned".to_string())?;
-        fs::rename(old_path, new_path).map_err(|error| error.to_string())?;
+        if !already_relocated {
+            fs::rename(old_path, new_path).map_err(|error| error.to_string())?;
+        }
 
-        let moved_assets = match (&old_asset_dir, &new_asset_dir) {
-            (Some(old_assets), Some(new_assets)) if old_assets.is_dir() => {
-                if let Some(parent) = new_assets.parent() {
-                    if let Err(error) = fs::create_dir_all(parent) {
-                        let _ = fs::rename(new_path, old_path);
-                        return Err(error.to_string());
+        let moved_assets = if already_relocated {
+            false
+        } else {
+            match (&old_asset_dir, &new_asset_dir) {
+                (Some(old_assets), Some(new_assets)) if old_assets.is_dir() => {
+                    if let Some(parent) = new_assets.parent() {
+                        if let Err(error) = fs::create_dir_all(parent) {
+                            let _ = fs::rename(new_path, old_path);
+                            return Err(error.to_string());
+                        }
                     }
+                    if let Err(error) = rename_dir_cross_volume(old_assets, new_assets) {
+                        let _ = fs::rename(new_path, old_path);
+                        return Err(error);
+                    }
+                    true
                 }
-                if let Err(error) = rename_dir_cross_volume(old_assets, new_assets) {
-                    let _ = fs::rename(new_path, old_path);
-                    return Err(error);
-                }
-                true
+                _ => false,
             }
-            _ => false,
         };
 
         if let Err(error) = self.allow_note_asset_root(new_path) {
@@ -1820,7 +1900,9 @@ impl NativeEngine {
                     let _ = rename_dir_cross_volume(new_assets, old_assets);
                 }
             }
-            let _ = fs::rename(new_path, old_path);
+            if !already_relocated {
+                let _ = fs::rename(new_path, old_path);
+            }
             return Err(error);
         }
 
@@ -1848,7 +1930,9 @@ impl NativeEngine {
                     let _ = rename_dir_cross_volume(new_assets, old_assets);
                 }
             }
-            let _ = fs::rename(new_path, old_path);
+            if !already_relocated {
+                let _ = fs::rename(new_path, old_path);
+            }
             return Err(error);
         }
         Ok(new_id)

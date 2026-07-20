@@ -1578,6 +1578,116 @@ fn notes_move_is_noop_if_same_path() {
 }
 
 #[test]
+fn notes_rename_folder_updates_descendant_paths() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let old_folder = exports.join("Course");
+    let old_nested_note = old_folder.join("Module").join("lesson.md");
+    let new_folder = exports.join("Renamed");
+    let new_nested_note = new_folder.join("Module").join("lesson.md");
+    fs::create_dir_all(old_nested_note.parent().unwrap()).unwrap();
+    fs::write(old_folder.join("overview.md"), "# Overview").unwrap();
+    fs::write(&old_nested_note, "# Lesson").unwrap();
+    fs::write(old_folder.join("keep.txt"), "preserve me").unwrap();
+
+    let renamed = engine
+        .call(
+            "notes.rename_folder",
+            json!({ "path": "Course", "new_name": "Renamed" }),
+        )
+        .expect("method handled")
+        .expect("rename succeeds");
+    assert_eq!(PathBuf::from(renamed["path"].as_str().unwrap()), new_folder);
+    assert!(!old_folder.exists());
+    assert!(new_folder.join("overview.md").is_file());
+    assert!(new_nested_note.is_file());
+    assert_eq!(
+        fs::read_to_string(new_folder.join("keep.txt")).unwrap(),
+        "preserve me"
+    );
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    assert!(tree["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note["folder"] == "Renamed/Module"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_rename_folder_rejects_collision() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(exports.join("Course")).unwrap();
+    fs::create_dir_all(exports.join("Existing")).unwrap();
+
+    let collision = engine
+        .call(
+            "notes.rename_folder",
+            json!({ "path": "Course", "new_name": "Existing" }),
+        )
+        .expect("method handled");
+    assert!(collision
+        .expect_err("collision must fail")
+        .contains("folder_exists"));
+    let unchanged = engine
+        .call(
+            "notes.rename_folder",
+            json!({ "path": "Course", "new_name": "Course" }),
+        )
+        .expect("method handled");
+    assert!(unchanged
+        .expect_err("unchanged name must fail")
+        .contains("same_name"));
+    assert!(exports.join("Course").is_dir());
+    assert!(exports.join("Existing").is_dir());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_rename_folder_updates_jobs_for_moved_notes() {
+    let (engine, root) = temp_engine();
+    let old_path = root
+        .join("exports")
+        .join("Course")
+        .join("Module")
+        .join("lesson.md");
+    let new_path = root
+        .join("exports")
+        .join("Renamed")
+        .join("Module")
+        .join("lesson.md");
+    fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, "# Lesson").unwrap();
+    let mut job = test_job(42, "completed");
+    job.note_id = Some(note_id(&old_path));
+    job.output_path = Some(old_path.to_string_lossy().to_string());
+    insert_job(&engine, job, false);
+
+    engine
+        .call(
+            "notes.rename_folder",
+            json!({ "path": "Course", "new_name": "Renamed" }),
+        )
+        .expect("method handled")
+        .expect("rename succeeds");
+    let jobs = engine.jobs.lock().unwrap();
+    assert_eq!(jobs[0].note_id, Some(note_id(&new_path)));
+    assert_eq!(
+        jobs[0].output_path.as_deref(),
+        Some(new_path.to_string_lossy().as_ref())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
