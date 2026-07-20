@@ -81,6 +81,15 @@ impl CompileClientConfig {
     }
 }
 
+fn compile_video_request_url(config: &CompileClientConfig) -> String {
+    let base = config.base_url.trim_end_matches('/');
+    if config.provider_kind == ProviderKind::Anthropic {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/chat/completions")
+    }
+}
+
 /// Compile a chunk by sending a video clip directly to an Omni-capable model.
 /// Uses `video_url` content type with Base64-encoded MP4 data.
 pub fn compile_chunk_video(
@@ -120,7 +129,7 @@ pub fn compile_chunk_video(
         let video_b64 = general_purpose::STANDARD.encode(video_mp4);
         let body = build_video_request_body(config, &video_b64, &system, &user_text)?;
 
-        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let url = compile_video_request_url(config);
         let response = match apply_provider_auth(client.post(&url), config)
             .json(&body)
             .send()
@@ -538,6 +547,33 @@ mod tests {
         .unwrap();
         assert_eq!(request.headers()["api-key"], "test-key");
         assert!(request.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn compile_video_request_url_uses_messages_endpoint_for_anthropic() {
+        let mut config = CompileClientConfig::new(
+            "https://api.minimax.io/anthropic/v1/".to_string(),
+            "test-key".to_string(),
+            "MiniMax-M3".to_string(),
+            ProviderKind::Anthropic,
+        );
+        config.accepts_video = true;
+        assert_eq!(
+            compile_video_request_url(&config),
+            "https://api.minimax.io/anthropic/v1/messages"
+        );
+
+        let mut compat = CompileClientConfig::new(
+            "https://api.xiaomimimo.com/v1".to_string(),
+            "test-key".to_string(),
+            "mimo-v2.5".to_string(),
+            ProviderKind::XiaomiMiMo,
+        );
+        compat.accepts_video = true;
+        assert_eq!(
+            compile_video_request_url(&compat),
+            "https://api.xiaomimimo.com/v1/chat/completions"
+        );
     }
 
     #[test]
