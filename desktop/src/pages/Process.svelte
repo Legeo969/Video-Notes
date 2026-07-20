@@ -106,7 +106,6 @@
       const result = await engineCall<{ job_id: number }>("compile.video", {
         input,
         title: title.trim() || undefined,
-        mode: "precision",
         template,
       });
       startedJobId = Number(result.job_id);

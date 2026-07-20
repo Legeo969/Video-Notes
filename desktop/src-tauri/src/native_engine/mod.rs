@@ -279,6 +279,12 @@ struct CollectionBatchItem {
     id: u64,
     input: String,
     title: String,
+    // VN-LDRFT-001 removed the compile-mode switch. This string is kept
+    // for round-trip compatibility with collection JSON files written
+    // before the field carried semantic meaning; new writes should leave
+    // it as "precision". The field is unused at compile time but must
+    // round-trip via serde.
+    #[allow(dead_code)]
     compile_mode: String,
 }
 
@@ -3077,7 +3083,6 @@ impl NativeEngine {
                 json!({
                     "input": item.input.clone(),
                     "title": item.title.clone(),
-                    "mode": item.compile_mode.clone(),
                 }),
                 Some((id, item.id)),
                 None,
@@ -3453,14 +3458,10 @@ impl NativeEngine {
         }
         let downloads_root = self.data_dir.join(".downloads");
 
-        let prefer_draft = crate::native_engine::string_param(&params, "mode")
-            .map(|m| m == "draft")
-            .unwrap_or(false);
         let request_snapshot = json!({
             "input": input.clone(),
             "title": title.clone(),
             "template": template.clone(),
-            "mode": if prefer_draft { "draft" } else { "precision" },
         });
         let (attempt, parent_run_id, inherited_collection_binding) = retry_context
             .map(|(attempt, parent_run_id, binding)| (attempt, Some(parent_run_id), binding))
@@ -3785,7 +3786,6 @@ impl NativeEngine {
                 storage_dir,
                 sampler: crate::compile::SamplerOptions::default(),
                 client_config,
-                prefer_draft,
                 on_progress: Some(Box::new(progress_cb)),
                 checkpoint: Some(Box::new(checkpoint_cb)),
                 on_process_started: Some(Box::new(process_started_cb)),
@@ -5076,6 +5076,9 @@ fn retry_params_for_job(job: &NativeJob) -> Value {
         params.insert("title".to_string(), json!(title));
     }
     if let Some(snapshot) = job.settings_snapshot.as_ref().and_then(Value::as_object) {
+        // "mode" is kept for snapshot round-trip compatibility with jobs
+        // recorded before VN-LDRFT-001; the field is no longer consumed by
+        // the compile pipeline (which now only supports CloudPrecision).
         for key in ["template", "mode"] {
             if let Some(value) = snapshot.get(key).and_then(Value::as_str) {
                 params.insert(key.to_string(), json!(value));

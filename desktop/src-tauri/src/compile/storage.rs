@@ -239,7 +239,6 @@ pub struct CapsuleBuilder {
     source_title: String,
     model_used: String,
     total_duration: f32,
-    compilation_mode: CompileMode,
     evidences: Vec<Evidence>,
     chunk_summaries: Vec<(u32, String)>,
 }
@@ -250,14 +249,12 @@ impl CapsuleBuilder {
         source_title: String,
         model_used: String,
         total_duration: f32,
-        mode: CompileMode,
     ) -> Self {
         Self {
             source_hash,
             source_title,
             model_used,
             total_duration,
-            compilation_mode: mode,
             evidences: Vec::new(),
             chunk_summaries: Vec::new(),
         }
@@ -358,7 +355,7 @@ impl CapsuleBuilder {
             model_used: self.model_used,
             evidences: self.evidences,
             global_summary,
-            compilation_mode: self.compilation_mode,
+            compilation_mode: CompileMode::CloudPrecision,
             warnings: Vec::new(),
             source_input: String::new(),
         }
@@ -534,7 +531,6 @@ mod tests {
             "Test source".to_string(),
             "model".to_string(),
             10.0,
-            CompileMode::CloudPrecision,
         );
         builder.add_chunk(
             0,
@@ -564,7 +560,6 @@ mod tests {
             "Test source".to_string(),
             "model".to_string(),
             10.0,
-            CompileMode::LocalDraft,
         )
         .build(version);
         capsule
@@ -574,5 +569,31 @@ mod tests {
         assert_eq!(store.get(&source_hash, version).unwrap().version, version);
         assert_eq!(store.list_versions(&source_hash).unwrap().len(), 1);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_local_draft_capsule_loads_as_cloud_precision() {
+        // VN-LDRFT-001 removed CompileMode::LocalDraft but legacy capsules
+        // written under the old variant must still deserialize (SPEC-IR-005
+        // immutable compilation history). The serde alias on the enum
+        // variant reinterprets "local_draft" as CloudPrecision on read.
+        let legacy = serde_json::json!({
+            "ir_schema_version": 2,
+            "capsule_id": "legacy",
+            "source_hash": "a".repeat(64),
+            "source_title": "Legacy",
+            "version": 1,
+            "total_duration": 10.0,
+            "processed_at": "2025-01-01T00:00:00Z",
+            "model_used": "model",
+            "evidences": [],
+            "global_summary": "",
+            "compilation_mode": "local_draft",
+            "warnings": [],
+            "source_input": "",
+        });
+        let capsule: VideoCapsule = serde_json::from_value(legacy)
+            .expect("legacy local_draft capsule must still deserialize");
+        assert_eq!(capsule.compilation_mode, CompileMode::CloudPrecision);
     }
 }

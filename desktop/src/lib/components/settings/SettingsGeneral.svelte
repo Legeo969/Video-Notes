@@ -4,10 +4,11 @@
   interface SettingsBag {
     output_dir: string;
     vault_path: string;
-    compile_mode: string;
     template: string;
     active_provider: string;
     bilibili_cookie_file: string;
+    compile_concurrency: number;
+    effective_compile_concurrency: number;
   }
 
   let {
@@ -19,6 +20,10 @@
     onMarkDirty: () => void;
     onOpenExternalUrl: (url: string) => void;
   } = $props();
+
+  let effectiveConcurrency = $derived(
+    settings.compile_concurrency || settings.effective_compile_concurrency || 2
+  );
 </script>
 
 <section class="settings-pane">
@@ -34,6 +39,11 @@
       <span class="summary-icon model"><Icon name="cpu" size={18} /></span>
       <strong>云端精确编译</strong>
       <small>编译模式</small>
+    </div>
+    <div class="summary-card">
+      <span class="summary-icon concurrency"><Icon name="tasks" size={18} /></span>
+      <strong class="tabular-number">{effectiveConcurrency} 个任务</strong>
+      <small>{settings.compile_concurrency === 0 ? "智能并发" : "固定并发上限"}</small>
     </div>
   </div>
 
@@ -54,12 +64,21 @@
   </div>
 
   <div class="setting-group settings-card-section">
-    <div class="group-head"><div class="group-icon"><Icon name="cpu" size={18} /></div><div><h3>编译模式</h3><p>当前仅支持云端精确编译模式。</p></div></div>
-    <div class="compile-mode-switcher">
-      <div class="compile-mode-option active">
-        <span class="compile-mode-icon"><Icon name="cloud" size={20} /></span>
-        <span class="compile-mode-copy"><strong>云端精确编译</strong><small>调用云端多模态 AI 分析视频，输出结构化笔记</small></span>
-        <span class="compile-mode-check"><Icon name="check" size={14} /></span>
+    <div class="group-head"><div class="group-icon"><Icon name="tasks" size={18} /></div><div><h3>并行任务</h3><p>限制同时执行媒体处理和云端编译的任务数量。</p></div></div>
+    <div class="concurrency-row">
+      <div class="concurrency-copy">
+        <label for="compile_concurrency">编译任务并发数</label>
+        <p>超出上限的任务会自动排队；任务完成、失败或取消后，下一个任务自动开始。</p>
+      </div>
+      <div class="concurrency-control">
+        <select id="compile_concurrency" bind:value={settings.compile_concurrency} onchange={onMarkDirty} aria-describedby="compile_concurrency_help">
+          <option value={0}>智能推荐（2）</option>
+          <option value={1}>1 个任务</option>
+          <option value={2}>2 个任务</option>
+          <option value={3}>3 个任务</option>
+          <option value={4}>4 个任务</option>
+        </select>
+        <small id="compile_concurrency_help">当前最多同时运行 <strong class="tabular-number">{effectiveConcurrency}</strong> 个任务</small>
       </div>
     </div>
   </div>
@@ -77,6 +96,7 @@
   .summary-card { display: grid; grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; column-gap: 10px; min-height: 78px; padding: 14px; border-radius: 12px; background: var(--bg-subtle); }
   .summary-icon { grid-row: 1 / 3; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent-color); background: var(--accent-soft); }
   .summary-icon.model { color: var(--success-color); background: var(--success-soft); }
+  .summary-icon.concurrency { color: var(--info-color); background: var(--info-soft); }
   .summary-card strong { overflow: hidden; color: var(--text-primary); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .summary-card small { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -87,19 +107,21 @@
   .online-video-settings .input-wrap input { min-height: 38px; }
   .field-help { display: block; margin-top: 4px; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
 
-  .compile-mode-switcher { display: flex; }
-  .compile-mode-option { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 420px; padding: 14px; border: 1px solid var(--accent-color); border-radius: 13px; background: var(--accent-faint); }
-  .compile-mode-option:hover { border-color: var(--border-strong); background: var(--bg-subtle); }
-  .compile-mode-option.active { border-color: var(--accent-color); background: var(--accent-faint); }
-  .compile-mode-icon { display: grid; place-items: center; width: 41px; height: 41px; border-radius: 12px; color: var(--text-secondary); background: var(--bg-muted); }
-  .compile-mode-option.active .compile-mode-icon { color: var(--accent-color); background: var(--accent-soft); }
-  .compile-mode-copy { display: flex; flex: 1; flex-direction: column; }
-  .compile-mode-copy strong { font-size: 14px; }
-  .compile-mode-copy small { margin-top: 3px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-  .compile-mode-check { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: #fff; background: var(--accent-color); }
+  .concurrency-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 230px); align-items: center; gap: 18px; }
+  .concurrency-copy { min-width: 0; }
+  .concurrency-copy label { color: var(--text-primary); font-size: 14px; font-weight: 700; }
+  .concurrency-copy p { max-width: 620px; margin-top: 5px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; text-wrap: pretty; }
+  .concurrency-control { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+  .concurrency-control select { min-height: 44px; font-variant-numeric: tabular-nums; }
+  .concurrency-control small { color: var(--text-tertiary); font-size: 11px; line-height: 1.45; text-wrap: pretty; }
+  .concurrency-control strong { color: var(--accent-color); }
+  .tabular-number { font-variant-numeric: tabular-nums; }
 
-  
-  @media (max-width: 760px) { .settings-summary-grid { grid-template-columns: 1fr; } }
+
+  @media (max-width: 760px) {
+    .settings-summary-grid, .concurrency-row { grid-template-columns: minmax(0, 1fr); }
+    .concurrency-row { align-items: stretch; gap: 12px; }
+  }
   @media (max-width: 1180px) { .settings-pane { padding: 24px; } }
   @media (max-width: 960px) { .settings-pane { padding: 18px 14px 24px; } }
   @media (max-width: 900px) { .settings-pane { padding: 16px 12px 20px; } }

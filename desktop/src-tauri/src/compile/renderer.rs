@@ -6,7 +6,7 @@
 /// - `summary`              : 摘要（全局摘要 + 关键要点）
 /// - `mindmap`              : 大纲式思维导图
 /// - `concise` / `readable` : 简洁易读（按主题分组、去冗余、紧凑格式）
-use crate::compile::{CompileMode, Evidence, EvidenceType, VideoCapsule};
+use crate::compile::{Evidence, EvidenceType, VideoCapsule};
 
 pub fn render(capsule: &VideoCapsule, template: &str) -> Result<String, String> {
     match template {
@@ -58,10 +58,7 @@ fn title_line(capsule: &VideoCapsule) -> String {
 fn metadata_block(capsule: &VideoCapsule) -> String {
     let mut s = String::new();
     s.push_str("## 元数据\n\n");
-    s.push_str(&format!(
-        "- **编译模式**: {}\n",
-        mode_label(capsule.compilation_mode)
-    ));
+    s.push_str(&format!("- **编译模式**: {}\n", MODE_LABEL));
     s.push_str(&format!("- **模型**: {}\n", capsule.model_used));
     s.push_str(&format!("- **时长**: {:.1}s\n", capsule.total_duration));
     s.push_str(&format!("- **处理时间**: {}\n", capsule.processed_at));
@@ -274,7 +271,7 @@ fn render_concise(capsule: &VideoCapsule) -> Result<String, String> {
         "> ⏱ {:?} · {} 条笔记 · 模式: {}\n\n",
         core::time::Duration::from_secs_f32(capsule.total_duration),
         capsule.evidences.len(),
-        mode_label(capsule.compilation_mode)
+        MODE_LABEL
     ));
 
     // Global summary (filtered)
@@ -361,7 +358,7 @@ fn render_mindmap(capsule: &VideoCapsule) -> Result<String, String> {
     mm.push_str(&format!("# Video Notes v{}\n", capsule.version));
     mm.push_str(&format!(
         "- 编译模式: {} | 模型: {} | 时长: {:.0}s | 笔记: {}\n",
-        mode_label(capsule.compilation_mode),
+        MODE_LABEL,
         capsule.model_used,
         capsule.total_duration,
         capsule.evidences.len()
@@ -397,12 +394,9 @@ fn render_mindmap(capsule: &VideoCapsule) -> Result<String, String> {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-fn mode_label(mode: CompileMode) -> &'static str {
-    match mode {
-        CompileMode::CloudPrecision => "云端精确编译",
-        CompileMode::LocalDraft => "本地草稿模式",
-    }
-}
+// VN-LDRFT-001 removed CompileMode::LocalDraft; CloudPrecision is the only
+// compilation mode now, so the human-readable label is a constant.
+const MODE_LABEL: &str = "云端精确编译";
 
 /// Formatted timestamp with brackets: [MM:SS] or [MM:SS–MM:SS]
 fn ts_full(start: f32, end: f32) -> String {

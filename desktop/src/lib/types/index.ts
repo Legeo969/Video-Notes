@@ -105,7 +105,6 @@ export interface VideoCapsule {
   model_used: string;
   evidences: Evidence[];
   global_summary: string;
-  compilation_mode: string;
   warnings: string[];
 }
 

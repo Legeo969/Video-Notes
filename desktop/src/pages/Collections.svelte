@@ -172,7 +172,7 @@ let hasActionableItems = $derived(detail?.items.some((item) => {
     processingScope = scope; batchJobId = null; batchOutputDir = null;
     batchProgress = scope === "pending" ? "正在提交未处理条目…" : "正在提交失败项重试…";
     try {
-      const result = await engineCall<{ batch_job_id: string; count?: number; output_dir?: string }>("collection.batch_process", { id: selectedId, scope, opts: { max_concurrency: 1, compile_mode: "precision" } });
+      const result = await engineCall<{ batch_job_id: string; count?: number; output_dir?: string }>("collection.batch_process", { id: selectedId, scope, opts: { max_concurrency: 1 } });
       await loadCollections(); await selectCollection(selectedId, true);
       batchJobId = result.batch_job_id; batchOutputDir = result.output_dir || null;
       const submitted = result.count ?? 0;

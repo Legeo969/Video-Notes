@@ -285,7 +285,6 @@ video_notes_ir_schema: 2
       },
     ],
     global_summary: "This video covers the Transformer architecture, including self-attention, training procedures, common failure modes, and verification results.",
-    compilation_mode: "cloud_precision",
     warnings: [],
   }),
   "notes.list": () => mockNotes,

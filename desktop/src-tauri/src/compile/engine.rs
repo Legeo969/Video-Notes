@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use crate::compile::bridge::{sha256_hex, ChunkContext};
 use crate::compile::calibrate;
 use crate::compile::client::{self, CompileClientConfig};
-use crate::compile::draft;
 use crate::compile::sampler;
 use crate::compile::storage::{CapsuleBuilder, CapsuleStore, FileCapsuleStore};
 use crate::compile::{CompileMode, Frame, RawCompileOutput, SamplerOptions};
@@ -25,7 +24,6 @@ pub struct CompileOptions {
     pub storage_dir: std::path::PathBuf,
     pub sampler: SamplerOptions,
     pub client_config: Option<CompileClientConfig>,
-    pub prefer_draft: bool,
     pub on_progress: Option<ProgressFn>,
     pub checkpoint: Option<CheckpointFn>,
     pub on_process_started: Option<ProcessStartedFn>,
@@ -77,22 +75,11 @@ pub fn compile_video(
         return Err(format!("input file not found: {}", input_path.display()));
     }
 
-    let requested_mode = match &opts.client_config {
-        Some(config) => draft::resolve_compile_mode(&config.base_url, opts.prefer_draft),
-        None => {
-            return Err(
-                "未配置 API Provider。请在设置中添加 Provider 和 API Key 后再编译。".to_string(),
-            )
-        }
-    };
-    progress(
-        "sampling",
-        5,
-        match requested_mode {
-            CompileMode::CloudPrecision => "模式: Cloud Precision",
-            _ => "模式: Cloud Precision",
-        },
-    );
+    let config = opts
+        .client_config
+        .as_ref()
+        .ok_or_else(|| "未配置 API Provider。请在设置中添加 Provider 和 API Key 后再编译。".to_string())?;
+    progress("sampling", 5, "模式: Cloud Precision");
 
     checkpoint()?;
 
@@ -159,47 +146,37 @@ pub fn compile_video(
 
         let _has_audio = sample.audio.has_audio && chunk.end_sec > chunk.start_sec;
 
-        let output = if requested_mode == CompileMode::CloudPrecision {
-            let config = opts
-                .client_config
-                .as_ref()
-                .ok_or_else(|| "未配置 API Provider，无法编译。".to_string())?;
-            if !config.accepts_video {
-                return Err(
-                    "当前 Provider 不支持视频分析，无法编译。请更换支持多模态的 Provider。"
-                        .to_string(),
-                );
-            }
-            let video_data = sampler::cut_video_segment(
-                input_path,
-                &opts.ffmpeg_path,
-                chunk.start_sec,
-                chunk.end_sec,
-                video_encoder
-                    .as_mut()
-                    .ok_or_else(|| "video encoder was not initialized".to_string())?,
-                process_control,
-            )
-            .map_err(|e| format!("chunk {} video cut failed: {}", chunk.sequence, e))?;
-            if video_data.is_empty() {
-                return Err(format!(
-                    "chunk {} video cut produced empty output",
-                    chunk.sequence
-                ));
-            }
-            client::compile_chunk_video(
-                config,
-                chunk.sequence,
-                total_chunks,
-                &chunk.anchor_indices,
-                &video_data,
-                Some(&context.prev_chunk_summary),
-            )?
-        } else {
+        if !config.accepts_video {
             return Err(
-                "未配置 API Provider，无法编译。请在设置中添加 Provider 和 API Key。".to_string(),
+                "当前 Provider 不支持视频分析，无法编译。请更换支持多模态的 Provider。"
+                    .to_string(),
             );
-        };
+        }
+        let video_data = sampler::cut_video_segment(
+            input_path,
+            &opts.ffmpeg_path,
+            chunk.start_sec,
+            chunk.end_sec,
+            video_encoder
+                .as_mut()
+                .ok_or_else(|| "video encoder was not initialized".to_string())?,
+            process_control,
+        )
+        .map_err(|e| format!("chunk {} video cut failed: {}", chunk.sequence, e))?;
+        if video_data.is_empty() {
+            return Err(format!(
+                "chunk {} video cut produced empty output",
+                chunk.sequence
+            ));
+        }
+        let output = client::compile_chunk_video(
+            config,
+            chunk.sequence,
+            total_chunks,
+            &chunk.anchor_indices,
+            &video_data,
+            Some(&context.prev_chunk_summary),
+        )?;
         context = context.advance(&output.chunk_summary);
         outputs.push(output);
         checkpoint()?;
@@ -257,7 +234,6 @@ pub fn compile_video(
         }
     }
 
-    let final_mode = CompileMode::CloudPrecision;
     let model_used = opts
         .client_config
         .as_ref()
@@ -268,7 +244,6 @@ pub fn compile_video(
         title.to_string(),
         model_used,
         sample.duration_sec as f32,
-        final_mode,
     );
 
     let mut previous_summary_hash: Option<String> = None;
@@ -518,5 +493,35 @@ mod tests {
         assert_eq!(chunks[0].anchor_indices.len(), 18);
         assert_eq!(anchors.get(&0), Some(&0.0));
         assert_eq!(anchors.get(&17), Some(&17.0));
+    }
+
+    #[test]
+    fn local_draft_branch_is_removed() {
+        // Regression: CompileMode::LocalDraft and the offline-draft engine
+        // branch were removed in VN-LDRFT-001. The earlier "未配置 API
+        // Provider" error at engine.rs:200 was misleading because it claimed
+        // the provider was missing when the real cause was a network probe
+        // failure selecting the LocalDraft path. Both the variant and the
+        // engine branch are gone, so this assertion is the contract.
+        //
+        // We grep the engine.rs source to confirm no remaining reference to
+        // LocalDraft exists outside the test fn name itself.
+        let src = include_str!("engine.rs");
+        // Strip this test function body before checking so the function name
+        // and comments don't trigger a false positive.
+        let test_body_start = src
+            .find("fn local_draft_branch_is_removed")
+            .expect("test fn must exist");
+        let head = &src[..test_body_start];
+        assert!(
+            !head.contains("LocalDraft"),
+            "engine.rs must not reference LocalDraft after VN-LDRFT-001; \
+             found: {head}"
+        );
+        assert!(
+            !head.contains("prefer_draft"),
+            "engine.rs CompileOptions must not carry prefer_draft after \
+             VN-LDRFT-001; found: {head}"
+        );
     }
 }

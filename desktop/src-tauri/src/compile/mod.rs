@@ -1,7 +1,6 @@
 pub mod bridge;
 pub mod calibrate;
 pub mod client;
-pub mod draft;
 pub mod engine;
 pub mod prompt;
 pub mod renderer;
@@ -11,7 +10,7 @@ pub mod storage;
 
 use std::collections::HashMap;
 
-pub const IR_SCHEMA_VERSION: u32 = 2;
+pub const IR_SCHEMA_VERSION: u32 = 3;
 
 /// A time-anchor point mapping a stable index to a media timestamp.
 #[derive(Debug, Clone, Copy)]
@@ -122,11 +121,16 @@ pub struct Evidence {
     pub review_reasons: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompileMode {
+    // `alias = "local_draft"` lets legacy capsules (written before VN-LDRFT-001
+    // removed the LocalDraft variant) still deserialize: any "local_draft"
+    // value is reinterpreted as CloudPrecision on read. No on-disk rewrite
+    // is needed (SPEC-IR-005 immutable compilation history).
+    #[default]
+    #[serde(alias = "local_draft")]
     CloudPrecision,
-    LocalDraft,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -143,6 +147,7 @@ pub struct VideoCapsule {
     pub model_used: String,
     pub evidences: Vec<Evidence>,
     pub global_summary: String,
+    #[serde(default)]
     pub compilation_mode: CompileMode,
     #[serde(default)]
     pub warnings: Vec<String>,

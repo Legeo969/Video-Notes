@@ -422,6 +422,13 @@
       "dependencies": [
         "VN-ARCH-003"
       ]
+    },
+    {
+      "task_id": "VN-LDRFT-001",
+      "path": "tasks/spec-v0.2/vn-ldrft-001.json",
+      "status": "ready",
+      "priority": "P1",
+      "dependencies": []
     }
   ]
 }

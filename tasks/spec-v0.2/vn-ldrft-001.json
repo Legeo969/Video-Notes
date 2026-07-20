@@ -1,0 +1,73 @@
+{
+  "task_id": "VN-LDRFT-001",
+  "title": "Remove dead CompileMode::LocalDraft variant and offline-draft pipeline",
+  "phase": "v0.2-implementation",
+  "priority": "P1",
+  "spec_refs": [
+    "SPEC-IR-003",
+    "SPEC-IR-005",
+    "SPEC-COMPILER-006"
+  ],
+  "allowed_paths": [
+    "desktop/src-tauri/src/compile/mod.rs",
+    "desktop/src-tauri/src/compile/engine.rs",
+    "desktop/src-tauri/src/compile/draft.rs",
+    "desktop/src-tauri/src/compile/storage.rs",
+    "desktop/src-tauri/src/compile/renderer.rs",
+    "desktop/src-tauri/src/compile_v3/convert.rs",
+    "desktop/src-tauri/src/compile_v3/storage.rs",
+    "desktop/src-tauri/src/native_engine/mod.rs",
+    "desktop/src/lib/types/index.ts",
+    "desktop/src/lib/api/dev/mockTauri.ts",
+    "desktop/src/lib/components/settings/SettingsGeneral.svelte",
+    "desktop/src/pages/Settings.svelte",
+    "desktop/src/pages/Process.svelte",
+    "desktop/src/pages/Collections.svelte",
+    "tasks/spec-v0.2/vn-ldrft-001.json",
+    "tasks/index.json",
+    "docs/task-reports/VN-LDRFT-001.md"
+  ],
+  "forbidden_changes": [
+    "Removing or weakening the OpenAI-style video_url block path",
+    "Sending Authorization alongside x-api-key for Anthropic providers",
+    "Modifying files outside allowed_paths",
+    "Rewriting on-disk v{n}.json capsules (immutable compilation history per SPEC-IR-005)",
+    "Default-enabling compiler_v3",
+    "Combining unrelated refactoring with this task",
+    "Deleting the immutable_insert_and_replay test (rewrite it instead)"
+  ],
+  "deliverables": [
+    "CompileMode enum reduced to a single CloudPrecision variant",
+    "VideoCapsule.compilation_mode field carries serde(default) + serde(alias = 'local_draft') so legacy capsules reinterpret on read without on-disk rewrite",
+    "IR_SCHEMA_VERSION bumped from 2 to 3",
+    "draft::resolve_compile_mode and draft::check_network_connectivity removed (draft.rs deleted or emptied)",
+    "engine.rs prefer_draft parameter dropped, LocalDraft branch deleted, misleading error message removed",
+    "storage.rs CapsuleBuilder signature simplified to drop the mode parameter",
+    "renderer.rs mode_label collapsed to a single literal",
+    "compile_v3/convert.rs and compile_v3/storage.rs compilation_mode field assignments cleaned up",
+    "native_engine/mod.rs prefer_draft and 'mode' plumbing removed at 6 sites",
+    "Frontend plumbing for compile_mode removed from types, mock, settings, process, collections",
+    "Backward-compat round-trip test asserting a legacy 'local_draft' capsule still deserializes",
+    "Regression test asserting engine.rs no longer contains any LocalDraft branch sentinel",
+    "Task completion report"
+  ],
+  "acceptance_tests": [
+    "cargo test --lib compile:: passes (engine, storage, renderer, draft all clean)",
+    "cargo test --lib passes for the full library",
+    "Backward-compat round-trip: deserialize {\"compilation_mode\": \"local_draft\", ...} into VideoCapsule reads back as CompileMode::CloudPrecision",
+    "engine.rs source no longer contains the LocalDraft branch sentinel",
+    "npm --prefix desktop run verify passes (svelte-check clean)",
+    "python scripts/validate_spec_tasks.py passes",
+    "python scripts/validate_spec_v01.py passes",
+    "Existing on-disk v{n}.json capsules (if any) still load without rewrite",
+    "Compatibility: all compile provider paths unchanged (OpenAI-compatible, Xiaomi MiMo, Google Gemini, Anthropic-Messages, OpenAI Responses)",
+    "Migration: no in-place rewrite of v{n}.json files (SPEC-IR-005 immutable compilation history)",
+    "Migration: IR_SCHEMA_VERSION bumped to 3 signals schema change to dependent consumers"
+  ],
+  "security_requirements": [
+    "No network probe or 2-second TCP timeout runs during compile path (removes attack surface from check_network_connectivity)",
+    "Backwards-compatible read of legacy compilation_mode values does not weaken validation"
+  ],
+  "dependencies": [],
+  "status": "ready"
+}

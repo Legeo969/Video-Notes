@@ -70,10 +70,11 @@
   interface SettingsBag {
     output_dir: string;
     vault_path: string;
-    compile_mode: string;
     template: string;
     active_provider: string;
     bilibili_cookie_file: string;
+    compile_concurrency: number;
+    effective_compile_concurrency: number;
   }
 
   const emptyProviderForm = (): ProviderForm => ({
@@ -99,10 +100,11 @@
   let settings = $state<SettingsBag>({
     output_dir: "./output",
     vault_path: "",
-    compile_mode: "precision",
     template: "default",
     active_provider: "",
     bilibili_cookie_file: "",
+    compile_concurrency: 0,
+    effective_compile_concurrency: 2,
   });
   let providers = $state<ProviderProfile[]>([]);
   let templates = $state<TemplateInfo[]>([]);
@@ -321,7 +323,8 @@
       settings = {
         ...s,
         vault_path: s.vault_path ?? "",
-        compile_mode: s.compile_mode || "precision",
+        compile_concurrency: s.compile_concurrency ?? 0,
+        effective_compile_concurrency: s.effective_compile_concurrency || 2,
       };
       providers = provs;
       templates = tmpls;
@@ -340,13 +343,14 @@
         patches: {
           output_dir: settings.output_dir,
           vault_path: settings.vault_path,
-          compile_mode: settings.compile_mode,
           template: settings.template,
           bilibili_cookie_file: settings.bilibili_cookie_file,
+          compile_concurrency: settings.compile_concurrency,
         },
       });
       dirty = false;
-      showToast("设置已保存并将在后续任务中生效", "success");
+      settings.effective_compile_concurrency = settings.compile_concurrency || 2;
+      showToast("设置已保存，任务并发上限已生效", "success");
     } catch (e: any) { showToast(`保存失败：${e?.message ?? e}`, "error"); }
     finally { saving = false; }
   }
