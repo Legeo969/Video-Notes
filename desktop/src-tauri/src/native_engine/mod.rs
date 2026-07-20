@@ -262,6 +262,7 @@ struct NoteEntry {
     title: String,
     path: PathBuf,
     created_at: String,
+    modified_at: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -432,6 +433,7 @@ impl NativeEngine {
             "process.retry" => self.process_retry(params),
             "notes.list" => self.notes_list(None),
             "notes.search" => self.notes_list(string_param(&params, "query")),
+            "notes.tree" => self.notes_tree(),
             "notes.get" => self.notes_get(params),
             "notes.update" => self.notes_update(params),
             "notes.delete" => self.notes_delete(params),
@@ -1639,6 +1641,53 @@ impl NativeEngine {
         }
     }
 
+    fn notes_tree(&self) -> Result<Value, String> {
+        let roots = self.note_roots();
+        let mut folders = Vec::new();
+        let mut notes = Vec::new();
+        for root in roots {
+            collect_note_folders(&root, &root, &mut folders, 0)?;
+            let mut root_notes = Vec::new();
+            collect_markdown_notes(&root, &mut root_notes, 0)?;
+            for note in root_notes {
+                let folder = note
+                    .path
+                    .parent()
+                    .and_then(|parent| parent.strip_prefix(&root).ok())
+                    .map(relative_path_string)
+                    .unwrap_or_default();
+                notes.push(json!({
+                    "id": note.id,
+                    "title": note.title,
+                    "path": note.path.to_string_lossy(),
+                    "folder": folder,
+                    "created_at": note.created_at,
+                    "modified_at": note.modified_at,
+                }));
+            }
+        }
+        folders.sort_by(|left, right| {
+            left.1
+                .to_lowercase()
+                .cmp(&right.1.to_lowercase())
+                .then_with(|| left.0.to_lowercase().cmp(&right.0.to_lowercase()))
+        });
+        notes.sort_by(|left, right| {
+            left["path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase()
+                .cmp(&right["path"].as_str().unwrap_or_default().to_lowercase())
+        });
+        Ok(json!({
+            "folders": folders
+                .into_iter()
+                .map(|(path, name)| json!({ "path": path, "name": name }))
+                .collect::<Vec<_>>(),
+            "notes": notes,
+        }))
+    }
+
     fn notes_list(&self, query: Option<String>) -> Result<Value, String> {
         let query = query.unwrap_or_default().to_lowercase();
         let entries = self.note_entries()?;
@@ -2054,22 +2103,24 @@ impl NativeEngine {
             .ok_or_else(|| format!("Note {id} not found"))
     }
 
-    fn note_entries(&self) -> Result<Vec<NoteEntry>, String> {
+    fn note_roots(&self) -> Vec<PathBuf> {
         let settings = self.read_settings();
-        let mut roots = Vec::new();
-        roots.push(effective_note_output_dir(
+        let mut roots = vec![effective_note_output_dir(
             &settings,
             &self.default_export_dir,
-        ));
+        )];
         let legacy_export_dir = string_value(&settings, "output_dir")
             .map(PathBuf::from)
             .unwrap_or_else(|| self.default_export_dir.clone());
         if !roots.iter().any(|root| root == &legacy_export_dir) {
             roots.push(legacy_export_dir);
         }
+        roots
+    }
 
+    fn note_entries(&self) -> Result<Vec<NoteEntry>, String> {
         let mut notes = Vec::new();
-        for root in roots {
+        for root in self.note_roots() {
             collect_markdown_notes(&root, &mut notes, 0)?;
         }
         notes.sort_by(|left, right| right.created_at.cmp(&left.created_at));
@@ -4361,7 +4412,11 @@ fn fetch_provider_models(profile: &NativeProviderProfile) -> Result<Vec<String>,
         .map_err(|error| error.to_string())?;
     let url = if profile.provider_type == "anthropic_messages" {
         let base = profile.base_url.trim_end_matches('/');
-        let root = if base.ends_with("/v1") { &base[..base.len() - 3] } else { base };
+        let root = if base.ends_with("/v1") {
+            &base[..base.len() - 3]
+        } else {
+            base
+        };
         format!("{root}/v1/models")
     } else {
         format!("{}/models", profile.base_url.trim_end_matches('/'))
@@ -4920,6 +4975,36 @@ pub(crate) fn resolve_tool_path(
     })
 }
 
+fn relative_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn collect_note_folders(
+    root: &Path,
+    current: &Path,
+    folders: &mut Vec<(String, String)>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= 8 || !current.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(current).map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+        folders.push((
+            relative_path_string(relative),
+            entry.file_name().to_string_lossy().to_string(),
+        ));
+        collect_note_folders(root, &path, folders, depth + 1)?;
+    }
+    Ok(())
+}
+
 fn collect_markdown_notes(
     root: &Path,
     notes: &mut Vec<NoteEntry>,
@@ -4980,14 +5065,15 @@ fn note_entry_from_path(path: PathBuf) -> Result<NoteEntry, String> {
         .modified()
         .ok()
         .map(DateTime::<Utc>::from)
-        .unwrap_or_else(Utc::now)
-        .to_rfc3339();
+        .map(|value| value.to_rfc3339());
+    let created_at = modified.clone().unwrap_or_else(|| Utc::now().to_rfc3339());
     let title = note_title(&path);
     Ok(NoteEntry {
         id: note_id(&path),
         title,
         path,
-        created_at: modified,
+        created_at,
+        modified_at: modified,
     })
 }
 

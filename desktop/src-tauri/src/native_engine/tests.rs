@@ -1301,6 +1301,95 @@ fn notes_rpc_scans_updates_and_deletes_markdown() {
 }
 
 #[test]
+fn notes_tree_returns_folder_hierarchy_and_flat_notes() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(exports.join("zeta")).unwrap();
+    fs::create_dir_all(exports.join("Alpha").join("Nested")).unwrap();
+    fs::write(exports.join("root.md"), "# Root Note").unwrap();
+    fs::write(exports.join("zeta").join("z.md"), "# Zeta Note").unwrap();
+    fs::write(
+        exports.join("Alpha").join("Nested").join("a.md"),
+        "# Alpha Note",
+    )
+    .unwrap();
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    let folders = tree["folders"].as_array().unwrap();
+    assert_eq!(folders[0], json!({ "path": "Alpha", "name": "Alpha" }));
+    assert_eq!(folders[1]["name"], "Nested");
+    assert_eq!(folders[2], json!({ "path": "zeta", "name": "zeta" }));
+
+    let notes = tree["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 3);
+    let root_note = notes
+        .iter()
+        .find(|note| note["title"] == "Root Note")
+        .unwrap();
+    assert_eq!(root_note["folder"], "");
+    assert!(root_note["modified_at"].as_str().is_some());
+    let nested_note = notes
+        .iter()
+        .find(|note| note["title"] == "Alpha Note")
+        .unwrap();
+    assert_eq!(nested_note["folder"], "Alpha/Nested");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_tree_includes_nested_folders_up_to_depth_8() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let mut deepest = exports.clone();
+    for depth in 1..=8 {
+        deepest = deepest.join(format!("level-{depth}"));
+    }
+    fs::create_dir_all(&deepest).unwrap();
+    fs::write(deepest.join("deep.md"), "# Deep Note").unwrap();
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    assert_eq!(tree["folders"].as_array().unwrap().len(), 8);
+    let deep_note = tree["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|note| note["title"] == "Deep Note")
+        .unwrap();
+    assert_eq!(
+        deep_note["folder"],
+        "level-1/level-2/level-3/level-4/level-5/level-6/level-7/level-8"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_tree_excludes_non_markdown_files() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    fs::create_dir_all(&exports).unwrap();
+    fs::write(exports.join("note.md"), "# Included").unwrap();
+    fs::write(exports.join("ignored.txt"), "# Excluded").unwrap();
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    let notes = tree["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["title"], "Included");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn collection_rpc_persists_items_and_exports() {
     let (engine, root) = temp_engine();
     let vault = root.join("vault");
