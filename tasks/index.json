@@ -20,6 +20,15 @@
       ]
     },
     {
+      "task_id": "VN-LIBFM-001",
+      "path": "tasks/spec-v0.2/vn-library-fm-001.json",
+      "status": "done",
+      "priority": "P1",
+      "dependencies": [
+        "VN-IMPL-001"
+      ]
+    },
+    {
       "task_id": "VN-BUG-001",
       "path": "tasks/spec-v0.2/vn-bug-001.json",
       "status": "done",
