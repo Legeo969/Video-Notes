@@ -44,12 +44,13 @@ This change does NOT:
 - Add a new provider-type entry in the UI (we reuse `anthropic_messages`
   with the existing per-provider video checkbox).
 
-## 4. Wire contract assumed for MiniMax M3
+## 4. Wire contract for MiniMax Token Plan (MiniMax M3)
 
-The MiniMax M3 `/anthropic/v1/messages` endpoint exposes the same
-request envelope as Anthropic's Messages API:
+The MiniMax Token Plan (`platform.minimaxi.com`) exposes an
+Anthropic-compatible Messages API at:
 
-- Headers:
+- Base URL: `https://api.minimaxi.com/anthropic` (no trailing `/v1`)
+- Headers (Anthropic SDK convention):
   - `x-api-key: <KEY>`
   - `anthropic-version: 2023-06-01`
   - `Content-Type: application/json`
@@ -77,6 +78,13 @@ request envelope as Anthropic's Messages API:
   }
   ```
 - Whole-request body must be ≤ 64 MB (per MiniMax M3 documentation).
+
+The compile client resolves `<base_url>/v1/messages` for the Anthropic
+branch by stripping any trailing `/v1` from the user-supplied base URL
+and appending `/v1/messages`. This accepts both forms:
+
+- `https://api.minimaxi.com/anthropic` (Token Plan form, no /v1)
+- `https://api.minimaxi.com/anthropic/v1` (already-versioned form)
 
 **Assumption**: MiniMax M3 accepts `source.type: "base64"` for video
 content blocks. The vendor's published example only demonstrates

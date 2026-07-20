@@ -8,9 +8,27 @@ endpoints that accept base64 video (e.g. MiniMax M3).
 Implementation unit tests and frontend verification passed. The external MiniMax
 M3 smoke remains blocked because `MINIMAX_API_KEY` was not set in this environment.
 
+## Wire contract (post-fix)
+
+The MiniMax Token Plan exposes its Anthropic-compatible Messages API at:
+
+- Base URL: `https://api.minimaxi.com/anthropic` (no trailing `/v1`)
+- Headers: `x-api-key: <KEY>`, `anthropic-version: 2023-06-01`, `Content-Type: application/json`
+- Video content block: `{ "type": "video", "source": { "type": "base64", "media_type": "video/mp4", "data": "<BASE64>" } }`
+- Whole request body cap: 64 MB
+
+The compile client constructs request URLs by stripping a trailing `/v1` (if any)
+and appending `/v1/messages` (compile path) or `/v1/models` (model discovery).
+This matches the Anthropic SDK convention and accepts all three forms:
+
+- `https://api.minimaxi.com/anthropic` (Token Plan form)
+- `https://api.minimaxi.com/anthropic/v1` (already-versioned form)
+- `https://api.anthropic.com/v1` (vanilla Anthropic form)
+
 ## Files changed
 
 - `desktop/src-tauri/src/compile/client.rs`
+- `desktop/src-tauri/src/native_engine/mod.rs`
 - `desktop/src/lib/components/settings/ProviderFormDialog.svelte`
 - `docs/task-reports/VN-AVIDEO-001.md`
 
