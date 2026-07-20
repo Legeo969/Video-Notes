@@ -226,19 +226,35 @@ fn build_video_request_body(
     system: &str,
     user_text: &str,
 ) -> Result<Value, String> {
-    let data_url = format!("data:video/mp4;base64,{video_b64}");
-    validate_video_payload_size(config.provider_kind, data_url.len())?;
-
-    let mut video_part = serde_json::json!({
-        "type": "video_url",
-        "video_url": { "url": data_url }
-    });
-    if config.provider_kind.is_xiaomi_mimo() {
-        if let Some(object) = video_part.as_object_mut() {
-            object.insert("fps".to_string(), serde_json::json!(1));
-            object.insert("media_resolution".to_string(), serde_json::json!("default"));
+    let video_part = if config.provider_kind == ProviderKind::Anthropic {
+        // Anthropic-style base64 source. The cap is measured after JSON
+        // serialisation below; this branch keeps the data URL short enough
+        // to fit comfortably under the per-provider limit during preview
+        // checks but the authoritative cap lives in
+        // validate_video_payload_size.
+        serde_json::json!({
+            "type": "video",
+            "source": {
+                "type": "base64",
+                "media_type": "video/mp4",
+                "data": video_b64,
+            }
+        })
+    } else {
+        let data_url = format!("data:video/mp4;base64,{video_b64}");
+        validate_video_payload_size(config.provider_kind, data_url.len())?;
+        let mut part = serde_json::json!({
+            "type": "video_url",
+            "video_url": { "url": data_url }
+        });
+        if config.provider_kind.is_xiaomi_mimo() {
+            if let Some(object) = part.as_object_mut() {
+                object.insert("fps".to_string(), serde_json::json!(1));
+                object.insert("media_resolution".to_string(), serde_json::json!("default"));
+            }
         }
-    }
+        part
+    };
 
     let mut body = serde_json::json!({
         "model": config.model,
@@ -531,6 +547,28 @@ mod tests {
             XIAOMI_MAX_BASE64_BYTES + 1
         )
         .is_ok());
+    }
+
+    #[test]
+    fn anthropic_video_request_body_uses_video_source_base64() {
+        let mut config = CompileClientConfig::new(
+            "https://api.minimax.io/anthropic/v1".to_string(),
+            "test-key".to_string(),
+            "MiniMax-M3".to_string(),
+            ProviderKind::Anthropic,
+        );
+        config.accepts_video = true;
+        let body = build_video_request_body(&config, "BASE64DATA", "system", "user").unwrap();
+        assert_eq!(body["model"], "MiniMax-M3");
+        let part = &body["messages"][1]["content"][0];
+        assert_eq!(part["type"], "video");
+        assert_eq!(part["source"]["type"], "base64");
+        assert_eq!(part["source"]["media_type"], "video/mp4");
+        assert_eq!(part["source"]["data"], "BASE64DATA");
+        assert!(part.get("fps").is_none());
+        assert!(part.get("media_resolution").is_none());
+        assert_eq!(body["max_tokens"], 4096);
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
