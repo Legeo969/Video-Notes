@@ -1390,6 +1390,33 @@ fn notes_tree_excludes_non_markdown_files() {
 }
 
 #[test]
+fn notes_tree_excludes_symlinked_markdown_outside_root() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let outside = root.join("outside");
+    let link = exports.join("outside-link");
+    fs::create_dir_all(&exports).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.md"), "# Outside").unwrap();
+
+    #[cfg(target_os = "windows")]
+    if std::os::windows::fs::symlink_dir(&outside, &link).is_err() {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let tree = engine
+        .call("notes.tree", json!({}))
+        .expect("method handled")
+        .expect("tree succeeds");
+    assert!(tree["notes"].as_array().unwrap().is_empty());
+    assert!(tree["folders"].as_array().unwrap().is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn notes_create_folder_makes_empty_dir() {
     let (engine, root) = temp_engine();
     let exports = root.join("exports");
@@ -1688,6 +1715,149 @@ fn notes_rename_folder_updates_jobs_for_moved_notes() {
 }
 
 #[test]
+fn notes_rename_folder_updates_jobs_beyond_tree_depth() {
+    let (engine, root) = temp_engine();
+    let old_folder = root.join("exports").join("Course");
+    let mut old_path = old_folder.clone();
+    let mut new_path = root.join("exports").join("Renamed");
+    for depth in 1..=9 {
+        old_path = old_path.join(format!("level-{depth}"));
+        new_path = new_path.join(format!("level-{depth}"));
+    }
+    old_path = old_path.join("deep.md");
+    new_path = new_path.join("deep.md");
+    fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, "# Deep").unwrap();
+    let mut job = test_job(43, "completed");
+    job.note_id = Some(note_id(&old_path));
+    job.output_path = Some(old_path.to_string_lossy().to_string());
+    insert_job(&engine, job, false);
+
+    engine
+        .call(
+            "notes.rename_folder",
+            json!({ "path": "Course", "new_name": "Renamed" }),
+        )
+        .expect("method handled")
+        .expect("rename succeeds");
+    let jobs = engine.jobs.lock().unwrap();
+    assert_eq!(jobs[0].note_id, Some(note_id(&new_path)));
+    assert_eq!(
+        jobs[0].output_path.as_deref(),
+        Some(new_path.to_string_lossy().as_ref())
+    );
+    assert!(new_path.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_rename_folder_holds_jobs_lock_during_filesystem_move() {
+    let (engine, root) = temp_engine();
+    let old_folder = root.join("exports").join("Course");
+    let old_note = old_folder.join("lesson.md");
+    let new_folder = root.join("exports").join("Renamed");
+    fs::create_dir_all(&old_folder).unwrap();
+    fs::write(&old_note, "# Lesson").unwrap();
+    let mut job = test_job(44, "completed");
+    job.note_id = Some(note_id(&old_note));
+    job.output_path = Some(old_note.to_string_lossy().to_string());
+    insert_job(&engine, job, false);
+
+    let jobs_guard = engine.jobs.lock().unwrap();
+    let worker_engine = engine.clone();
+    let worker = std::thread::spawn(move || {
+        worker_engine
+            .call(
+                "notes.rename_folder",
+                json!({ "path": "Course", "new_name": "Renamed" }),
+            )
+            .expect("method handled")
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let moved_while_jobs_locked = new_folder.exists();
+    drop(jobs_guard);
+    worker.join().unwrap().expect("rename succeeds");
+
+    assert!(
+        !moved_while_jobs_locked,
+        "filesystem rename must not precede the jobs lock"
+    );
+    assert!(new_folder.join("lesson.md").is_file());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_move_rejects_symlinked_asset_destination_outside_root() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let source_note = exports.join("Source").join("lesson.md");
+    let source_assets = exports.join("Source").join("assets").join("lesson");
+    let target = exports.join("Target");
+    let outside = root.join("outside");
+    fs::create_dir_all(&source_assets).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(&source_note, "# Lesson").unwrap();
+    fs::write(source_assets.join("frame.png"), "image").unwrap();
+
+    #[cfg(target_os = "windows")]
+    if std::os::windows::fs::symlink_dir(&outside, target.join("assets")).is_err() {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, target.join("assets")).unwrap();
+
+    let result = engine
+        .call(
+            "notes.move",
+            json!({ "id": note_id(&source_note), "target_folder": "Target" }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("asset escape must fail")
+        .contains("path_outside_roots"));
+    assert!(source_note.is_file());
+    assert!(source_assets.join("frame.png").is_file());
+    assert!(!outside.join("lesson").exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_batch_delete_rejects_symlinked_assets_outside_root() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let note_path = exports.join("lesson.md");
+    let outside = root.join("outside");
+    let outside_assets = outside.join("lesson");
+    fs::create_dir_all(&exports).unwrap();
+    fs::create_dir_all(&outside_assets).unwrap();
+    fs::write(&note_path, "# Lesson").unwrap();
+    fs::write(outside_assets.join("keep.png"), "keep").unwrap();
+
+    #[cfg(target_os = "windows")]
+    if std::os::windows::fs::symlink_dir(&outside, exports.join("assets")).is_err() {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, exports.join("assets")).unwrap();
+
+    let deleted = engine
+        .call(
+            "notes.batch_delete",
+            json!({ "ids": [note_id(&note_path)], "confirm": true }),
+        )
+        .expect("method handled")
+        .expect("batch response succeeds");
+    assert_eq!(deleted["failed"].as_array().unwrap().len(), 1);
+    assert!(note_path.is_file());
+    assert!(outside_assets.join("keep.png").is_file());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn notes_delete_folder_requires_confirm_flag() {
     let (engine, root) = temp_engine();
     let folder = root.join("exports").join("Course");
@@ -1867,6 +2037,80 @@ fn notes_batch_delete_requires_confirm() {
     assert!(result
         .expect_err("confirmation is mandatory")
         .contains("confirm_required"));
+    assert!(note_path.is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_batch_move_validates_all_ids_before_mutation() {
+    let (engine, root) = temp_engine();
+    let source = root.join("exports").join("Source");
+    let target = root.join("exports").join("Target");
+    let note_path = source.join("lesson.md");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(&note_path, "# Lesson").unwrap();
+
+    let result = engine
+        .call(
+            "notes.batch_move",
+            json!({ "ids": [note_id(&note_path), "invalid"], "target_folder": "Target" }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("malformed ids must fail")
+        .contains("invalid_ids"));
+    assert!(
+        note_path.is_file(),
+        "no note may move before every id validates"
+    );
+    assert!(!target.join("lesson.md").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_move_rejects_out_of_range_id() {
+    let (engine, root) = temp_engine();
+    let exports = root.join("exports");
+    let note_path = exports.join("lesson.md");
+    fs::create_dir_all(exports.join("Target")).unwrap();
+    fs::write(&note_path, "# Lesson").unwrap();
+    let wrapped_id = u64::from(note_id(&note_path)) + (u64::from(u32::MAX) + 1);
+
+    let result = engine
+        .call(
+            "notes.move",
+            json!({ "id": wrapped_id, "target_folder": "Target" }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("out-of-range id must fail")
+        .contains("invalid_id"));
+    assert!(note_path.is_file());
+    assert!(!exports.join("Target").join("lesson.md").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn notes_batch_delete_rejects_out_of_range_id() {
+    let (engine, root) = temp_engine();
+    let note_path = root.join("exports").join("lesson.md");
+    fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+    fs::write(&note_path, "# Lesson").unwrap();
+    let wrapped_id = u64::from(note_id(&note_path)) + (u64::from(u32::MAX) + 1);
+
+    let result = engine
+        .call(
+            "notes.batch_delete",
+            json!({ "ids": [wrapped_id], "confirm": true }),
+        )
+        .expect("method handled");
+    assert!(result
+        .expect_err("out-of-range id must fail")
+        .contains("invalid_ids"));
     assert!(note_path.is_file());
 
     let _ = fs::remove_dir_all(root);

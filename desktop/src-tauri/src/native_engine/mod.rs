@@ -1734,8 +1734,8 @@ impl NativeEngine {
     fn notes_move(&self, params: Value) -> Result<Value, String> {
         let id = params
             .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "invalid_id: id is required".to_string())? as u32;
+            .ok_or_else(|| "invalid_id: id is required".to_string())
+            .and_then(|value| parse_note_id_value(value, "invalid_id"))?;
         let target_folder = params
             .get("target_folder")
             .and_then(Value::as_str)
@@ -1813,7 +1813,7 @@ impl NativeEngine {
         }
 
         let mut descendant_notes = Vec::new();
-        collect_markdown_notes(&folder_path, &mut descendant_notes, 0)?;
+        collect_all_markdown_notes(&folder_path, &mut descendant_notes)?;
         let mappings = descendant_notes
             .into_iter()
             .map(|note| {
@@ -1826,17 +1826,28 @@ impl NativeEngine {
             })
             .collect::<Result<Vec<_>, String>>()?;
 
+        let mut jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| "jobs_lock_failed: jobs lock is poisoned".to_string())?;
         rename_dir_cross_volume(&folder_path, &new_path)?;
-        let mut finalized: Vec<(PathBuf, PathBuf)> = Vec::new();
-        for (old_note_path, new_note_path) in &mappings {
-            if let Err(error) = self.relocate_note_in_place(old_note_path, new_note_path) {
-                let _ = rename_dir_cross_volume(&new_path, &folder_path);
-                for (old_finalized, new_finalized) in finalized.into_iter().rev() {
-                    let _ = self.relocate_note_in_place(&new_finalized, &old_finalized);
-                }
-                return Err(error);
+        for (_, new_note_path) in &mappings {
+            if let Err(error) = self.allow_note_asset_root(new_note_path) {
+                return match rename_dir_cross_volume(&new_path, &folder_path) {
+                    Ok(()) => Err(error),
+                    Err(rollback) => Err(format!("{error}; rollback_failed: {rollback}")),
+                };
             }
-            finalized.push((old_note_path.clone(), new_note_path.clone()));
+        }
+        let affected = update_job_note_paths(&mut jobs, &mappings);
+        if !affected.is_empty() {
+            if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
+                restore_job_note_paths(&mut jobs, affected);
+                return match rename_dir_cross_volume(&new_path, &folder_path) {
+                    Ok(()) => Err(error),
+                    Err(rollback) => Err(format!("{error}; rollback_failed: {rollback}")),
+                };
+            }
         }
         Ok(json!({ "path": new_path.to_string_lossy() }))
     }
@@ -1874,7 +1885,7 @@ impl NativeEngine {
         }
 
         let mut notes = Vec::new();
-        collect_markdown_notes(&folder_path, &mut notes, 0)?;
+        collect_all_markdown_notes(&folder_path, &mut notes)?;
         let mut deleted_notes = notes
             .into_iter()
             .map(|note| {
@@ -1898,7 +1909,10 @@ impl NativeEngine {
         let ids = params
             .get("ids")
             .and_then(Value::as_array)
-            .ok_or_else(|| "invalid_ids: ids must be an array".to_string())?;
+            .ok_or_else(|| "invalid_ids: ids must be an array".to_string())?
+            .iter()
+            .map(|value| parse_note_id_value(value, "invalid_ids"))
+            .collect::<Result<Vec<_>, String>>()?;
         let target_folder = params
             .get("target_folder")
             .and_then(Value::as_str)
@@ -1907,11 +1921,7 @@ impl NativeEngine {
 
         let mut completed: Vec<(u32, PathBuf, PathBuf)> = Vec::new();
         let mut moved = Vec::new();
-        for value in ids {
-            let id = value
-                .as_u64()
-                .ok_or_else(|| "invalid_ids: every id must be an unsigned integer".to_string())?
-                as u32;
+        for id in ids {
             match self.notes_move(json!({ "id": id, "target_folder": target_folder })) {
                 Ok(result) => {
                     let new_id = result["id"]
@@ -1960,12 +1970,7 @@ impl NativeEngine {
             .and_then(Value::as_array)
             .ok_or_else(|| "invalid_ids: ids must be an array".to_string())?
             .iter()
-            .map(|value| {
-                value
-                    .as_u64()
-                    .map(|id| id as u32)
-                    .ok_or_else(|| "invalid_ids: every id must be an unsigned integer".to_string())
-            })
+            .map(|value| parse_note_id_value(value, "invalid_ids"))
             .collect::<Result<Vec<_>, String>>()?;
         let roots = self.note_roots();
         let entries = self.note_entries()?;
@@ -1987,9 +1992,27 @@ impl NativeEngine {
                     continue;
                 }
             };
-            if let Err(error) = remove_note_assets(&path)
-                .and_then(|()| fs::remove_file(&path).map_err(|error| error.to_string()))
+            let asset_path = match note_asset_dir(&path)
+                .map(|asset| validate_path_within_roots(&asset, &roots))
+                .transpose()
             {
+                Ok(path) => path,
+                Err(error) => {
+                    failed.push(json!({ "id": id, "error": error }));
+                    continue;
+                }
+            };
+            let remove_result = if let Some(asset_path) = asset_path {
+                if asset_path.is_dir() {
+                    fs::remove_dir_all(&asset_path).map_err(|error| error.to_string())
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+            .and_then(|()| fs::remove_file(&path).map_err(|error| error.to_string()));
+            if let Err(error) = remove_result {
                 failed.push(json!({ "id": id, "error": error }));
                 continue;
             }
@@ -2031,8 +2054,13 @@ impl NativeEngine {
             fs::create_dir_all(new_parent).map_err(|error| error.to_string())?;
         }
 
-        let old_asset_dir = note_asset_dir(old_path);
-        let new_asset_dir = note_asset_dir(new_path);
+        let roots = self.note_roots();
+        let old_asset_dir = note_asset_dir(old_path)
+            .map(|path| validate_path_within_roots(&path, &roots))
+            .transpose()?;
+        let new_asset_dir = note_asset_dir(new_path)
+            .map(|path| validate_path_within_roots(&path, &roots))
+            .transpose()?;
         if !already_relocated {
             if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
                 if old_assets.is_dir() && new_assets.exists() {
@@ -2041,7 +2069,6 @@ impl NativeEngine {
             }
         }
 
-        let old_id = note_id(old_path);
         let new_id = note_id(new_path);
         let mut jobs = self
             .jobs
@@ -2084,25 +2111,12 @@ impl NativeEngine {
             return Err(error);
         }
 
-        let affected = jobs
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(index, job)| {
-                if job.note_id == Some(old_id) {
-                    let previous = (index, job.note_id, job.output_path.clone());
-                    job.note_id = Some(new_id);
-                    job.output_path = Some(new_path.to_string_lossy().to_string());
-                    Some(previous)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let affected = update_job_note_paths(
+            &mut jobs,
+            &[(old_path.to_path_buf(), new_path.to_path_buf())],
+        );
         if let Err(error) = save_jobs(&self.jobs_state_path, &jobs) {
-            for (index, note_id, output_path) in affected {
-                jobs[index].note_id = note_id;
-                jobs[index].output_path = output_path;
-            }
+            restore_job_note_paths(&mut jobs, affected);
             if moved_assets {
                 if let (Some(old_assets), Some(new_assets)) = (&old_asset_dir, &new_asset_dir) {
                     let _ = rename_dir_cross_volume(new_assets, old_assets);
@@ -5403,6 +5417,13 @@ pub(crate) fn resolve_tool_path(
     })
 }
 
+fn parse_note_id_value(value: &Value, error_code: &str) -> Result<u32, String> {
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| format!("{error_code}: note id must be an unsigned integer"))?;
+    u32::try_from(raw).map_err(|_| format!("{error_code}: note id is out of range"))
+}
+
 fn validate_relative_path_arg(path: &str) -> Result<(), String> {
     let trimmed = path.trim();
     let bytes = trimmed.as_bytes();
@@ -5524,6 +5545,28 @@ fn collect_note_folders(
     Ok(())
 }
 
+fn collect_all_markdown_notes(root: &Path, notes: &mut Vec<NoteEntry>) -> Result<(), String> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_all_markdown_notes(&path, notes)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
+            if let Ok(note) = note_entry_from_path(path) {
+                notes.push(note);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_markdown_notes(
     root: &Path,
     notes: &mut Vec<NoteEntry>,
@@ -5534,8 +5577,15 @@ fn collect_markdown_notes(
     }
     let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
     for entry in entries.flatten() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
+        // Skip directory and file symlinks: a planted symlink could expose
+        // notes outside the export root via the tree API. Mirrors the
+        // collect_note_folders guard.
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_markdown_notes(&path, notes, depth + 1)?;
             continue;
         }
@@ -6910,6 +6960,34 @@ fn dir_size(path: &Path) -> u64 {
             }
         })
         .sum()
+}
+
+type JobNotePathSnapshot = (usize, Option<u32>, Option<String>);
+
+fn update_job_note_paths(
+    jobs: &mut [NativeJob],
+    mappings: &[(PathBuf, PathBuf)],
+) -> Vec<JobNotePathSnapshot> {
+    let mut affected = Vec::new();
+    for (index, job) in jobs.iter_mut().enumerate() {
+        let Some((_, new_path)) = mappings
+            .iter()
+            .find(|(old_path, _)| job.note_id == Some(note_id(old_path)))
+        else {
+            continue;
+        };
+        affected.push((index, job.note_id, job.output_path.clone()));
+        job.note_id = Some(note_id(new_path));
+        job.output_path = Some(new_path.to_string_lossy().to_string());
+    }
+    affected
+}
+
+fn restore_job_note_paths(jobs: &mut [NativeJob], snapshots: Vec<JobNotePathSnapshot>) {
+    for (index, note_id, output_path) in snapshots {
+        jobs[index].note_id = note_id;
+        jobs[index].output_path = output_path;
+    }
 }
 
 fn note_asset_dir(note_path: &Path) -> Option<PathBuf> {
