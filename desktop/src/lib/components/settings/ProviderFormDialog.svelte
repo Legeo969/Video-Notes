@@ -33,11 +33,11 @@
     {
       id: "anthropic_messages",
       label: "Anthropic Messages",
-      hint: "Anthropic /v1/messages 接口，使用 claude-* 模型。",
+      hint: "Anthropic /v1/messages 接口（兼容 MiniMax M3 等扩展支持视频的端点）。",
       defaultBaseUrl: "https://api.anthropic.com/v1",
       defaultModel: "claude-sonnet-4-5",
       defaultVisionModel: "claude-sonnet-4-5",
-      supported: false,
+      supported: true,
     },
     {
       id: "openai_responses",
@@ -114,6 +114,8 @@
           <div class="form-section-head provider-model-head"><span>02</span><div><h3>服务端点与模型</h3><p>可从供应商真实 `/models` 接口读取模型；读取失败不会伪造列表，也不会覆盖手动输入。</p></div><button class="btn btn-secondary btn-sm" type="button" onclick={onDiscoverModels} disabled={discoveringProviderModels || providerTypeUnsupported || !providerForm.base_url.trim()}><Icon name="refresh" size={13} />{discoveringProviderModels ? "读取中" : "读取模型"}</button></div>
           {#if providerTypeUnsupported}
             <div class="provider-type-warning"><Icon name="alert" size={15} /><span>当前编译器尚未实现此 API 类型的视频请求适配器，因此不能用于自动视频笔记任务。</span></div>
+          {:else if providerForm.provider === "anthropic_messages"}
+            <div class="provider-type-hint"><Icon name="info" size={15} /><span>原生 Anthropic Claude 不支持视频；只有扩展端点（例如 MiniMax M3）支持。勾选"此端点支持视频输入"后才会发送视频，否则按文本路径处理。</span></div>
           {/if}
           <div class="field"><label class="field-label" for="prov_base_url">Base URL <small>{providerForm.provider === "google_gemini" ? "Gemini API 根地址" : providerForm.provider === "anthropic_messages" ? "Anthropic API 根地址" : providerForm.provider === "openai_responses" ? "OpenAI API 根地址" : "兼容接口通常以 /v1 结尾"}</small></label><div class="input-wrap has-icon"><span class="input-icon"><Icon name="server" size={15} /></span><input id="prov_base_url" type="text" bind:value={providerForm.base_url} placeholder={selectedProviderType.defaultBaseUrl || "由后续适配器提供"} disabled={providerTypeUnsupported} /></div></div>
           <div class="form-grid two-cols">
@@ -138,7 +140,7 @@
           </div>
           <label class="capability-toggle">
             <input type="checkbox" bind:checked={providerForm.video_input} disabled={providerTypeUnsupported} />
-            <span><strong>此端点支持 MP4 video_url 输入</strong><small>只有供应商明确支持 OpenAI-compatible Base64 视频时才启用；普通文本或图片接口请勿勾选。</small></span>
+            <span><strong>此端点支持视频输入 (Anthropic-style base64 或 OpenAI-style video_url)</strong><small>原生 Anthropic Claude 不支持视频，请勿勾选；只有明确支持视频的端点（例如 MiniMax M3 等）才勾选。</small></span>
           </label>
         </section>
 
@@ -191,6 +193,7 @@
   .model-choice { width: 100%; min-height: 40px; padding: 0 36px 0 11px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-card); font: inherit; }
   .model-choice:disabled { color: var(--text-tertiary); background: var(--bg-subtle); cursor: not-allowed; }
   .provider-type-warning { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 10px; color: var(--warning-color); background: var(--warning-soft); border: 1px solid color-mix(in srgb, var(--warning-color) 25%, var(--border-color)); font-size: 12px; line-height: 1.55; }
+  .provider-type-hint { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 10px; color: var(--info-color); background: var(--info-soft); border: 1px solid color-mix(in srgb, var(--info-color) 25%, var(--border-color)); font-size: 12px; line-height: 1.55; }
 
   .provider-modal { width: min(820px, calc(100vw - 48px)); }
   .form-section-head h3 { font-size: 15px; }
