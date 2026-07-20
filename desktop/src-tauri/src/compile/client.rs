@@ -645,9 +645,9 @@ mod tests {
             validate_video_payload_size(ProviderKind::Anthropic, ANTHROPIC_MAX_REQUEST_BYTES + 1)
                 .is_err()
         );
-        // Other providers are unaffected.
+        // Non-Anthropic, non-Xiaomi providers are unaffected.
         assert!(
-            validate_video_payload_size(ProviderKind::XiaomiMiMo, ANTHROPIC_MAX_REQUEST_BYTES)
+            validate_video_payload_size(ProviderKind::OpenAICompat, ANTHROPIC_MAX_REQUEST_BYTES)
                 .is_ok()
         );
     }
