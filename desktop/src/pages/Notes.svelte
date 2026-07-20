@@ -85,6 +85,7 @@
   import KnowledgeTree from "../lib/components/study/KnowledgeTree.svelte";
   import QuizPanel from "../lib/components/study/QuizPanel.svelte";
   import EvidenceViewer from "../lib/components/study/EvidenceViewer.svelte";
+  import TreeRow from "../lib/components/notes/TreeRow.svelte";
   import { selectedNoteId as selectedNoteIdStore } from "../lib/stores/jobs";
   import { onMount, onDestroy } from "svelte";
   import { jobs } from "../lib/stores/jobs";
@@ -124,11 +125,45 @@
   let versionsLoading = $state(false);
   let switchingVersion = $state(false);
 
+  // ── Tree (Phase B) ─────────────────────────────────────────────
+  type TreeFolder = { path: string; name: string };
+  type TreeNote = {
+    id: number;
+    title: string;
+    path: string;
+    folder: string;
+    created_at: string;
+    modified_at?: string;
+  };
+  type TreeResult = { folders: TreeFolder[]; notes: TreeNote[] };
+  let tree = $state<TreeResult | null>(null);
+  let sortField = $state<"created_at" | "modified_at" | "title" | "path">("created_at");
+  let sortDir = $state<"asc" | "desc">("desc");
+  let expanded = $state<Set<string>>(new Set([""]));
+  let multiSelect = $state(false);
+  let selectedIds = $state<Set<number>>(new Set());
+  let creatingFolder = $state(false);
+  let newFolderName = $state("");
+  let sortMenuOpen = $state(false);
+
+  const SORT_FIELDS: { id: "created_at" | "modified_at" | "title" | "path"; label: string }[] = [
+    { id: "created_at", label: "创建时间" },
+    { id: "modified_at", label: "修改时间" },
+    { id: "title", label: "标题" },
+    { id: "path", label: "路径" },
+  ];
+
   let filteredNotes = $derived.by(() => {
     // Backend search handles filtering, this is a client-side fallback
     if (!searchQuery.trim()) return notes;
     const q = searchQuery.toLowerCase();
     return notes.filter((n) => n.title.toLowerCase().includes(q) || n.path.toLowerCase().includes(q));
+  });
+
+  let totalNoteCount = $derived.by(() => {
+    if (searchQuery.trim()) return filteredNotes.length;
+    if (tree) return tree.notes.length;
+    return notes.length;
   });
 
   type HighlightSegment = { text: string; matched: boolean };
@@ -247,6 +282,95 @@
     try { notes = await engineCall<NoteInfo[]>("notes.list"); }
     catch (e) { error = String(e); }
     finally { loading = false; }
+  }
+
+  async function loadTree() {
+    if (searchQuery.trim()) return;
+    try {
+      tree = await engineCall<TreeResult>("notes.tree", {});
+    } catch (e) {
+      // Silent — keep tree as null and fall back to flat list.
+      console.warn("notes.tree failed:", e);
+    }
+  }
+
+  function toggleFolder(path: string) {
+    const next = new Set(expanded);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    expanded = next;
+  }
+
+  function collapseAll() {
+    expanded = new Set();
+  }
+
+  function selectNoteFromTree(id: number) {
+    if (multiSelect) {
+      const next = new Set(selectedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      selectedIds = next;
+      return;
+    }
+    selectNote(id);
+  }
+
+  function toggleMultiSelect() {
+    multiSelect = !multiSelect;
+    if (!multiSelect) selectedIds = new Set();
+  }
+
+  function startCreateFolder() {
+    creatingFolder = true;
+    newFolderName = "";
+  }
+
+  function cancelCreateFolder() {
+    creatingFolder = false;
+    newFolderName = "";
+  }
+
+  async function confirmCreateFolder() {
+    const name = newFolderName.trim();
+    if (!name) {
+      creatingFolder = false;
+      return;
+    }
+    try {
+      await engineCall("notes.create_folder", { parent: "", name });
+      showSuccess(`已创建文件夹：${name}`);
+      creatingFolder = false;
+      newFolderName = "";
+      await loadTree();
+    } catch (e) {
+      error = `创建文件夹失败：${String(e)}`;
+      creatingFolder = false;
+    }
+  }
+
+  function handleNewFolderKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      confirmCreateFolder();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelCreateFolder();
+    }
+  }
+
+  function toggleSortMenu() {
+    sortMenuOpen = !sortMenuOpen;
+  }
+
+  function selectSortField(field: typeof sortField) {
+    sortField = field;
+    sortMenuOpen = false;
+  }
+
+  function selectSortDir(dir: typeof sortDir) {
+    sortDir = dir;
+    sortMenuOpen = false;
   }
 
   function onSearchInput() {
@@ -381,6 +505,7 @@
 
   onMount(() => {
     loadNotes();
+    loadTree();
     // Check if navigated from another page with a specific note ID
     const pendingNoteId = $selectedNoteIdStore;
     if (pendingNoteId !== null) {
@@ -550,7 +675,10 @@
     const _ = $jobs;
     if (noteRefreshTimer) clearTimeout(noteRefreshTimer);
     noteRefreshTimer = setTimeout(() => {
-      if (!searchQuery.trim()) loadNotes();
+      if (!searchQuery.trim()) {
+        loadNotes();
+        loadTree();
+      }
     }, 1000);
   });
 
@@ -578,6 +706,20 @@
     }
   });
 
+  // Close sort menu on outside click.
+  $effect(() => {
+    if (!sortMenuOpen) return;
+    function handler(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('.sort-menu')) return;
+      if (target.closest('.sort-btn')) return;
+      sortMenuOpen = false;
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  });
+
   onDestroy(() => {
     if (searchTimer) clearTimeout(searchTimer);
     if (successTimer) clearTimeout(successTimer);
@@ -592,45 +734,100 @@
     </div>
 
     <div class="library-tools">
-      <div class="search-box input-wrap has-icon">
-        <span class="input-icon"><Icon name="search" size={15} /></span>
-        <input type="search" bind:value={searchQuery} placeholder="搜索标题、路径或关键词" oninput={onSearchInput} />
-        {#if searchQuery}<button class="search-clear" onclick={() => { searchQuery = ""; loadNotes(); }} aria-label="清除搜索"><Icon name="x" size={13} /></button>{/if}
+      <div class="search-row">
+        <div class="search-box input-wrap has-icon">
+          <span class="input-icon"><Icon name="search" size={15} /></span>
+          <input type="search" bind:value={searchQuery} placeholder="搜索标题、路径或关键词" oninput={onSearchInput} />
+          {#if searchQuery}<button class="search-clear" onclick={() => { searchQuery = ""; loadNotes(); loadTree(); }} aria-label="清除搜索"><Icon name="x" size={13} /></button>{/if}
+        </div>
+        <button class="icon-btn" title="刷新笔记" onclick={() => { loadNotes(); loadTree(); }} disabled={loading}><Icon name="refresh" size={15} /></button>
       </div>
-      <button class="icon-btn" title="刷新笔记" onclick={loadNotes} disabled={loading}><Icon name="refresh" size={15} /></button>
+
+      <div class="library-actions">
+        <button class="action-btn" class:active={multiSelect} title={multiSelect ? "完成选择" : "编辑"} onclick={toggleMultiSelect}><Icon name="edit" size={14} />{multiSelect ? "完成" : "编辑"}</button>
+        <button class="action-btn" title="新建文件夹" onclick={startCreateFolder} disabled={creatingFolder}><Icon name="plus" size={14} />新建文件夹</button>
+        <div class="sort-wrap">
+          <button class="action-btn sort-btn" class:active={sortMenuOpen} title="排序" onclick={toggleSortMenu}><Icon name="more" size={14} />排序</button>
+          {#if sortMenuOpen}
+            <div class="sort-menu" role="menu">
+              <div class="sort-menu-section">
+                {#each SORT_FIELDS as f (f.id)}
+                  <button class:active={sortField === f.id} onclick={() => selectSortField(f.id)} role="menuitem">{f.label}</button>
+                {/each}
+              </div>
+              <div class="sort-menu-divider"></div>
+              <div class="sort-menu-section sort-menu-direction">
+                <button class:active={sortDir === 'asc'} onclick={() => selectSortDir('asc')} role="menuitem">升序</button>
+                <button class:active={sortDir === 'desc'} onclick={() => selectSortDir('desc')} role="menuitem">降序</button>
+              </div>
+            </div>
+          {/if}
+        </div>
+        <button class="action-btn" title="收起全部" onclick={collapseAll}><Icon name="chevrons-inward" size={14} />收起</button>
+      </div>
+
+      {#if creatingFolder}
+        <div class="new-folder-row">
+          <input
+            type="text"
+            class="new-folder-input"
+            bind:value={newFolderName}
+            placeholder="新文件夹名"
+            onkeydown={handleNewFolderKeydown}
+            aria-label="新文件夹名"
+          />
+          <button class="action-btn primary" onclick={confirmCreateFolder}>创建</button>
+          <button class="action-btn" onclick={cancelCreateFolder}>取消</button>
+        </div>
+      {/if}
     </div>
 
     {#if error && !selectedNote}
       <div class="library-error"><Icon name="alert" size={15} /><span>{error}</span></div>
     {/if}
 
-    <div class="list-label"><span>全部笔记</span><em>{filteredNotes.length}</em></div>
+    <div class="list-label"><span>全部笔记</span><em>{totalNoteCount}</em></div>
 
     <div class="notes-list">
-      {#if loading && notes.length === 0}
+      {#if loading && !tree && notes.length === 0}
         <div class="list-loading"><span class="loading-ring"></span><p>正在读取笔记库</p></div>
-      {:else if filteredNotes.length === 0}
-        <EmptyState icon={searchQuery ? "search" : "note"} title={searchQuery ? "未找到匹配笔记" : "暂无笔记"} description={searchQuery ? "尝试使用其他关键词。" : "完成一个视频处理任务后，笔记会自动出现在这里。"} compact />
-      {:else}
-        {#each filteredNotes as note (note.id)}
-          <button class="note-item" class:selected={selectedNoteId === note.id} onclick={() => selectNote(note.id)}>
-            <span class="note-file-icon"><Icon name="file-text" size={16} /></span>
-            <span class="note-item-copy">
-              {#if searchQuery.trim()}
+      {:else if searchQuery.trim()}
+        {#if filteredNotes.length === 0}
+          <EmptyState icon="search" title="未找到匹配笔记" description="尝试使用其他关键词。" compact />
+        {:else}
+          {#each filteredNotes as note (note.id)}
+            <button class="note-item" class:selected={selectedNoteId === note.id} onclick={() => selectNote(note.id)}>
+              <span class="note-file-icon"><Icon name="file-text" size={16} /></span>
+              <span class="note-item-copy">
                 <strong>
                   {#each highlightSegments(note.title, searchQuery) as segment}
                     {#if segment.matched}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
                   {/each}
                 </strong>
-              {:else}
-                <strong>{note.title}</strong>
-              {/if}
-              <small>{basename(note.path)}</small>
-              <span><Icon name="calendar" size={11} />{formatDate(note.created_at)}</span>
-            </span>
-            <span class="note-date">{shortDate(note.created_at)}</span>
-          </button>
-        {/each}
+                <small>{basename(note.path)}</small>
+                <span><Icon name="calendar" size={11} />{formatDate(note.created_at)}</span>
+              </span>
+              <span class="note-date">{shortDate(note.created_at)}</span>
+            </button>
+          {/each}
+        {/if}
+      {:else if !tree || (tree.folders.length === 0 && tree.notes.length === 0)}
+        <EmptyState icon="note" title="暂无笔记" description="完成一个视频处理任务后，笔记会自动出现在这里。" compact />
+      {:else}
+        <TreeRow
+          folders={tree.folders}
+          notes={tree.notes}
+          depth={0}
+          parentPath=""
+          {sortField}
+          {sortDir}
+          {expanded}
+          selectedId={selectedNoteId}
+          {selectedIds}
+          {multiSelect}
+          onSelectNote={selectNoteFromTree}
+          onToggleFolder={toggleFolder}
+        />
       {/if}
     </div>
 
@@ -810,10 +1007,29 @@
   .note-count strong { font-size: 18px; line-height: 1; }
   .note-count span { margin-top: 3px; color: var(--text-tertiary); font-size: 12px; }
 
-  .library-tools { display: flex; gap: 7px; padding: 0 14px 12px; border-bottom: 1px solid var(--border-color); }
+  .library-tools { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 12px; border-bottom: 1px solid var(--border-color); }
+  .search-row { display: flex; align-items: center; gap: 7px; }
   .search-box { flex: 1; }
   .search-box input { min-height: 40px; padding-right: 42px; font-size: 13px; }
   .search-clear { position: absolute; right: 1px; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 7px; color: var(--text-tertiary); background: transparent; cursor: pointer; }
+  .library-actions { position: relative; display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 0; }
+  .action-btn { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 5px 10px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-secondary); background: var(--bg-card); cursor: pointer; font-size: 12px; font-weight: 640; transition: background .14s, color .14s, border-color .14s; }
+  .action-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .action-btn.active { color: var(--accent-color); border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color)); background: var(--accent-soft); }
+  .action-btn[disabled] { opacity: .55; cursor: not-allowed; }
+  .action-btn.primary { color: var(--accent-color); border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color)); background: var(--accent-faint); }
+  .sort-wrap { position: relative; display: inline-flex; }
+  .sort-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 25; display: flex; flex-direction: column; gap: 4px; min-width: 168px; padding: 7px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-card); box-shadow: var(--shadow-sm); }
+  .sort-menu-section { display: flex; flex-direction: column; gap: 2px; }
+  .sort-menu-section button { padding: 6px 10px; border: 0; border-radius: 6px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; text-align: left; }
+  .sort-menu-section button:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .sort-menu-section button.active { color: var(--accent-color); background: var(--accent-faint); }
+  .sort-menu-direction { flex-direction: row; gap: 5px; }
+  .sort-menu-direction button { flex: 1; text-align: center; }
+  .sort-menu-divider { height: 1px; margin: 3px 0; background: var(--border-color); }
+  .new-folder-row { display: flex; gap: 5px; align-items: center; }
+  .new-folder-input { flex: 1; min-height: 32px; padding: 5px 9px; border: 1px solid var(--accent-color); border-radius: 7px; color: var(--text-primary); background: var(--bg-input); font-size: 12px; }
+  .new-folder-input:focus { outline: none; box-shadow: 0 0 0 2px var(--accent-glow); }
   .library-error { display: flex; gap: 7px; margin: 10px 14px 0; padding: 8px; border-radius: 8px; color: var(--danger-color); background: var(--danger-soft); font-size: 12px; }
   .list-label { display: flex; align-items: center; justify-content: space-between; padding: 11px 17px 6px; color: var(--text-tertiary); font-size: 11px; font-weight: 740; letter-spacing: .08em; text-transform: uppercase; }
   .list-label em { font-style: normal; }
